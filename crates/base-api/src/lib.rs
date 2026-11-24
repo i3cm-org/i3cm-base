@@ -151,6 +151,11 @@ pub fn router(store: Store) -> Router {
         .route("/v1/roles", get(roles))
         .route("/v1/assignments", post(assign))
         .route("/v1/tokens", post(token))
+        .route("/v1/aspects", get(aspects))
+        .route("/v1/aspects/{a}/children", get(aspect_children))
+        .route("/v1/aspects/{a}/node", get(aspect_node))
+        .route("/v1/aspects/{a}/file", get(aspect_file))
+        .route("/v1/objects/{id}/eval", get(eval_path))
         .with_state(store)
 }
 
@@ -312,4 +317,43 @@ async fn token(State(s): State<Store>, h: HeaderMap, Json(b): Json<TokenBody>) -
     let r = auth(&s, &h).await?;
     let t = s.create_token(&r.ctx, b.account).await?;
     Ok(Json(json!({"token": t})))
+}
+
+#[derive(Deserialize, Default)]
+struct NodeQ {
+    #[serde(default)]
+    node: String,
+    name: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct ExprQ {
+    expr: String,
+}
+
+async fn aspects(State(s): State<Store>, h: HeaderMap) -> R<Json<Value>> {
+    let r = auth(&s, &h).await?;
+    Ok(Json(Value::Array(s.aspect_list(&r.lang))))
+}
+
+async fn aspect_children(State(s): State<Store>, h: HeaderMap, Path(a): Path<String>, Query(q): Query<NodeQ>) -> R<Json<Value>> {
+    let r = auth(&s, &h).await?;
+    Ok(Json(serde_json::to_value(s.aspect_children(&r.ctx, &a, &q.node, &r.lang).await?).unwrap_or_default()))
+}
+
+async fn aspect_node(State(s): State<Store>, h: HeaderMap, Path(a): Path<String>, Query(q): Query<NodeQ>) -> R<Json<Value>> {
+    let r = auth(&s, &h).await?;
+    Ok(Json(serde_json::to_value(s.aspect_node(&r.ctx, &a, &q.node, &r.lang).await?).unwrap_or_default()))
+}
+
+async fn aspect_file(State(s): State<Store>, h: HeaderMap, Path(a): Path<String>, Query(q): Query<NodeQ>) -> R<Response> {
+    let r = auth(&s, &h).await?;
+    let name = q.name.ok_or_else(|| BaseError::invalid("aspect.no_file", "name required"))?;
+    let (data, media) = s.aspect_file(&r.ctx, &a, &q.node, &name).await?;
+    Ok((StatusCode::OK, [(header::CONTENT_TYPE, media)], data).into_response())
+}
+
+async fn eval_path(State(s): State<Store>, h: HeaderMap, Path(id): Path<Uuid>, Query(q): Query<ExprQ>) -> R<Json<Value>> {
+    let r = auth(&s, &h).await?;
+    Ok(Json(Value::Array(s.eval_path(&r.ctx, id, &q.expr).await?)))
 }

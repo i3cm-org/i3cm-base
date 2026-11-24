@@ -5,6 +5,7 @@
 //! * one table per reference;
 //! * every row carries a validity range `valid_from`/`valid_to` (transaction marks).
 
+pub mod aspect;
 pub mod context;
 pub mod order;
 pub mod read;

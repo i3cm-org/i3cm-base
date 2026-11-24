@@ -4,6 +4,7 @@
 pub mod catalog;
 pub mod checker;
 pub mod error;
+pub mod fhirpath;
 pub mod i18n;
 pub mod rights;
 pub mod values;
@@ -65,6 +66,26 @@ mod tests {
     }
 
     #[test]
+    fn aspects_are_checked() {
+        let mut c = catalog();
+        c["modules"][0]["aspects"] = json!([{"name": "m:v", "entry": {"type": "m:A", "groupBy": ["x.substring(0, 1)"]},
+            "nodes": {"m:A": {"attributes": [{"label": "x", "path": "x.upper()"}]}}}]);
+        assert!(Model::new(serde_json::from_value(c.clone()).unwrap()).is_ok());
+        let mut bad = c.clone();
+        bad["modules"][0]["aspects"][0]["nodes"]["m:A"]["attributes"][0]["path"] = json!("nope.x");
+        assert_eq!(Model::new(serde_json::from_value(bad).unwrap()).unwrap_err().error_id, "aspect.unknown_name");
+        let mut bad = c.clone();
+        bad["modules"][0]["aspects"][0]["entry"]["type"] = json!("m:Z");
+        assert_eq!(Model::new(serde_json::from_value(bad).unwrap()).unwrap_err().error_id, "aspect.unknown_type");
+        let mut bad = c.clone();
+        bad["modules"][0]["aspects"][0]["nodes"]["m:A"]["attributes"][0]["path"] = json!("x.repeat(y)");
+        assert_eq!(Model::new(serde_json::from_value(bad).unwrap()).unwrap_err().error_id, "path.function_not_allowed");
+        let mut bad = c;
+        bad["modules"][0]["aspects"][0]["nodes"]["m:A"]["files"] = json!([{"name": "f", "path": "_content"}]);
+        assert_eq!(Model::new(serde_json::from_value(bad).unwrap()).unwrap_err().error_id, "aspect.bad_file");
+    }
+
+    #[test]
     fn shipped_catalog_is_valid() {
         // catalog.json is produced by typecat in CI before the tests run; skip if absent.
         let p = concat!(env!("CARGO_MANIFEST_DIR"), "/../../catalog.json");
@@ -72,6 +93,7 @@ mod tests {
             let m = Model::from_json(&s).unwrap();
             assert!(m.type_def("base:PersonAccount").is_some());
             assert!(m.is_a("base:PersonAccount", "base:Carrier"));
+            assert!(m.aspect("base:mailbox").is_some());
         }
     }
 }

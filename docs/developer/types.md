@@ -55,3 +55,33 @@ export const roles: RoleDef[] = [
 
 `art`: read, write (includes read), create, place, remove, delete, grant. `types`: type names
 or `*`. `room`: `root` or a room of the module. `includes` lists roles that a role contains.
+
+## Aspects (views)
+
+An aspect describes how objects are traversed and shown: an entry type with optional grouping,
+and per type the attributes, sub nodes (direct or in folders), files, tabs and functions. Paths
+are FHIRPath expressions (strict standard; profile "views": `where`, `ofType`, `first`, `last`,
+`count`, `exists`, `empty`, `not`, `toString`, `substring`, `upper`, `lower`). Names starting with
+`_` are reserved: `_content`, `_texts` (with one entry per text type), `_id`, `_room`,
+`_createdBy`, `_createdAt`. The order of keys is the display order.
+
+```ts
+export const mailbox = aspect("mailbox", {
+  entry: { type: "base:Mail", groupBy: ["receivedAt.toString().substring(0, 10)"] },
+  nodes: {
+    "base:Mail": {
+      attributes: { sender: "sender", attachmentCount: "attachments.count()" },
+      subNodes: { attachments: { path: "attachments", folder: true } },
+      files: { "mail.eml": "_content", "mail.md": "_texts.`mail.md`" },
+      tabs: { attachments: { path: "attachments", columns: { file: "filename" } } },
+      functions: { reply: { url: "/modules/mail/reply" } },
+    },
+  },
+});
+```
+
+Display texts within an aspect: `<ns>-<aspect>--<ns>-<Type>-name`/`-description` override the
+global texts; `<ns>-<aspect>--label-<key>` names attributes, folders, tabs, columns and functions.
+Group expressions of the form `attr`, `attr.toString()` or `attr.toString().substring(0, n)` on
+the entry type's own attributes are evaluated in SQL, other expressions in memory. Functions are
+declared and delivered with the node; the base does not call them yet.

@@ -78,6 +78,28 @@ impl I18n {
         Some(s.split_whitespace().collect::<Vec<_>>().join(" "))
     }
 
+    /// Display name and description of a type part within an aspect; the aspect's texts
+    /// (`<aspect>--<type>-name`) override the global ones.
+    pub fn names_in(&self, aspect: Option<&str>, lang: &str, type_name: &str, attrs: &Map<String, Value>) -> (String, String) {
+        let (mut n, mut d) = self.names(lang, type_name, attrs);
+        if let Some(a) = aspect {
+            let base = format!("{}--{}", a.replace(':', "-"), type_name.replace(':', "-"));
+            if let Some(x) = self.render(lang, &format!("{base}-name"), attrs) {
+                n = x;
+            }
+            if let Some(x) = self.render(lang, &format!("{base}-description"), attrs) {
+                d = x;
+            }
+        }
+        (n, d)
+    }
+
+    /// Label of an attribute, folder, tab, column or function within an aspect.
+    pub fn label(&self, aspect: &str, lang: &str, label: &str) -> String {
+        let id = format!("{}--label-{}", aspect.replace(':', "-"), label);
+        self.render(lang, &id, &Map::new()).unwrap_or_else(|| label.to_string())
+    }
+
     /// (display name, description) of a type part.
     pub fn names(&self, lang: &str, type_name: &str, attrs: &Map<String, Value>) -> (String, String) {
         let base = type_name.replace(':', "-");

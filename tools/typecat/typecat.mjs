@@ -104,7 +104,7 @@ export function buildCatalog(typesDir) {
 
   for (const dir of moduleDirs) {
     const files = program.getSourceFiles().filter((sf) => !sf.isDeclarationFile && path.dirname(sf.fileName) === dir);
-    const mod = { name: null, requires: [], rooms: [], roles: [], i18n: {} };
+    const mod = { name: null, requires: [], rooms: [], roles: [], i18n: {}, aspects: [] };
     for (const sf of files) {
       if (path.basename(sf.fileName) === "module.ts") {
         for (const st of sf.statements) {
@@ -119,6 +119,15 @@ export function buildCatalog(typesDir) {
         continue;
       }
       for (const st of sf.statements) {
+        if (ts.isVariableStatement(st)) {
+          for (const d of st.declarationList.declarations) {
+            const init = d.initializer;
+            if (init && ts.isCallExpression(init) && ts.isIdentifier(init.expression) && init.expression.text === "aspect") {
+              mod.aspects.push(aspectOf(literalJson(init.arguments[0]), literalJson(init.arguments[1])));
+            }
+          }
+          continue;
+        }
         if (!ts.isClassDeclaration(st) || !st.name) continue;
         const ns = nsOfClass(st);
         if (!ns) continue;
@@ -176,6 +185,7 @@ export function buildCatalog(typesDir) {
             if (!["indexed", "unique"].includes(d.name))
               throw new CatError("typecat.unknown_decorator", "decorator not allowed on attribute", { type: full, attribute: name, decorator: d.name });
           }
+          if (name.startsWith("_")) throw new CatError("typecat.reserved_name", "names starting with _ are reserved", { type: full, attribute: name });
           t.attributes.push({ name, vt, required: !optional, list, indexed: has("indexed") || has("unique"), unique: has("unique") });
         }
         types.push(t);
@@ -188,12 +198,29 @@ export function buildCatalog(typesDir) {
         mod.i18n[path.basename(f, ".ftl")] = fs.readFileSync(path.join(i18nDir, f), "utf8");
     }
     mod.roles = mod.roles.map((r) => ({ ...r, name: `${mod.name}:${r.name}`, includes: r.includes ?? [], guardian: !!r.guardian }));
+    mod.aspects = mod.aspects.map((a) => ({ ...a, name: `${mod.name}:${a.name}` }));
     modules.push(mod);
   }
   types.sort((a, b) => a.name.localeCompare(b.name));
   references.sort((a, b) => a.name.localeCompare(b.name));
   modules.sort((a, b) => a.name.localeCompare(b.name));
   return { format: FORMAT, modules, types, references, textTypes };
+}
+
+// Aspect: object literals become ordered lists (the order of keys is the display order).
+function aspectOf(name, def) {
+  const pairs = (o) => Object.entries(o ?? {});
+  const nodes = {};
+  for (const [t, n] of pairs(def.nodes)) {
+    nodes[t] = {
+      attributes: pairs(n.attributes).map(([label, path]) => ({ label, path })),
+      subNodes: pairs(n.subNodes).map(([label, v]) => ({ label, path: v.path, folder: !!v.folder })),
+      files: pairs(n.files).map(([name, path]) => ({ name, path })),
+      tabs: pairs(n.tabs).map(([label, v]) => ({ label, path: v.path, columns: pairs(v.columns).map(([l, p]) => ({ label: l, path: p })) })),
+      functions: pairs(n.functions).map(([name, v]) => ({ name, url: v.url })),
+    };
+  }
+  return { name, entry: { type: def.entry.type, groupBy: def.entry.groupBy ?? [] }, nodes };
 }
 
 function valueType(tn, type, attr) {

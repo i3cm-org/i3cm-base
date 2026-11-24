@@ -50,3 +50,11 @@ back as `integrity.violated` with a list of violations.
 | `GET /v1/catalog`, `GET /v1/roles` | catalog and roles |
 | `POST /v1/assignments` | `{"role": "fibu:accountant", "carrier": "<group or account>"}` |
 | `POST /v1/tokens` | `{"account": "<id>"}` issues a token |
+| `GET /v1/objects/{id}/eval?expr=` | evaluate a path (FHIRPath, profile views) on an object |
+| `GET /v1/aspects` | aspects |
+| `GET /v1/aspects/{aspect}/children?node=` | children of a node; empty `node` is the entry |
+| `GET /v1/aspects/{aspect}/node?node=` | details: name, description, attributes, files, tabs, functions |
+| `GET /v1/aspects/{aspect}/file?node=&name=` | a file of an object node |
+
+Node ids: `g:<key>[/<key>...]` (group), `o:<id>` (object), `f:<id>:<folder>` (folder).
+

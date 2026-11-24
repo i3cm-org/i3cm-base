@@ -73,6 +73,7 @@ pub fn catalog_ddl(m: &Model) -> Vec<String> {
         out.push(format!(
             "CREATE TABLE IF NOT EXISTS {tb} (tenant_id uuid NOT NULL, id uuid NOT NULL, a_id uuid NOT NULL, b_id uuid NOT NULL, rank int, valid_from bigint NOT NULL, valid_to bigint, PRIMARY KEY (tenant_id, id, valid_from))"
         ));
+        out.push(format!("ALTER TABLE {tb} ADD COLUMN IF NOT EXISTS seq bigserial"));
         out.push(format!("CREATE INDEX IF NOT EXISTS {tb}_a ON {tb} (tenant_id, a_id) WHERE valid_to IS NULL"));
         out.push(format!("CREATE INDEX IF NOT EXISTS {tb}_b ON {tb} (tenant_id, b_id) WHERE valid_to IS NULL"));
     }

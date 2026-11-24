@@ -12,6 +12,19 @@ use std::sync::OnceLock;
 use uuid::Uuid;
 
 static DB_URL: OnceLock<String> = OnceLock::new();
+static PG_STOP: std::sync::Mutex<Option<(std::path::PathBuf, std::path::PathBuf)>> = std::sync::Mutex::new(None);
+
+unsafe extern "C" {
+    fn atexit(cb: extern "C" fn()) -> i32;
+}
+
+/// Stop the embedded PostgreSQL when the test binary exits.
+extern "C" fn stop_pg() {
+    if let Some((pg_ctl, data)) = PG_STOP.lock().ok().and_then(|g| g.clone()) {
+        let _ = std::process::Command::new(&pg_ctl).args(["stop", "-m", "immediate", "-D"]).arg(&data).output();
+        let _ = std::fs::remove_dir_all(&data);
+    }
+}
 
 /// One embedded PostgreSQL for the whole test binary, started on a dedicated runtime.
 fn db_url() -> String {
@@ -22,6 +35,9 @@ fn db_url() -> String {
                 rt.block_on(async {
                     let db = EmbeddedDb::start(None).await.expect("embedded postgres");
                     let url = db.database("base_test").await.unwrap();
+                    let st = db.pg.settings();
+                    *PG_STOP.lock().unwrap() = Some((st.binary_dir().join("pg_ctl"), st.data_dir.clone()));
+                    unsafe { atexit(stop_pg) };
                     Box::leak(Box::new(db));
                     url
                 })
@@ -362,4 +378,63 @@ async fn unauthenticated_is_rejected() {
     let env = env().await;
     let bad = env.admin.with_token("bt_invalid");
     assert_eq!(bad.me().await.unwrap_err().status(), Some(401));
+}
+
+#[tokio::test]
+async fn mailbox_aspect() {
+    let env = env().await;
+    let mut o = Order::new();
+    for (i, (at, sender, subject)) in [("2026-11-24T08:15:00+01:00", "anna@example.org", "Angebot"), ("2026-11-24T17:00:00+01:00", "ben@example.org", "Rechnung"), ("2026-11-25T09:00:00+01:00", "carla@example.org", "Termin")]
+        .iter()
+        .enumerate()
+    {
+        let m = format!("m{i}");
+        o.create(&m, None, json!({"base:Mail": {"receivedAt": at, "sender": sender, "subject": subject}}));
+        if i == 0 {
+            for j in 0..2 {
+                let a = format!("a{j}");
+                o.create(&a, None, json!({"base:MailAttachment": {"filename": format!("file{j}.pdf")}}));
+                o.link("base:MailAttachment.mail", a.as_str(), m.as_str());
+            }
+        }
+    }
+    let r = env.admin.order(&o).await.unwrap();
+    let m0 = r.created["m0"];
+    env.admin.put_content(m0, b"From: anna\r\n\r\nHallo".to_vec(), "message/rfc822", None).await.unwrap();
+    env.admin.put_content(r.created["a0"], b"%PDF-1".to_vec(), "application/pdf", Some("file0.pdf")).await.unwrap();
+    env.admin.put_text(m0, "base:mail.md", "# Hallo").await.unwrap();
+
+    let de = env.admin.clone().with_lang("de");
+    let days = de.aspect_children("base:mailbox", "").await.unwrap();
+    assert_eq!(days.iter().map(|d| (d.display_name.as_str(), d.count)).collect::<Vec<_>>(), vec![("2026-11-24", Some(2)), ("2026-11-25", Some(1))]);
+    let mails = de.aspect_children("base:mailbox", &days[0].node).await.unwrap();
+    assert_eq!(mails.iter().map(|m| m.display_name.as_str()).collect::<Vec<_>>(), vec!["anna@example.org - Angebot", "ben@example.org - Rechnung"]);
+    let inside = de.aspect_children("base:mailbox", &mails[0].node).await.unwrap();
+    let names: Vec<(&str, &str)> = inside.iter().map(|n| (n.kind.as_str(), n.display_name.as_str())).collect();
+    assert_eq!(names, vec![("file", "mail.eml"), ("file", "mail.md"), ("folder", "Anhänge")]);
+    let atts = de.aspect_children("base:mailbox", &inside[2].node).await.unwrap();
+    assert_eq!(atts.len(), 2);
+    let att_files = de.aspect_children("base:mailbox", &atts.iter().find(|a| a.display_name == "file0.pdf").unwrap().node).await.unwrap();
+    assert_eq!(att_files[0].display_name, "file0.pdf");
+    assert_eq!(de.aspect_file("base:mailbox", &mails[0].node, "mail.md").await.unwrap(), b"# Hallo");
+    assert!(de.aspect_file("base:mailbox", &mails[0].node, "mail.eml").await.unwrap().ends_with(b"Hallo"));
+
+    let detail = de.aspect_node("base:mailbox", &mails[0].node).await.unwrap();
+    assert_eq!(detail["node"]["displayDescription"].as_str().unwrap(), "Eingegangen am 2026-11-24T07:15:00+00:00", "aspect text overrides the global one");
+    let labels: Vec<&str> = detail["attributes"].as_array().unwrap().iter().map(|a| a["label"].as_str().unwrap()).collect();
+    assert_eq!(labels, vec!["Absender", "Betreff", "Empfangen", "Anzahl Anhänge"]);
+    assert_eq!(detail["attributes"][3]["values"], json!([2]));
+    assert_eq!(detail["tabs"][0]["label"], json!("Anhänge"));
+    assert_eq!(detail["tabs"][0]["columns"], json!(["Datei"]));
+    assert_eq!(detail["tabs"][0]["rows"].as_array().unwrap().len(), 2);
+    assert_eq!(detail["functions"][0]["label"], json!("Antworten"));
+
+    assert_eq!(env.admin.eval(m0, "attachments.filename").await.unwrap(), vec![json!("file0.pdf"), json!("file1.pdf")]);
+    assert_eq!(env.admin.eval(m0, "attachments.where(filename = 'file1.pdf').count()").await.unwrap(), vec![json!(1)]);
+    assert_eq!(env.admin.eval(m0, "_createdBy = %x").await.unwrap_err().error_id(), Some("path.syntax"));
+    assert_eq!(env.admin.eval(m0, "_createdBy._id").await.unwrap(), vec![json!(env.init.admin_account.to_string())]);
+
+    // without read rights the mailbox is empty
+    let (_, lea) = env.person("lea", &[]).await;
+    assert!(lea.aspect_children("base:mailbox", "").await.unwrap().is_empty());
 }

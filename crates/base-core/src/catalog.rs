@@ -25,6 +25,73 @@ pub struct Module {
     pub rooms: Vec<String>,
     pub roles: Vec<RoleDef>,
     pub i18n: BTreeMap<String, String>,
+    #[serde(default)]
+    pub aspects: Vec<AspectDef>,
+}
+
+/// A business aspect: traversal and display rules (views).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AspectDef {
+    /// Qualified name, e.g. `base:mailbox`.
+    pub name: String,
+    pub entry: AspectEntry,
+    pub nodes: BTreeMap<String, NodeDef>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AspectEntry {
+    #[serde(rename = "type")]
+    pub type_name: String,
+    #[serde(rename = "groupBy", default)]
+    pub group_by: Vec<String>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct NodeDef {
+    #[serde(default)]
+    pub attributes: Vec<Labeled>,
+    #[serde(rename = "subNodes", default)]
+    pub sub_nodes: Vec<SubNodeDef>,
+    #[serde(default)]
+    pub files: Vec<FileDef>,
+    #[serde(default)]
+    pub tabs: Vec<TabDef>,
+    #[serde(default)]
+    pub functions: Vec<FunctionDef>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Labeled {
+    pub label: String,
+    pub path: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SubNodeDef {
+    pub label: String,
+    pub path: String,
+    #[serde(default)]
+    pub folder: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FileDef {
+    /// File name; `{attr}` is replaced by an attribute of the object.
+    pub name: String,
+    pub path: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TabDef {
+    pub label: String,
+    pub path: String,
+    pub columns: Vec<Labeled>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FunctionDef {
+    pub name: String,
+    pub url: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -338,12 +405,55 @@ impl Model {
         })
     }
 
+    /// The type and all its subtypes, transitively.
+    pub fn subtypes_closure(&self, name: &str) -> Vec<String> {
+        let mut out = vec![name.to_string()];
+        let mut i = 0;
+        while i < out.len() {
+            let more: Vec<String> = self.subtypes(&out[i]).to_vec();
+            for x in more {
+                if !out.contains(&x) {
+                    out.push(x);
+                }
+            }
+            i += 1;
+        }
+        out
+    }
+
     pub fn subtypes(&self, name: &str) -> &[String] {
         self.children.get(name).map(|v| v.as_slice()).unwrap_or(&[])
     }
 
     pub fn roles(&self) -> impl Iterator<Item = &RoleDef> {
         self.catalog.modules.iter().flat_map(|m| m.roles.iter())
+    }
+
+    pub fn aspect(&self, name: &str) -> Option<&AspectDef> {
+        self.catalog.modules.iter().flat_map(|m| m.aspects.iter()).find(|a| a.name == name)
+    }
+
+    pub fn aspects(&self) -> impl Iterator<Item = &AspectDef> {
+        self.catalog.modules.iter().flat_map(|m| m.aspects.iter())
+    }
+
+    /// Node definition for an object carrying `set`: the first attached type (or supertype)
+    /// the aspect defines.
+    pub fn aspect_node<'a>(&self, a: &'a AspectDef, set: &BTreeSet<String>) -> Option<(String, &'a NodeDef)> {
+        for t in set {
+            for anc in self.ancestors(t) {
+                if let Some(n) = a.nodes.get(&anc.name) {
+                    return Some((t.clone(), n));
+                }
+            }
+        }
+        None
+    }
+
+    /// Text type by full or local name, owned by one of the given types.
+    pub fn text_type_for(&self, set: &BTreeSet<String>, name: &str) -> Option<&TextTypeDef> {
+        let tables = self.table_types(set);
+        self.catalog.text_types.iter().find(|t| tables.contains(&t.owner) && (t.name == name || t.name.split_once(':').map(|x| x.1) == Some(name)))
     }
 
     pub fn text_type(&self, name: &str) -> Option<&TextTypeDef> {

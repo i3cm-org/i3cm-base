@@ -67,13 +67,15 @@ async fn timed<T, F: std::future::Future<Output = std::result::Result<T, base_cl
 async fn main() -> Result<()> {
     let args = Args::parse();
     let mut _keep = None;
+    let mut _store: Option<base_server::base_store::Store> = None;
     let (base, token) = if args.embedded {
         println!("starting embedded PostgreSQL and server ...");
         let db = base_server::EmbeddedDb::start(None).await?;
         let url = db.database("loadtest").await?;
         let store = base_server::connect(&url, &base_server::default_catalog(), (args.concurrency + 8).max(16)).await?;
         let init = store.init_tenant("loadtest", "admin").await.map_err(|e| anyhow::anyhow!("{e}"))?;
-        let (addr, task) = base_server::serve(store, "127.0.0.1:0".parse()?).await?;
+        let (addr, task) = base_server::serve(store.clone(), "127.0.0.1:0".parse()?).await?;
+        _store = Some(store);
         _keep = Some((db, task));
         (format!("http://{addr}"), init.token)
     } else {
@@ -192,6 +194,11 @@ async fn main() -> Result<()> {
         errors.load(Ordering::Relaxed)
     );
 
+    if let (Some(store), true) = (&_store, std::env::var("BASE_LOADTEST_NO_ANALYZE").is_err()) {
+        let t = Instant::now();
+        store.client().await.map_err(|e| anyhow::anyhow!("{e}"))?.batch_execute("ANALYZE").await?;
+        println!("ANALYZE in {:.1} s", t.elapsed().as_secs_f64());
+    }
     // navigation over the date fields, as one of the accountants
     let nav = &accountants[0].1;
     println!("navigation as accountant No. 0:");

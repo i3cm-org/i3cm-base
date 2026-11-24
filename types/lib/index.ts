@@ -68,3 +68,20 @@ export type Sign = "+" | "-" | "block";
 export type Art = "read" | "write" | "create" | "place" | "remove" | "delete" | "grant";
 export interface RightDef { sign: Sign; art: Art[]; types: string[]; room: string }
 export interface RoleDef { name: string; guardian?: boolean; includes?: string[]; rights: RightDef[] }
+
+/* ---------- aspects (views) ---------- */
+/** Paths are FHIRPath expressions relative to the node object. */
+export interface NodeDef {
+  attributes?: Record<string, string>;
+  subNodes?: Record<string, { path: string; folder?: boolean }>;
+  /** File name -> `_content` or `_texts.<text type>`; `{attr}` in the name is replaced. */
+  files?: Record<string, string>;
+  tabs?: Record<string, { path: string; columns: Record<string, string> }>;
+  functions?: Record<string, { url: string }>;
+}
+export interface AspectDef {
+  entry: { type: string; groupBy?: string[] };
+  nodes: Record<string, NodeDef>;
+}
+/** A business aspect: traversal and display rules. The order of keys is the display order. */
+export function aspect(_name: string, def: AspectDef): AspectDef { return def; }

@@ -206,6 +206,22 @@ pub struct ListQuery {
     pub offset: Option<i64>,
 }
 
+/// A node of an aspect tree.
+#[derive(Debug, Clone, Deserialize)]
+pub struct AspectNode {
+    pub node: String,
+    /// group, object, folder or file
+    pub kind: String,
+    #[serde(rename = "displayName")]
+    pub display_name: String,
+    #[serde(rename = "displayDescription", default)]
+    pub display_description: String,
+    pub count: Option<i64>,
+    #[serde(rename = "type")]
+    pub type_name: Option<String>,
+    pub id: Option<Uuid>,
+}
+
 #[derive(Clone)]
 pub struct Client {
     http: reqwest::Client,
@@ -346,6 +362,25 @@ impl Client {
 
     pub async fn get_text(&self, id: Uuid, text_type: &str) -> Result<String> {
         Ok(Self::check(self.req(reqwest::Method::GET, &format!("/objects/{id}/texts/{text_type}")).send().await?).await?.text().await?)
+    }
+
+    /// Evaluate a path (FHIRPath, profile views) on an object.
+    pub async fn eval(&self, id: Uuid, expr: &str) -> Result<Vec<Value>> {
+        self.get_q(&format!("/objects/{id}/eval"), &[("expr", expr)]).await
+    }
+    pub async fn aspects(&self) -> Result<Vec<Value>> {
+        self.get("/aspects").await
+    }
+    /// Children of a node of an aspect; `""` is the entry.
+    pub async fn aspect_children(&self, aspect: &str, node: &str) -> Result<Vec<AspectNode>> {
+        self.get_q(&format!("/aspects/{aspect}/children"), &[("node", node)]).await
+    }
+    pub async fn aspect_node(&self, aspect: &str, node: &str) -> Result<Value> {
+        self.get_q(&format!("/aspects/{aspect}/node"), &[("node", node)]).await
+    }
+    pub async fn aspect_file(&self, aspect: &str, node: &str, name: &str) -> Result<Vec<u8>> {
+        let r = self.req(reqwest::Method::GET, &format!("/aspects/{aspect}/file")).query(&[("node", node), ("name", name)]);
+        Ok(Self::check(r.send().await?).await?.bytes().await?.to_vec())
     }
 
     pub async fn roles(&self) -> Result<Vec<Value>> {

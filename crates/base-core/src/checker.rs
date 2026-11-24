@@ -27,7 +27,7 @@ pub fn check(m: &Model) -> Result<()> {
         }
         let mut seen = BTreeSet::new();
         for a in &t.attributes {
-            if RESERVED.contains(&a.name.as_str()) {
+            if RESERVED.contains(&a.name.as_str()) || a.name.starts_with('_') {
                 return Err(err("type.reserved_attribute", "attribute name is reserved").with("type", t.name.clone()).with("attribute", a.name.clone()));
             }
             if !seen.insert(a.name.clone()) {
@@ -102,6 +102,9 @@ pub fn check(m: &Model) -> Result<()> {
             return Err(err("reference.unknown_type", "reference target is unknown").with("reference", r.name.clone()).with("target", r.target.type_name.clone()));
         }
         for (t, e) in [(&r.holder.type_name, &r.holder.end), (&r.target.type_name, &r.target.end)] {
+            if e.starts_with('_') {
+                return Err(err("reference.reserved_end", "end names starting with _ are reserved").with("reference", r.name.clone()).with("end", e.clone()));
+            }
             if let Some(prev) = ends.insert((t.clone(), e.clone()), r.name.clone()) {
                 return Err(err("reference.duplicate_end", "end name used twice on a type")
                     .with("type", t.clone()).with("end", e.clone()).with("references", format!("{prev}, {}", r.name)));
@@ -150,12 +153,72 @@ pub fn check(m: &Model) -> Result<()> {
             }
         }
     }
+    for a in m.aspects() {
+        check_aspect(m, a)?;
+    }
     // include cycles
     let incl: HashMap<String, Vec<String>> = m.roles().map(|r| (r.name.clone(), r.includes.clone())).collect();
     let mut done = BTreeSet::new();
     for r in m.roles() {
         if let Some(cycle) = dfs(&r.name, &incl, &mut Vec::new(), &mut done) {
             return Err(err("role.include_cycle", "role includes form a cycle").with("cycle", cycle.join(" -> ")));
+        }
+    }
+    Ok(())
+}
+
+/// Names that every object has in paths (DEC: reserved names with underscore).
+pub const PATH_RESERVED: &[&str] = &["_content", "_texts", "_id", "_room", "_createdBy", "_createdAt"];
+
+fn check_path(m: &Model, aspect: &str, focus: Option<&str>, path: &str) -> Result<crate::fhirpath::Expr> {
+    use crate::fhirpath::{check_profile, first_name, parse, VIEW_FUNCTIONS};
+    let e = parse(path).map_err(|e| e.with("aspect", aspect))?;
+    check_profile(&e, VIEW_FUNCTIONS, path).map_err(|e| e.with("aspect", aspect))?;
+    if let (Some(t), Some(n)) = (focus, first_name(&e)) {
+        let set: BTreeSet<String> = [t.to_string()].into();
+        let known = PATH_RESERVED.contains(&n)
+            || m.defining_type(t, n).is_some()
+            || m.end_by_name(&set, n).is_some()
+            || m.subtypes_closure(t).iter().any(|s| m.defining_type(s, n).is_some() || m.end_by_name(&[s.clone()].into(), n).is_some());
+        if !known {
+            return Err(err("aspect.unknown_name", "path starts with a name the type does not have")
+                .with("aspect", aspect).with("type", t).with("name", n).with("path", path));
+        }
+    }
+    Ok(e)
+}
+
+fn check_aspect(m: &Model, a: &crate::catalog::AspectDef) -> Result<()> {
+    let entry = &a.entry.type_name;
+    if m.type_def(entry).is_none() {
+        return Err(err("aspect.unknown_type", "aspect names an unknown type").with("aspect", a.name.clone()).with("type", entry.clone()));
+    }
+    for g in &a.entry.group_by {
+        check_path(m, &a.name, Some(entry), g)?;
+    }
+    for (t, n) in &a.nodes {
+        if m.type_def(t).is_none() {
+            return Err(err("aspect.unknown_type", "aspect names an unknown type").with("aspect", a.name.clone()).with("type", t.clone()));
+        }
+        for x in &n.attributes {
+            check_path(m, &a.name, Some(t), &x.path)?;
+        }
+        for x in &n.sub_nodes {
+            check_path(m, &a.name, Some(t), &x.path)?;
+        }
+        for x in &n.tabs {
+            check_path(m, &a.name, Some(t), &x.path)?;
+            for c in &x.columns {
+                check_path(m, &a.name, None, &c.path)?;
+            }
+        }
+        for f in &n.files {
+            let ok = f.path == "_content" && m.ancestors(t).iter().any(|x| x.content.is_some())
+                || f.path.strip_prefix("_texts.").map(|tt| m.text_type_for(&[t.clone()].into(), tt.trim_matches('`')).is_some()).unwrap_or(false);
+            if !ok {
+                return Err(err("aspect.bad_file", "a file must be _content or _texts.<text type> of the node type")
+                    .with("aspect", a.name.clone()).with("type", t.clone()).with("file", f.name.clone()));
+            }
         }
     }
     Ok(())

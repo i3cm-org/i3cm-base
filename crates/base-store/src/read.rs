@@ -268,7 +268,7 @@ impl Store {
             Side::Holder => ("a_id", "b_id"),
             Side::Target => ("b_id", "a_id"),
         };
-        let order = if def.ordered { "x.rank NULLS LAST, x.valid_from" } else { "x.valid_from, x.id" };
+        let order = if def.ordered { "x.rank NULLS LAST, x.seq" } else { "x.seq" };
         let sql = format!(
             "SELECT x.{other}, x.id FROM {} x JOIN object_state s ON s.tenant_id=x.tenant_id AND s.object_id=x.{other} AND s.valid_to IS NULL AND s.deleted_at IS NULL \
              WHERE x.tenant_id=$1 AND x.{this}=$2 AND x.valid_to IS NULL ORDER BY {order} LIMIT $3 OFFSET $4",
