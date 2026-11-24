@@ -229,5 +229,9 @@ async fn main() -> Result<()> {
         }
     }
     println!("    the {} entries of {} were created by {} different accountants", day.len().min(50), d.key, creators.len());
+    if let Some((db, task)) = _keep {
+        task.abort();
+        db.stop().await?;
+    }
     Ok(())
 }
