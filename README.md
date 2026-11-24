@@ -1,0 +1,50 @@
+# base-erp
+
+A base for function portals: typed objects that carry several types at once, versioned
+storage, rooms and roles for rights, and a REST API. Modules contribute types, rooms, roles
+and display texts. This is milestone 0.2: the core without user interface.
+
+## Concepts in one paragraph
+
+An **object** carries several **types** at the same time (for example `Person` and
+`PersonAccount`); each type contributes its own attributes, stored in a table of its own.
+Types are related by inheritance and by **rules** (a type *requires* another, *brings* another
+along, or *imprints* itself on another). Objects are connected by **references** with two
+named ends and cardinalities; "part of" references make parts follow their whole. Every change
+creates a new version; only the changed type parts are rewritten. Every object lives in one
+**room**; **roles** (collections of rights with sign `+`, `-` or `block`) are assigned to groups
+or accounts, and rights are inherited down the room tree.
+
+## Layout
+
+| Path | Content |
+|---|---|
+| `types/` | Type definitions in TypeScript (`base` and the example module `fibu`), Fluent texts |
+| `tools/typecat/` | Reads `types/` with the TypeScript compiler API and writes `catalog.json` |
+| `crates/base-core` | Catalog model, type checker, value types, rights evaluation, display names |
+| `crates/base-store` | PostgreSQL storage: schema from the catalog, orders, versions, reads |
+| `crates/base-api` | REST API (axum) |
+| `crates/base-server` | Server binary, embedded PostgreSQL for development and tests |
+| `crates/base-client` | Rust client |
+| `crates/base-loadtest` | Load test with the accounting example |
+| `deploy/` | Dockerfile and compose file |
+| `docs/developer/` | Type notation and API reference |
+
+## Quick start
+
+Requirements: Rust (stable), Node.js 22. PostgreSQL is downloaded and run embedded for
+development and tests.
+
+```sh
+make catalog          # types/ -> catalog.json
+make test             # typecat tests, unit tests, integration tests against PostgreSQL
+cargo run -p base-server -- dev     # embedded PostgreSQL, tenant "dev", prints an admin token
+make loadtest         # 1000 accounts, 45 accountants, 100,000 journal entries, navigation
+```
+
+Production-like: `docker compose -f deploy/compose.yaml up --build`, then
+`base-server init-tenant <name>` inside the server container.
+
+## License
+
+Apache-2.0
