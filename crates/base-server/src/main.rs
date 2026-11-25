@@ -45,7 +45,11 @@ enum Cmd {
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    tracing_subscriber::fmt().with_env_filter(tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "info".into())).init();
+    // logs go to stderr so that command output on stdout stays machine-readable
+    tracing_subscriber::fmt()
+        .with_writer(std::io::stderr)
+        .with_env_filter(tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "info,tokio_postgres=warn".into()))
+        .init();
     let cli = Cli::parse();
     let catalog = cli.catalog.clone().unwrap_or_else(default_catalog);
     let db = || cli.db.clone().ok_or_else(|| anyhow::anyhow!("--db or BASE_DATABASE_URL required"));
