@@ -7,23 +7,27 @@ executed. A module directory contains `module.ts` (name, required modules, rooms
 ```ts
 @ns("fibu")
 export class JournalLine {
-  @partOf @card("1..n") entry!: Ref<JournalEntry, "lines">;  // part of an entry; an entry has 1..n lines
-  @card("0..n") account!: Ref<LedgerAccount, "lines">;
+  @partOf entry!: Ref<JournalEntry, "lines", "1..n">;  // part of an entry; an entry has 1..n lines
+  account!: Ref<LedgerAccount, "lines">;
   side!: Enum<"debit" | "credit">;
   amount!: Money;
 }
 ```
 
 * Optional attributes use `?`; all others are required.
-* `Ref<T, "end">` references an object carrying type `T`; the second argument names the
-  opposite end. Cardinality at this end follows the form: `Ref` = 1, `Ref?` = 0..1,
-  `Ref[]` = 0..n (`@min(n)` for more). `@card(...)` sets the cardinality at the opposite end.
-  `AnyObject` as target accepts every object.
+* `Ref<T, "end", "card">` references an object carrying type `T`; the second argument names the
+  opposite end, the optional third one its cardinality (`"0..n"` by default, also `"1..n"`,
+  `"0..1"`, `"1"`). Cardinality at this end follows the form: `Ref` = 1, `Ref?` = 0..1,
+  `Ref[]` = 0..n (`@min(n)` for more). `AnyObject` as target accepts every object.
+* Names at a type are its attributes, its own reference ends and the opposite ends of references
+  pointing to it, including those of its supertypes. A name may occur only once within a module
+  and against the base; equal names from unrelated modules are allowed and told apart by
+  qualification in paths (``person.`verein:memberships` ``). Names starting with `_` are reserved.
 * Class decorators: `@ns`, `@abstractType`, `@requires(A, B)` (one of), `@requiresAll(A, B)`,
   `@brings(B)` (every object of this type is also a B), `@imprintsOn(A)` (every A is also of
   this type), `@hasContent(mediaType?)`, `@texts("name:mediaType", ...)`.
 * Attribute decorators: `@indexed`, `@unique`; reference decorators: `@partOf`, `@ordered`,
-  `@rightsRelevant`, `@card`, `@min`.
+  `@rightsRelevant`, `@min`.
 
 ## Value types
 

@@ -18,8 +18,10 @@ export type Recurrence = string & { readonly __vt?: "recurrence" };
 export type Struct<F> = F;
 
 /* ---------- references ---------- */
-/** Reference to an object carrying type T. `End` names the opposite end. */
-export type Ref<T, End extends string> = { readonly __ref?: T; readonly __end?: End };
+/** Cardinality at the opposite end of a reference. */
+export type Card = "0..n" | "1..n" | "0..1" | "1";
+/** Reference to an object carrying type T. `End` names the opposite end, `Back` its cardinality (default "0..n"). */
+export type Ref<T, End extends string, Back extends Card = "0..n"> = { readonly __ref?: T; readonly __end?: End; readonly __back?: Back };
 /** Any object, regardless of its types. */
 export abstract class AnyObject {}
 
@@ -48,8 +50,6 @@ export function hasContent(_mediaType?: string): ClassDeco { return noopC; }
 export function texts(..._defs: string[]): ClassDeco { return noopC; }
 
 /* ---------- field decorators ---------- */
-/** Cardinality at the opposite end of a reference: "1", "0..1", "1..n", "0..n". */
-export function card(_c: "1" | "0..1" | "1..n" | "0..n"): FieldDeco { return noopF; }
 /** Minimum number of entries for a list reference at this end. */
 export function min(_n: number): FieldDeco { return noopF; }
 /** "Part of": this object is a part of the referenced whole. */

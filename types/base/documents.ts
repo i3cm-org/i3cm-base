@@ -1,4 +1,4 @@
-import { ns, hasContent, texts, card, partOf, indexed, Ref, DateTime, Formatted } from "../lib";
+import { ns, hasContent, texts, partOf, indexed, Ref, DateTime, Formatted } from "../lib";
 
 @ns("base") @hasContent() @texts("plain:text/plain")
 export class Document {
@@ -17,5 +17,5 @@ export class Mail {
 @ns("base") @hasContent()
 export class MailAttachment {
   filename!: string;
-  @partOf @card("0..n") mail!: Ref<Mail, "attachments">;
+  @partOf mail!: Ref<Mail, "attachments">;
 }

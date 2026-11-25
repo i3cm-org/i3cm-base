@@ -1,4 +1,4 @@
-import { ns, card, min, partOf, indexed, unique, Ref, Enum, LocalDate, Money, Int } from "../../lib";
+import { ns, min, partOf, indexed, unique, Ref, Enum, LocalDate, Money, Int } from "../../lib";
 
 /** Ledger account of a chart of accounts. */
 @ns("fibu")
@@ -21,8 +21,8 @@ export class JournalEntry {
 /** One debit or credit line of a journal entry. */
 @ns("fibu")
 export class JournalLine {
-  @partOf @card("1..n") entry!: Ref<JournalEntry, "lines">;
-  @card("0..n") account!: Ref<LedgerAccount, "lines">;
+  @partOf entry!: Ref<JournalEntry, "lines", "1..n">;
+  account!: Ref<LedgerAccount, "lines">;
   side!: Enum<"debit" | "credit">;
   amount!: Money;
 }

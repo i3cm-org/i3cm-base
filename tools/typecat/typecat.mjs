@@ -101,10 +101,12 @@ export function buildCatalog(typesDir) {
   const references = [];
   const textTypes = [];
   const modules = [];
+  const moduleOf = new Map(); // type or reference name -> module name
 
   for (const dir of moduleDirs) {
     const files = program.getSourceFiles().filter((sf) => !sf.isDeclarationFile && path.dirname(sf.fileName) === dir);
     const mod = { name: null, requires: [], rooms: [], roles: [], i18n: {}, aspects: [] };
+    const ownTypes = [], ownRefs = [];
     for (const sf of files) {
       if (path.basename(sf.fileName) === "module.ts") {
         for (const st of sf.statements) {
@@ -166,13 +168,16 @@ export function buildCatalog(typesDir) {
           let tn = m.type, list = false;
           if (ts.isArrayTypeNode(tn)) { list = true; tn = tn.elementType; }
           if (ts.isTypeReferenceNode(tn) && tn.typeName.getText() === "Ref") {
-            const [target, end] = tn.typeArguments ?? [];
+            const [target, end, back] = tn.typeArguments ?? [];
             if (!target || !end) throw new CatError("typecat.ref_args", "Ref<T, End> needs two arguments", { type: full, attribute: name });
-            const cardDeco = decos.find((d) => d.name === "card");
+            for (const d of decos) {
+              if (!["partOf", "ordered", "rightsRelevant", "min"].includes(d.name))
+                throw new CatError("typecat.unknown_decorator", "decorator not allowed on reference", { type: full, attribute: name, decorator: d.name });
+            }
             const minDeco = decos.find((d) => d.name === "min");
-            const targetCard = cardDeco ? cardOf(cardDeco.args[0].text) : { min: 0, max: null };
+            const targetCard = back ? cardOf(literalStrings(back)[0]) : { min: 0, max: null };
             const holderMin = list ? (minDeco ? Number(minDeco.args[0].text) : 0) : (optional ? 0 : 1);
-            references.push({
+            ownRefs.push({
               name: `${full}.${name}`,
               holder: { type: full, end: name, min: holderMin, max: list ? null : 1 },
               target: { type: classFullName(target.typeName ?? target), end: literalStrings(end)[0], ...targetCard },
@@ -188,10 +193,14 @@ export function buildCatalog(typesDir) {
           if (name.startsWith("_")) throw new CatError("typecat.reserved_name", "names starting with _ are reserved", { type: full, attribute: name });
           t.attributes.push({ name, vt, required: !optional, list, indexed: has("indexed") || has("unique"), unique: has("unique") });
         }
-        types.push(t);
+        ownTypes.push(t);
       }
     }
     if (!mod.name) throw new CatError("typecat.module_name", "module.ts without module.name", { dir });
+    for (const t of ownTypes) moduleOf.set(t.name, mod.name);
+    for (const r of ownRefs) moduleOf.set(r.name, mod.name);
+    types.push(...ownTypes);
+    references.push(...ownRefs);
     const i18nDir = path.join(dir, "i18n");
     if (fs.existsSync(i18nDir)) {
       for (const f of fs.readdirSync(i18nDir).filter((f) => f.endsWith(".ftl")).sort())
@@ -201,10 +210,44 @@ export function buildCatalog(typesDir) {
     mod.aspects = mod.aspects.map((a) => ({ ...a, name: `${mod.name}:${a.name}` }));
     modules.push(mod);
   }
+  checkNames(types, references, moduleOf);
   types.sort((a, b) => a.name.localeCompare(b.name));
   references.sort((a, b) => a.name.localeCompare(b.name));
   modules.sort((a, b) => a.name.localeCompare(b.name));
   return { format: FORMAT, modules, types, references, textTypes };
+}
+
+// Names at a type: attributes, own reference ends and opposite ends of references pointing to it,
+// including those of its supertypes. Two equal names conflict when they come from the same module
+// or one of them from the base; names from unrelated modules are told apart by qualification.
+function checkNames(types, references, moduleOf) {
+  const own = new Map(types.map((t) => [t.name, []]));
+  const add = (type, entry) => { if (own.has(type)) own.get(type).push(entry); };
+  for (const t of types)
+    for (const a of t.attributes) add(t.name, { name: a.name, what: `attribute ${t.name}.${a.name}`, module: moduleOf.get(t.name) });
+  for (const r of references) {
+    const m = moduleOf.get(r.name);
+    if (r.target.end.startsWith("_"))
+      throw new CatError("typecat.reserved_name", "names starting with _ are reserved", { reference: r.name, end: r.target.end });
+    add(r.holder.type, { name: r.holder.end, what: `reference ${r.name}`, module: m });
+    const back = { name: r.target.end, what: `opposite end of ${r.name}`, module: m };
+    if (r.target.type === "*") for (const t of types) add(t.name, back);
+    else add(r.target.type, back);
+  }
+  const byName = new Map(types.map((t) => [t.name, t]));
+  for (const t of types) {
+    const all = [];
+    for (let cur = t, depth = 0; cur && depth < 64; cur = byName.get(cur.extends), depth++) all.push(...own.get(cur.name));
+    const seen = new Map();
+    for (const e of all) {
+      for (const prev of seen.get(e.name) ?? []) {
+        if (prev.what === e.what) continue;
+        if (prev.module === e.module || prev.module === "base" || e.module === "base")
+          throw new CatError("typecat.name_conflict", "name used twice at a type", { type: t.name, name: e.name, first: prev.what, second: e.what });
+      }
+      seen.set(e.name, [...(seen.get(e.name) ?? []), e]);
+    }
+  }
 }
 
 // Aspect: object literals become ordered lists (the order of keys is the display order).
