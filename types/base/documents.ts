@@ -10,6 +10,7 @@ export class Mail {
   @indexed receivedAt!: DateTime;
   @indexed sender!: Formatted<"email">;
   @indexed subject!: string;
+  recipients?: Formatted<"email">[];
   messageId?: string;
 }
 

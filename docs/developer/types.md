@@ -58,7 +58,9 @@ or `*`. `room`: `root` or a room of the module. `includes` lists roles that a ro
 
 ## Aspects (views)
 
-An aspect describes how objects are traversed and shown: an entry type with optional grouping,
+An aspect describes how objects are traversed and shown (a view: objects are stored once,
+the aspect only arranges them). If a grouping expression yields several values, the object
+appears under each of them, and group counts are occurrences. An aspect has an entry type with optional grouping,
 and per type the attributes, sub nodes (direct or in folders), files, tabs and functions. Paths
 are FHIRPath expressions (strict standard; profile "views": `where`, `ofType`, `first`, `last`,
 `count`, `exists`, `empty`, `not`, `toString`, `substring`, `upper`, `lower`). Names starting with

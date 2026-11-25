@@ -319,15 +319,17 @@ impl Store {
                 let mut hits = vec![];
                 'obj: for s in all {
                     let focus = [Item::Obj(s.id)];
+                    // a multi-valued expression places the object under each of its values
                     for (i, k) in prefix.iter().enumerate() {
                         let v = eval(nav, &exprs[i], &focus).await?;
-                        if v.first().map(|x| display(&x.to_json())) != Some(k.clone()) {
+                        if !v.iter().any(|x| &display(&x.to_json()) == k) {
                             continue 'obj;
                         }
                     }
                     if level < exprs.len() {
-                        if let Some(k) = eval(nav, &exprs[level], &focus).await?.first() {
-                            *groups.entry(display(&k.to_json())).or_default() += 1;
+                        let keys: BTreeSet<String> = eval(nav, &exprs[level], &focus).await?.iter().map(|x| display(&x.to_json())).collect();
+                        for k in keys {
+                            *groups.entry(k).or_default() += 1;
                         }
                     } else {
                         hits.push(s.id);
@@ -346,6 +348,7 @@ impl Store {
                     for id in hits {
                         out.extend(self.object_out(nav, a, id, lang).await?);
                     }
+                    out.sort_by(|x, y| x.display_name.cmp(&y.display_name));
                     Ok(out)
                 }
             }

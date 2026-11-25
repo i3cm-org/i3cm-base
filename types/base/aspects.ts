@@ -17,3 +17,14 @@ export const mailbox = aspect("mailbox", {
     },
   },
 });
+
+/** Mails by recipient: a mail with several recipients appears under each of them (the mail exists once). */
+export const recipients = aspect("recipients", {
+  entry: { type: "base:Mail", groupBy: ["recipients"] },
+  nodes: {
+    "base:Mail": {
+      attributes: { sender: "sender", subject: "subject", received: "receivedAt" },
+      files: { "mail.eml": "_content", "mail.md": "_texts.`mail.md`" },
+    },
+  },
+});

@@ -33,3 +33,7 @@ base-mailbox--label-reply = Antworten
 ## Built-in views
 base--label-_id = Nach Kennung
 base--label-_type = Nach Typ
+
+## Aspect recipients
+base-recipients--label-_name = Mails nach Empfänger
+base-recipients--base-Mail-name = { $sender } - { $subject }

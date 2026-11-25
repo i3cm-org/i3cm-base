@@ -488,3 +488,22 @@ async fn builtin_views() {
     assert!(lea.aspect_children("_type", "").await.unwrap().iter().all(|t| t.display_name != "base:Mail"));
     assert!(lea.aspect_node("_id", &node).await.is_err());
 }
+
+#[tokio::test]
+async fn multi_valued_group_by() {
+    let env = env().await;
+    let mut o = Order::new();
+    o.create("m1", None, json!({"base:Mail": {"receivedAt": "2026-11-24T08:00:00Z", "sender": "anna@example.org", "subject": "Angebot", "recipients": ["ben@example.org", "carla@example.org", "ben@example.org"]}}));
+    o.create("m2", None, json!({"base:Mail": {"receivedAt": "2026-11-24T09:00:00Z", "sender": "ben@example.org", "subject": "Frage", "recipients": ["carla@example.org"]}}));
+    o.create("m3", None, json!({"base:Mail": {"receivedAt": "2026-11-24T10:00:00Z", "sender": "carla@example.org", "subject": "Ohne"}}));
+    env.admin.order(&o).await.unwrap();
+
+    let de = env.admin.clone().with_lang("de");
+    let groups = de.aspect_children("base:recipients", "").await.unwrap();
+    // the mail exists once but appears under each of its (distinct) recipients; counts are occurrences
+    assert_eq!(groups.iter().map(|g| (g.display_name.as_str(), g.count)).collect::<Vec<_>>(), vec![("ben@example.org", Some(1)), ("carla@example.org", Some(2))]);
+    let carla = de.aspect_children("base:recipients", &groups[1].node).await.unwrap();
+    assert_eq!(carla.iter().map(|m| m.display_name.as_str()).collect::<Vec<_>>(), vec!["anna@example.org - Angebot", "ben@example.org - Frage"]);
+    let ben = de.aspect_children("base:recipients", &groups[0].node).await.unwrap();
+    assert_eq!(ben[0].id, carla[0].id, "same object under both groups");
+}
