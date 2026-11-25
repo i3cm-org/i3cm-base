@@ -29,3 +29,7 @@ base-mailbox--label-attachmentCount = Attachments
 base-mailbox--label-attachments = Attachments
 base-mailbox--label-file = File
 base-mailbox--label-reply = Reply
+
+## Built-in views
+base--label-_id = By id
+base--label-_type = By type

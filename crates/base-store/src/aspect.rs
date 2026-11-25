@@ -17,6 +17,22 @@ use uuid::Uuid;
 
 const MAX_LIST: i64 = 1000;
 
+/// Built-in view: every object by its id (the stable address; the root lists nothing).
+pub const VIEW_ID: &str = "_id";
+/// Built-in view: objects by type (type, then objects; sub-nodes are files and named ends).
+pub const VIEW_TYPE: &str = "_type";
+
+fn is_builtin(a: &str) -> bool {
+    a == VIEW_ID || a == VIEW_TYPE
+}
+
+/// Paging of a children listing (used by built-in views; module aspects group instead).
+#[derive(Debug, Clone, Copy, Default)]
+pub struct Page {
+    pub offset: i64,
+    pub limit: Option<i64>,
+}
+
 /// Navigator over the store for one request; sees only what the caller may read.
 pub struct StoreNav<'a> {
     store: &'a Store,
@@ -29,7 +45,7 @@ impl<'a> StoreNav<'a> {
         StoreNav { store, ctx, cache: Mutex::new(HashMap::new()) }
     }
 
-    async fn view(&self, id: Uuid) -> Result<Option<Arc<ObjectView>>> {
+    pub(crate) async fn view(&self, id: Uuid) -> Result<Option<Arc<ObjectView>>> {
         if let Some(v) = self.cache.lock().unwrap().get(&id) {
             return Ok(v.clone());
         }
@@ -206,10 +222,14 @@ impl Store {
     }
 
     pub fn aspect_list(&self, lang: &str) -> Vec<Value> {
-        self.model
-            .aspects()
-            .map(|a| serde_json::json!({"name": a.name, "displayName": self.i18n.label(&a.name, lang, "_name").replace("_name", &a.name), "entry": a.entry.type_name}))
-            .collect()
+        let mut out: Vec<Value> = [VIEW_ID, VIEW_TYPE]
+            .iter()
+            .map(|a| serde_json::json!({"name": a, "displayName": self.i18n.label("base", lang, a), "builtin": true}))
+            .collect();
+        out.extend(self.model.aspects().map(|a| {
+            serde_json::json!({"name": a.name, "displayName": self.i18n.label(&a.name, lang, "_name").replace("_name", &a.name), "entry": a.entry.type_name})
+        }));
+        out
     }
 
     async fn object_out(&self, nav: &StoreNav<'_>, a: &AspectDef, id: Uuid, lang: &str) -> Result<Option<NodeOut>> {
@@ -374,6 +394,13 @@ impl Store {
     }
 
     pub async fn aspect_children(&self, ctx: &Ctx, aspect: &str, node: &str, lang: &str) -> Result<Vec<NodeOut>> {
+        self.aspect_children_paged(ctx, aspect, node, lang, Page::default()).await
+    }
+
+    pub async fn aspect_children_paged(&self, ctx: &Ctx, aspect: &str, node: &str, lang: &str, page: Page) -> Result<Vec<NodeOut>> {
+        if is_builtin(aspect) {
+            return self.builtin_children(ctx, aspect, node, lang, page).await;
+        }
         let a = self.aspect_def(aspect)?;
         let nav = StoreNav::new(self, ctx);
         match parse_node(node)? {
@@ -422,6 +449,9 @@ impl Store {
     }
 
     pub async fn aspect_node(&self, ctx: &Ctx, aspect: &str, node: &str, lang: &str) -> Result<NodeDetail> {
+        if is_builtin(aspect) {
+            return self.builtin_node(ctx, aspect, node, lang).await;
+        }
         let a = self.aspect_def(aspect)?;
         let nav = StoreNav::new(self, ctx);
         let id = match parse_node(node)? {
@@ -477,6 +507,9 @@ impl Store {
 
     /// Content of a file of an object node: (bytes, media type).
     pub async fn aspect_file(&self, ctx: &Ctx, aspect: &str, node: &str, name: &str) -> Result<(Vec<u8>, String)> {
+        if is_builtin(aspect) {
+            return self.builtin_file(ctx, node, name).await;
+        }
         let a = self.aspect_def(aspect)?;
         let nav = StoreNav::new(self, ctx);
         let NodeRef::Object(id) = parse_node(node)? else {
@@ -487,6 +520,179 @@ impl Store {
         let attrs = StoreNav::attrs(&v);
         let files = self.files_of(&nav, id, n, &attrs).await?;
         let (_, it) = files.into_iter().find(|(f, _)| f == name).ok_or_else(|| BaseError::not_found("aspect.no_file", "no such file").with("name", name))?;
+        match it {
+            Item::Content(x) => {
+                let (data, media, _) = self.get_content(ctx, x).await?;
+                Ok((data, media))
+            }
+            Item::Text(x, tt) => {
+                let (content, media) = self.get_text(ctx, x, &tt).await?;
+                Ok((content.into_bytes(), format!("{media}; charset=utf-8")))
+            }
+            _ => Err(BaseError::not_found("aspect.no_file", "no such file")),
+        }
+    }
+
+    // ---- built-in views (`_id`, `_type`): derived from the catalog, no definition needed ----
+
+    fn group_out(node: String, name: String, count: Option<i64>) -> NodeOut {
+        NodeOut { node, kind: "group".into(), display_name: name, display_description: String::new(), count, type_name: None, id: None }
+    }
+
+    /// Object node with the global display texts.
+    async fn plain_object_out(&self, nav: &StoreNav<'_>, id: Uuid, lang: &str) -> Result<Option<NodeOut>> {
+        let Some(v) = nav.view(id).await? else { return Ok(None) };
+        let t = v.types.iter().find(|x| !x.implied).or(v.types.first()).map(|x| x.type_name.clone()).unwrap_or_default();
+        let mut attrs = StoreNav::attrs(&v);
+        for anc in self.model.ancestors(&t) {
+            for x in &anc.attributes {
+                attrs.entry(x.name.clone()).or_insert_with(|| Value::String(String::new()));
+            }
+        }
+        let (n, d) = self.i18n.names_in(None, lang, &t, &attrs);
+        Ok(Some(NodeOut { node: format!("o:{id}"), kind: "object".into(), display_name: n, display_description: d, count: None, type_name: Some(t), id: Some(id) }))
+    }
+
+    /// Files of an object in the built-in views: its content and its texts.
+    fn plain_files(v: &ObjectView) -> Vec<(String, Item)> {
+        let mut out = vec![];
+        if let Some(c) = &v.content {
+            let name = c.get("filename").and_then(|x| x.as_str()).filter(|x| !x.is_empty()).unwrap_or("content").replace('/', "_");
+            out.push((name, Item::Content(v.id)));
+        }
+        for t in &v.texts {
+            let local = t.split_once(':').map(|x| x.1).unwrap_or(t);
+            out.push((local.replace('/', "_"), Item::Text(v.id, t.clone())));
+        }
+        out
+    }
+
+    /// Named ends of the object that currently hold at least one readable object.
+    async fn filled_ends(&self, ctx: &Ctx, v: &ObjectView) -> Result<Vec<String>> {
+        let set: BTreeSet<String> = v.types.iter().map(|t| t.type_name.clone()).collect();
+        let mut names: Vec<String> = self
+            .model
+            .ends_for(&set)
+            .into_iter()
+            .map(|(r, side)| match side {
+                base_core::catalog::Side::Holder => r.holder.end.clone(),
+                base_core::catalog::Side::Target => r.target.end.clone(),
+            })
+            .filter(|n| !n.is_empty())
+            .collect();
+        names.sort();
+        names.dedup();
+        let mut out = vec![];
+        for n in names {
+            if !self.ends(ctx, v.id, &n, 1, 0, "en").await?.is_empty() {
+                out.push(n);
+            }
+        }
+        Ok(out)
+    }
+
+    async fn count_of_type(&self, ctx: &Ctx, t: &str) -> Result<i64> {
+        let def = self.model.require_type(t)?;
+        let rooms = self.readable_rooms_for(ctx, t);
+        if rooms.is_empty() {
+            return Ok(0);
+        }
+        let sql = format!(
+            "SELECT count(*) FROM {} x JOIN object_state s ON s.tenant_id=x.tenant_id AND s.object_id=x.object_id AND s.valid_to IS NULL AND s.deleted_at IS NULL AND s.room_id = ANY($2) \
+             WHERE x.tenant_id=$1 AND x.valid_to IS NULL AND x.deleted_at IS NULL",
+            type_table(def)
+        );
+        let c = self.client().await?;
+        Ok(c.query_one(&sql, &[&ctx.tenant, &rooms]).await.map_err(db)?.get(0))
+    }
+
+    async fn builtin_children(&self, ctx: &Ctx, aspect: &str, node: &str, lang: &str, page: Page) -> Result<Vec<NodeOut>> {
+        let nav = StoreNav::new(self, ctx);
+        let limit = page.limit.unwrap_or(MAX_LIST).clamp(1, MAX_LIST);
+        match (aspect, parse_node(node)?) {
+            (VIEW_ID, NodeRef::Root) => Ok(vec![]),
+            (VIEW_TYPE, NodeRef::Root) => {
+                let mut out = vec![];
+                for t in &self.model.catalog.types {
+                    let n = self.count_of_type(ctx, &t.name).await?;
+                    if n > 0 {
+                        out.push(Self::group_out(format!("g:{}", esc(&t.name)), t.name.clone(), Some(n)));
+                    }
+                }
+                Ok(out)
+            }
+            (VIEW_TYPE, NodeRef::Group(keys)) if keys.len() == 1 => {
+                let q = crate::read::ListQuery { limit: Some(limit), offset: Some(page.offset), ..Default::default() };
+                let mut out = vec![];
+                for s in self.list(ctx, &keys[0], &q, lang).await? {
+                    out.extend(self.plain_object_out(&nav, s.id, lang).await?);
+                }
+                Ok(out)
+            }
+            (_, NodeRef::Object(id)) => {
+                let v = nav.view(id).await?.ok_or_else(|| BaseError::not_found("object.not_found", "object not found"))?;
+                let mut out: Vec<NodeOut> = Self::plain_files(&v)
+                    .into_iter()
+                    .map(|(name, _)| NodeOut { node: format!("o:{id}"), kind: "file".into(), display_name: name, display_description: String::new(), count: None, type_name: None, id: Some(id) })
+                    .collect();
+                for e in self.filled_ends(ctx, &v).await? {
+                    out.push(NodeOut { node: format!("f:{id}:{e}"), kind: "folder".into(), display_name: e, display_description: String::new(), count: None, type_name: None, id: None });
+                }
+                Ok(out)
+            }
+            (_, NodeRef::Folder(id, end)) => {
+                let mut out = vec![];
+                for s in self.ends(ctx, id, &end, limit, page.offset, lang).await? {
+                    out.extend(self.plain_object_out(&nav, s.id, lang).await?);
+                }
+                Ok(out)
+            }
+            _ => Err(BaseError::invalid("aspect.bad_node", "unknown node id").with("node", node)),
+        }
+    }
+
+    async fn builtin_node(&self, ctx: &Ctx, aspect: &str, node: &str, lang: &str) -> Result<NodeDetail> {
+        let nav = StoreNav::new(self, ctx);
+        let empty = |n: NodeOut| NodeDetail { node: n, attributes: vec![], tabs: vec![], files: vec![], functions: vec![] };
+        match (aspect, parse_node(node)?) {
+            (VIEW_TYPE, NodeRef::Group(keys)) if keys.len() == 1 => {
+                let (n, _) = self.i18n.names(lang, &keys[0], &Map::new());
+                let mut g = Self::group_out(node.to_string(), keys[0].clone(), Some(self.count_of_type(ctx, &keys[0]).await?));
+                g.display_description = n;
+                Ok(empty(g))
+            }
+            (_, NodeRef::Object(id)) => {
+                let out = self.plain_object_out(&nav, id, lang).await?.ok_or_else(|| BaseError::not_found("object.not_found", "object not found"))?;
+                let v = nav.view(id).await?.ok_or_else(|| BaseError::not_found("object.not_found", "object not found"))?;
+                let mut attributes = vec![
+                    LabeledValues { key: "_id".into(), label: "_id".into(), values: vec![Value::String(id.to_string())] },
+                    LabeledValues { key: "_room".into(), label: "_room".into(), values: vec![Value::String(v.room.to_string())] },
+                    LabeledValues { key: "_type".into(), label: "_type".into(), values: v.types.iter().map(|t| Value::String(t.type_name.clone())).collect() },
+                ];
+                for p in &v.parts {
+                    for (k, x) in &p.attributes {
+                        let values = match x {
+                            Value::Null => vec![],
+                            Value::Array(a) => a.clone(),
+                            o => vec![o.clone()],
+                        };
+                        attributes.push(LabeledValues { key: k.clone(), label: k.clone(), values });
+                    }
+                }
+                let files = Self::plain_files(&v).into_iter().map(|(n, _)| n).collect();
+                Ok(NodeDetail { node: out, attributes, tabs: vec![], files, functions: vec![] })
+            }
+            _ => Err(BaseError::invalid("aspect.bad_node", "details exist for objects and types")),
+        }
+    }
+
+    async fn builtin_file(&self, ctx: &Ctx, node: &str, name: &str) -> Result<(Vec<u8>, String)> {
+        let nav = StoreNav::new(self, ctx);
+        let NodeRef::Object(id) = parse_node(node)? else {
+            return Err(BaseError::invalid("aspect.bad_node", "files belong to object nodes"));
+        };
+        let v = nav.view(id).await?.ok_or_else(|| BaseError::not_found("object.not_found", "object not found"))?;
+        let (_, it) = Self::plain_files(&v).into_iter().find(|(f, _)| f == name).ok_or_else(|| BaseError::not_found("aspect.no_file", "no such file").with("name", name))?;
         match it {
             Item::Content(x) => {
                 let (data, media, _) = self.get_content(ctx, x).await?;

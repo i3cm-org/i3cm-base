@@ -375,6 +375,10 @@ impl Client {
     pub async fn aspect_children(&self, aspect: &str, node: &str) -> Result<Vec<AspectNode>> {
         self.get_q(&format!("/aspects/{aspect}/children"), &[("node", node)]).await
     }
+    /// Children of a node, one page (built-in views page their long listings).
+    pub async fn aspect_children_page(&self, aspect: &str, node: &str, offset: i64, limit: i64) -> Result<Vec<AspectNode>> {
+        self.get_q(&format!("/aspects/{aspect}/children"), &[("node", node), ("offset", &offset.to_string()), ("limit", &limit.to_string())]).await
+    }
     pub async fn aspect_node(&self, aspect: &str, node: &str) -> Result<Value> {
         self.get_q(&format!("/aspects/{aspect}/node"), &[("node", node)]).await
     }

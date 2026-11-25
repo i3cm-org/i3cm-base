@@ -29,3 +29,7 @@ base-mailbox--label-attachmentCount = Anzahl Anhänge
 base-mailbox--label-attachments = Anhänge
 base-mailbox--label-file = Datei
 base-mailbox--label-reply = Antworten
+
+## Built-in views
+base--label-_id = Nach Kennung
+base--label-_type = Nach Typ

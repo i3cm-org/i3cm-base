@@ -324,6 +324,8 @@ struct NodeQ {
     #[serde(default)]
     node: String,
     name: Option<String>,
+    offset: Option<i64>,
+    limit: Option<i64>,
 }
 
 #[derive(Deserialize)]
@@ -338,7 +340,7 @@ async fn aspects(State(s): State<Store>, h: HeaderMap) -> R<Json<Value>> {
 
 async fn aspect_children(State(s): State<Store>, h: HeaderMap, Path(a): Path<String>, Query(q): Query<NodeQ>) -> R<Json<Value>> {
     let r = auth(&s, &h).await?;
-    Ok(Json(serde_json::to_value(s.aspect_children(&r.ctx, &a, &q.node, &r.lang).await?).unwrap_or_default()))
+    Ok(Json(serde_json::to_value(s.aspect_children_paged(&r.ctx, &a, &q.node, &r.lang, base_store::aspect::Page { offset: q.offset.unwrap_or(0).max(0), limit: q.limit }).await?).unwrap_or_default()))
 }
 
 async fn aspect_node(State(s): State<Store>, h: HeaderMap, Path(a): Path<String>, Query(q): Query<NodeQ>) -> R<Json<Value>> {

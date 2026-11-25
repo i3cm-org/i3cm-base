@@ -438,3 +438,53 @@ async fn mailbox_aspect() {
     let (_, lea) = env.person("lea", &[]).await;
     assert!(lea.aspect_children("base:mailbox", "").await.unwrap().is_empty());
 }
+
+#[tokio::test]
+async fn builtin_views() {
+    let env = env().await;
+    let mut o = Order::new();
+    o.create("m", None, json!({"base:Mail": {"receivedAt": "2026-11-24T08:15:00+01:00", "sender": "anna@example.org", "subject": "Angebot"}}));
+    for j in 0..2 {
+        let a = format!("a{j}");
+        o.create(&a, None, json!({"base:MailAttachment": {"filename": format!("file{j}.pdf")}}));
+        o.link("base:MailAttachment.mail", a.as_str(), "m");
+    }
+    let r = env.admin.order(&o).await.unwrap();
+    let m = r.created["m"];
+    env.admin.put_content(m, b"From: anna\r\n\r\nHallo".to_vec(), "message/rfc822", None).await.unwrap();
+    env.admin.put_text(m, "base:mail.md", "# Hallo").await.unwrap();
+
+    let de = env.admin.clone().with_lang("de");
+    let list = de.aspects().await.unwrap();
+    assert_eq!(list[0]["name"], json!("_id"));
+    assert_eq!(list[1]["displayName"], json!("Nach Typ"));
+
+    // _type: types with counts, then objects, then files and filled ends
+    let types = de.aspect_children("_type", "").await.unwrap();
+    let mail = types.iter().find(|t| t.display_name == "base:Mail").expect("type folder");
+    assert_eq!(mail.count, Some(1));
+    assert_eq!(types.iter().find(|t| t.display_name == "base:MailAttachment").unwrap().count, Some(2));
+    let mails = de.aspect_children("_type", &mail.node).await.unwrap();
+    assert_eq!(mails.len(), 1);
+    let inside = de.aspect_children("_type", &mails[0].node).await.unwrap();
+    let names: Vec<(&str, &str)> = inside.iter().map(|n| (n.kind.as_str(), n.display_name.as_str())).collect();
+    assert_eq!(names, vec![("file", "content"), ("file", "mail.md"), ("folder", "attachments")]);
+    assert_eq!(de.aspect_children("_type", &inside[2].node).await.unwrap().len(), 2);
+    let page = de.aspect_children_page("_type", &inside[2].node, 1, 1).await.unwrap();
+    assert_eq!(page.len(), 1);
+    assert_eq!(page[0].display_name, "file1.pdf");
+    assert_eq!(de.aspect_file("_type", &mails[0].node, "mail.md").await.unwrap(), b"# Hallo");
+
+    // _id: the root lists nothing, every object is reachable by its id
+    assert!(de.aspect_children("_id", "").await.unwrap().is_empty());
+    let node = format!("o:{m}");
+    assert_eq!(de.aspect_children("_id", &node).await.unwrap().len(), 3);
+    let detail = de.aspect_node("_id", &node).await.unwrap();
+    assert_eq!(detail["attributes"][0]["values"], json!([m.to_string()]));
+    assert!(detail["attributes"].as_array().unwrap().iter().any(|a| a["key"] == json!("subject")));
+
+    // without read rights nothing is visible
+    let (_, lea) = env.person("lea", &[]).await;
+    assert!(lea.aspect_children("_type", "").await.unwrap().iter().all(|t| t.display_name != "base:Mail"));
+    assert!(lea.aspect_node("_id", &node).await.is_err());
+}
