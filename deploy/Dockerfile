@@ -9,6 +9,9 @@ RUN node tools/typecat/typecat.mjs types --out /catalog.json
 
 # Build the server
 FROM rust:1-bookworm AS build
+# build stamp: docker build --build-arg I3CM_REV=$(git rev-parse --short=12 HEAD)
+ARG I3CM_REV=unknown
+ENV I3CM_REV=$I3CM_REV
 WORKDIR /src
 COPY Cargo.toml Cargo.lock ./
 COPY crates crates
