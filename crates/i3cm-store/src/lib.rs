@@ -12,6 +12,7 @@ pub mod order;
 pub mod read;
 pub mod rights;
 pub mod schema;
+pub mod session;
 pub mod sql;
 pub mod tenant;
 pub mod write;

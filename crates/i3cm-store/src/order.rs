@@ -14,7 +14,7 @@ use i3cm_core::{BaseError, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
-use tokio_postgres::Transaction;
+use tokio_postgres::Client;
 use uuid::Uuid;
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -82,16 +82,16 @@ fn create_art(t: &str) -> Art {
     if t == GROUP_MEMBERSHIP { Art::Grant } else { Art::Create }
 }
 
-struct Exec<'a, 'b> {
-    tx: &'a Transaction<'b>,
-    m: &'a Model,
-    ctx: &'a mut Ctx,
-    txn: i64,
-    local: HashMap<String, Uuid>,
-    new_objects: BTreeSet<Uuid>,
-    touched: BTreeSet<Uuid>,
-    detached: BTreeSet<Uuid>,
-    links: Vec<Uuid>,
+pub(crate) struct Exec<'a> {
+    pub(crate) tx: &'a Client,
+    pub(crate) m: &'a Model,
+    pub(crate) ctx: &'a mut Ctx,
+    pub(crate) txn: i64,
+    pub(crate) local: HashMap<String, Uuid>,
+    pub(crate) new_objects: BTreeSet<Uuid>,
+    pub(crate) touched: BTreeSet<Uuid>,
+    pub(crate) detached: BTreeSet<Uuid>,
+    pub(crate) links: Vec<Uuid>,
 }
 
 fn denied(art: Art, t: &str) -> BaseError {
@@ -103,54 +103,24 @@ impl Store {
         if order.ops.is_empty() {
             return Err(BaseError::invalid("order.empty", "order without operations"));
         }
-        let mut client = self.client().await?;
-        let tx = client.transaction().await.map_err(db)?;
-        let txn: i64 = tx.query_one("SELECT nextval('txn_seq')", &[]).await.map_err(db)?.get(0);
-        tx.execute("INSERT INTO txn (tenant_id, id, account) VALUES ($1, $2, $3)", &[&ctx.tenant, &txn, &ctx.me()])
-            .await
-            .map_err(db)?;
         let rooms_before = ctx.rooms.clone();
-        let mut ex = Exec {
-            tx: &tx,
-            m: &self.model,
-            ctx,
-            txn,
-            local: HashMap::new(),
-            new_objects: BTreeSet::new(),
-            touched: BTreeSet::new(),
-            detached: BTreeSet::new(),
-            links: vec![],
-        };
-        let res = async {
-            for (i, op) in order.ops.iter().enumerate() {
-                ex.apply(op).await.map_err(|e| e.with("op_index", i))?;
-            }
-            ex.check_end_state().await
-        }
-        .await;
-        let created: BTreeMap<String, Uuid> = ex.local.clone().into_iter().collect();
-        let links = ex.links.clone();
-        drop(ex);
-        match res {
-            Ok(()) if !order.dry_run => {
-                tx.commit().await.map_err(db)?;
-                Ok(OrderResult { txn, dry_run: false, created, links })
-            }
-            Ok(()) => {
-                tx.rollback().await.map_err(db)?;
+        let mut sess = self.begin(ctx, &crate::session::Audit::default()).await?;
+        for (i, op) in order.ops.iter().enumerate() {
+            if let Err(e) = sess.apply(self, ctx, op).await {
+                sess.abort().await;
                 ctx.rooms = rooms_before;
-                Ok(OrderResult { txn, dry_run: true, created, links })
-            }
-            Err(e) => {
-                let _ = tx.rollback().await;
-                ctx.rooms = rooms_before;
-                Err(e)
+                return Err(e.with("op_index", i));
             }
         }
+        let res = sess.finish(self, ctx, !order.dry_run).await;
+        if res.is_err() || order.dry_run {
+            ctx.rooms = rooms_before;
+        }
+        res
     }
 }
 
-impl Exec<'_, '_> {
+impl Exec<'_> {
     fn tenant(&self) -> Uuid {
         self.ctx.tenant
     }
@@ -366,7 +336,7 @@ impl Exec<'_, '_> {
         Ok(out)
     }
 
-    async fn apply(&mut self, op: &Op) -> Result<()> {
+    pub(crate) async fn apply(&mut self, op: &Op) -> Result<()> {
         let tenant = self.tenant();
         match op {
             Op::Create { local, room, types } => {
@@ -698,7 +668,7 @@ impl Exec<'_, '_> {
         Ok(self.tx.query_one(&sql, &[&self.tenant(), &id]).await.map_err(db)?.get(0))
     }
 
-    async fn check_end_state(&mut self) -> Result<()> {
+    pub(crate) async fn check_end_state(&mut self) -> Result<()> {
         let tenant = self.tenant();
         let mut violations: Vec<Value> = vec![];
         for id in self.touched.clone() {

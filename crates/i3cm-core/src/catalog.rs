@@ -27,6 +27,46 @@ pub struct Module {
     pub i18n: BTreeMap<String, String>,
     #[serde(default)]
     pub aspects: Vec<AspectDef>,
+    #[serde(default)]
+    pub operations: Vec<OperationDef>,
+    #[serde(default)]
+    pub hooks: Vec<HookDef>,
+    #[serde(default)]
+    pub schedules: Vec<ScheduleDef>,
+    #[serde(default)]
+    pub carriers: Vec<CarrierDef>,
+}
+
+/// An operation exported by a module's WebAssembly component.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OperationDef {
+    pub name: String,
+    /// Carriers of the same module the operation may impersonate (DEC-117).
+    #[serde(default)]
+    pub impersonates: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HookDef {
+    #[serde(rename = "type")]
+    pub type_name: String,
+    pub on: String,
+    pub phase: String,
+    pub op: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ScheduleDef {
+    pub op: String,
+    pub rrule: String,
+}
+
+/// A rights carrier owned by a module: an agent account created on activation.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CarrierDef {
+    pub name: String,
+    #[serde(default)]
+    pub profiles: Vec<String>,
 }
 
 /// A business aspect: traversal and display rules (views).

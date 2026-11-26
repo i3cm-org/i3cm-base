@@ -49,6 +49,16 @@ ALTER TABLE token ADD COLUMN IF NOT EXISTS last_used timestamptz;
 CREATE UNIQUE INDEX IF NOT EXISTS token_id ON token (id);
 CREATE INDEX IF NOT EXISTS token_account ON token (tenant_id, account);
 ALTER TABLE profile_right ADD COLUMN IF NOT EXISTS cond text;
+DO $$ BEGIN
+  IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema = current_schema() AND table_name = 'txn' AND column_name = 'module') THEN
+    ALTER TABLE txn ADD COLUMN module text, ADD COLUMN function text, ADD COLUMN tool text;
+  END IF;
+END $$;
+CREATE TABLE IF NOT EXISTS txn_audit (tenant_id uuid NOT NULL, txn bigint NOT NULL, seq int NOT NULL, depth int NOT NULL, module text, function text, identity uuid NOT NULL, action text NOT NULL, target text, PRIMARY KEY (tenant_id, txn, seq));
+CREATE TABLE IF NOT EXISTS module_install (name text PRIMARY KEY, version text NOT NULL, sha256 text NOT NULL, installed_at timestamptz NOT NULL DEFAULT now(), catalog jsonb NOT NULL);
+CREATE TABLE IF NOT EXISTS module_active (tenant_id uuid NOT NULL, name text NOT NULL, activated_at timestamptz NOT NULL DEFAULT now(), txn bigint, PRIMARY KEY (tenant_id, name));
+CREATE TABLE IF NOT EXISTS schedule_run (tenant_id uuid NOT NULL, module text NOT NULL, op text NOT NULL, due timestamptz NOT NULL, done_at timestamptz, worker text, result text, PRIMARY KEY (tenant_id, module, op, due));
+CREATE INDEX IF NOT EXISTS schedule_run_open ON schedule_run (due) WHERE done_at IS NULL;
 CREATE TABLE IF NOT EXISTS module_room (tenant_id uuid NOT NULL, name text NOT NULL, room_id uuid NOT NULL, PRIMARY KEY (tenant_id, name));
 "#;
 

@@ -72,6 +72,18 @@ export type Art = "read" | "write" | "create" | "place" | "remove" | "delete" | 
 export interface RightDef { sign: Sign; art: Art[]; types: string[]; room: string; when?: string }
 export interface ProfileDef { name: string; guardian?: boolean; includes?: string[]; rights: RightDef[] }
 
+/* ---------- module code (WebAssembly component) ---------- */
+/** An operation exported by the module's component. `impersonates`: carriers of this module the
+ *  operation may swap to with `conn.impersonate` (DEC-117). */
+export interface OperationDef { name: string; impersonates?: string[] }
+/** A hook: the module's operation `op` runs `before` or `after` `create`, `update` or `delete` of
+ *  objects carrying `type`. A `before` hook may reject the order. */
+export interface HookDef { type: string; on: "create" | "update" | "delete"; phase: "before" | "after"; op: string }
+/** A scheduled run of operation `op` per tenant, RRULE (RFC 5545), in the module's own identity. */
+export interface ScheduleDef { op: string; rrule: string }
+/** A rights carrier owned by the module (an agent account created on activation). */
+export interface CarrierDef { name: string; profiles: string[] }
+
 /* ---------- aspects (views) ---------- */
 /** Paths are FHIRPath expressions relative to the node object. */
 export interface NodeDef {

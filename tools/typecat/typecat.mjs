@@ -143,7 +143,7 @@ export function buildCatalog(typesDir, opts = {}) {
   const uiDirs = new Map(); // module name -> ui directory
   for (const dir of moduleDirs) {
     const files = program.getSourceFiles().filter((sf) => !sf.isDeclarationFile && ownerOf(path.dirname(sf.fileName)) === dir);
-    const mod = { name: null, requires: [], rooms: [], profiles: [], i18n: {}, aspects: [] };
+    const mod = { name: null, requires: [], rooms: [], profiles: [], i18n: {}, aspects: [], operations: [], hooks: [], schedules: [], carriers: [] };
     const ownTypes = [], ownRefs = [];
     for (const sf of files) {
       if (path.basename(sf.fileName) === "module.ts") {
@@ -154,6 +154,10 @@ export function buildCatalog(typesDir, opts = {}) {
             if (d.name.getText() === "module") { mod.name = v.name; mod.requires = v.requires ?? []; }
             if (d.name.getText() === "rooms") mod.rooms = v;
             if (d.name.getText() === "profiles") mod.profiles = v;
+            if (d.name.getText() === "operations") mod.operations = v;
+            if (d.name.getText() === "hooks") mod.hooks = v;
+            if (d.name.getText() === "schedules") mod.schedules = v;
+            if (d.name.getText() === "carriers") mod.carriers = v;
           }
         }
         continue;
@@ -257,6 +261,25 @@ export function buildCatalog(typesDir, opts = {}) {
     if (fs.existsSync(path.join(dir, "ui"))) uiDirs.set(mod.name, path.join(dir, "ui"));
     mod.profiles = mod.profiles.map((r) => ({ ...r, name: `${mod.name}:${r.name}`, includes: r.includes ?? [], guardian: !!r.guardian }));
     mod.aspects = mod.aspects.map((a) => ({ ...a, name: `${mod.name}:${a.name}` }));
+    const q = (n) => (n.includes(":") ? n : `${mod.name}:${n}`);
+    mod.carriers = mod.carriers.map((c) => ({ name: q(c.name), profiles: (c.profiles ?? []).map(q) }));
+    const opNames = new Set(mod.operations.map((o) => o.name));
+    mod.operations = mod.operations.map((o) => {
+      const imp = (o.impersonates ?? []).map(q);
+      for (const c of imp)
+        if (!mod.carriers.some((x) => x.name === c))
+          throw new CatError("typecat.foreign_carrier", "an operation may only impersonate carriers of its own module", { module: mod.name, operation: o.name, carrier: c });
+      return { name: o.name, impersonates: imp };
+    });
+    for (const h of mod.hooks) {
+      if (!opNames.has(h.op)) throw new CatError("typecat.unknown_operation", "hook names an operation the module does not declare", { module: mod.name, op: h.op });
+      if (!["create", "update", "delete"].includes(h.on) || !["before", "after"].includes(h.phase))
+        throw new CatError("typecat.bad_hook", "hook needs on: create|update|delete and phase: before|after", { module: mod.name, op: h.op });
+    }
+    for (const sc of mod.schedules) {
+      if (!opNames.has(sc.op)) throw new CatError("typecat.unknown_operation", "schedule names an operation the module does not declare", { module: mod.name, op: sc.op });
+      if (!/^FREQ=/.test(sc.rrule)) throw new CatError("typecat.bad_rrule", "schedule needs an RRULE starting with FREQ=", { module: mod.name, op: sc.op });
+    }
     modules.push(mod);
   }
   const known = new Map();
