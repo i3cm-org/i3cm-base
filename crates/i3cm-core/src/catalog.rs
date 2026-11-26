@@ -35,6 +35,9 @@ pub struct Module {
     pub schedules: Vec<ScheduleDef>,
     #[serde(default)]
     pub carriers: Vec<CarrierDef>,
+    /// Delivered with the kernel and activated in every tenant at creation (DEC-138).
+    #[serde(default)]
+    pub mandatory: bool,
 }
 
 /// An operation exported by a module's WebAssembly component.
@@ -402,6 +405,47 @@ impl Model {
     /// Type that defines attribute `attr`, searching `t` and its supertypes.
     pub fn defining_type(&self, t: &str, attr: &str) -> Option<&TypeDef> {
         self.ancestors(t).into_iter().find(|a| a.attributes.iter().any(|x| x.name == attr))
+    }
+
+    /// Module (namespace) of a type or reference name.
+    pub fn module_of(name: &str) -> &str {
+        name.split(':').next().unwrap_or("")
+    }
+
+    /// Modules a tenant has without activation: the base and the mandatory ones.
+    pub fn is_default_module(&self, name: &str) -> bool {
+        name == "base" || self.catalog.modules.iter().any(|m| m.name == name && m.mandatory)
+    }
+
+    /// Closure under implications, leaving out types of modules not active in the tenant.
+    pub fn implied_closure_in(&self, attached: &BTreeSet<String>, inactive: &BTreeSet<String>) -> BTreeSet<String> {
+        if inactive.is_empty() {
+            return self.implied_closure(attached);
+        }
+        let mut set = attached.clone();
+        loop {
+            let mut added = false;
+            let snapshot: Vec<String> = set.iter().cloned().collect();
+            for t in &snapshot {
+                for a in self.ancestors(t) {
+                    for b in &a.brings {
+                        added |= set.insert(b.clone());
+                    }
+                }
+            }
+            for cand in &self.catalog.types {
+                if set.contains(&cand.name) || inactive.contains(Self::module_of(&cand.name)) {
+                    continue;
+                }
+                if cand.imprints_on.iter().any(|on| self.set_is_a(&set, on)) {
+                    set.insert(cand.name.clone());
+                    added = true;
+                }
+            }
+            if !added {
+                return set;
+            }
+        }
     }
 
     /// Closure of attached types under implications (brings, imprintsOn).

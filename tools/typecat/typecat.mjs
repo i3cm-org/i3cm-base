@@ -143,7 +143,7 @@ export function buildCatalog(typesDir, opts = {}) {
   const uiDirs = new Map(); // module name -> ui directory
   for (const dir of moduleDirs) {
     const files = program.getSourceFiles().filter((sf) => !sf.isDeclarationFile && ownerOf(path.dirname(sf.fileName)) === dir);
-    const mod = { name: null, requires: [], rooms: [], profiles: [], i18n: {}, aspects: [], operations: [], hooks: [], schedules: [], carriers: [] };
+    const mod = { name: null, requires: [], rooms: [], profiles: [], i18n: {}, aspects: [], operations: [], hooks: [], schedules: [], carriers: [], mandatory: false };
     const ownTypes = [], ownRefs = [];
     for (const sf of files) {
       if (path.basename(sf.fileName) === "module.ts") {
@@ -151,7 +151,7 @@ export function buildCatalog(typesDir, opts = {}) {
           if (!ts.isVariableStatement(st)) continue;
           for (const d of st.declarationList.declarations) {
             const v = d.initializer ? literalJson(d.initializer) : null;
-            if (d.name.getText() === "module") { mod.name = v.name; mod.requires = v.requires ?? []; }
+            if (d.name.getText() === "module") { mod.name = v.name; mod.requires = v.requires ?? []; mod.mandatory = !!v.mandatory; }
             if (d.name.getText() === "rooms") mod.rooms = v;
             if (d.name.getText() === "profiles") mod.profiles = v;
             if (d.name.getText() === "operations") mod.operations = v;

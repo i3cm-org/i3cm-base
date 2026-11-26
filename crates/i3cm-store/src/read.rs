@@ -242,6 +242,50 @@ impl Store {
         Ok(ObjectView { id, room, deleted: deleted.is_some(), created_by: obj.get(0), created_at: obj.get(1), types, parts, content, texts })
     }
 
+    /// Current type names of an object inside an open order.
+    pub async fn types_in(&self, c: &tokio_postgres::Client, tenant: Uuid, id: Uuid) -> Result<Vec<String>> {
+        Ok(types_of(c, tenant, id, None).await?.into_keys().collect())
+    }
+
+    /// All tenant ids (scheduler).
+    pub async fn tenant_ids(&self) -> Result<Vec<Uuid>> {
+        let c = self.client().await?;
+        Ok(c.query("SELECT id FROM tenant ORDER BY id", &[]).await.map_err(db)?.iter().map(|r| r.get(0)).collect())
+    }
+
+    /// Read an object inside an open order (module code sees its own uncommitted writes).
+    pub async fn view_in(&self, c: &tokio_postgres::Client, ctx: &Ctx, id: Uuid, lang: &str) -> Result<ObjectView> {
+        self.view(c, ctx, id, None, lang).await
+    }
+
+    /// Objects of a type whose own attributes equal the given values, inside an open order;
+    /// only objects the caller can read, at most `limit`.
+    pub async fn find_in(&self, c: &tokio_postgres::Client, ctx: &Ctx, t: &str, filter: &Map<String, Value>, limit: i64, lang: &str) -> Result<Vec<ObjectView>> {
+        let def = self.model.require_type(t)?;
+        let tb = type_table(def);
+        let mut cond = vec![];
+        let mut params: Vec<Param> = vec![];
+        for (k, v) in filter {
+            let a = def.attributes.iter().find(|a| &a.name == k).ok_or_else(|| BaseError::invalid("query.unknown_attribute", "unknown attribute").with("attribute", k.clone()))?;
+            let val = to_val(a, v).map_err(|e| e.with("attribute", k.clone()))?;
+            params.push(param(&val, Col::of(&a.vt), a.list));
+            cond.push(format!("{} = ${}", col(k), params.len() + 1));
+        }
+        let wh = if cond.is_empty() { String::new() } else { format!(" AND {}", cond.join(" AND ")) };
+        let sql = format!("SELECT object_id FROM {tb} WHERE tenant_id=$1 AND valid_to IS NULL AND deleted_at IS NULL{wh} ORDER BY object_id LIMIT {limit}");
+        let mut args: Vec<&(dyn tokio_postgres::types::ToSql + Sync)> = vec![&ctx.tenant];
+        let pr = refs(&params);
+        args.extend(pr.iter().copied());
+        let rows = c.query(&sql, &args).await.map_err(db)?;
+        let mut out = vec![];
+        for r in rows {
+            if let Ok(v) = self.view(c, ctx, r.get(0), None, lang).await {
+                out.push(v);
+            }
+        }
+        Ok(out)
+    }
+
     pub async fn get_object(&self, ctx: &Ctx, id: Uuid, at: Option<i64>, lang: &str) -> Result<ObjectView> {
         let c = self.client().await?;
         self.view(&**c, ctx, id, at, lang).await

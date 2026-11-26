@@ -68,9 +68,31 @@ pub async fn connect(url: &str, catalog: &Path, pool: usize) -> Result<Store> {
 
 /// Serve the API; returns the bound address and the server task.
 pub async fn serve(store: Store, addr: SocketAddr) -> Result<(SocketAddr, tokio::task::JoinHandle<()>)> {
+    serve_with(store, None, addr).await
+}
+
+/// Load the module code from a directory (`<module>.wasm` per module with operations).
+pub fn runtime(store: &Store, dir: &Path) -> Result<i3cm_wasm::Runtime> {
+    i3cm_wasm::Runtime::new(store.clone(), dir).map_err(|e| anyhow::anyhow!("{}: {} {:?}", e.error_id, e.description, e.params))
+}
+
+/// Run the scheduler every `every` (DEC-119; exactly once per due run across containers).
+pub fn spawn_scheduler(rt: i3cm_wasm::Runtime, worker: String, every: std::time::Duration) -> tokio::task::JoinHandle<()> {
+    tokio::spawn(async move {
+        loop {
+            if let Err(e) = rt.tick(&worker).await {
+                tracing::warn!(error = %e.description, "scheduler pass failed");
+            }
+            tokio::time::sleep(every).await;
+        }
+    })
+}
+
+/// Serve the API with optional module code.
+pub async fn serve_with(store: Store, rt: Option<i3cm_wasm::Runtime>, addr: SocketAddr) -> Result<(SocketAddr, tokio::task::JoinHandle<()>)> {
     let listener = tokio::net::TcpListener::bind(addr).await?;
     let bound = listener.local_addr()?;
-    let app = i3cm_api::router(store);
+    let app = i3cm_api::router_with(store, rt);
     let task = tokio::spawn(async move {
         if let Err(e) = axum::serve(listener, app).await {
             tracing::error!(%e, "server stopped");

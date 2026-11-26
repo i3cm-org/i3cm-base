@@ -5,7 +5,7 @@ use crate::order::{Op, Order};
 use crate::schema::type_table;
 use crate::{Auth, Store};
 use chrono::{DateTime, Duration, Utc};
-use i3cm_core::catalog::Sign;
+use i3cm_core::catalog::{Model, Sign};
 use i3cm_core::rights::Subject;
 use i3cm_core::{BaseError, Result};
 use serde::{Deserialize, Serialize};
@@ -66,9 +66,10 @@ impl Store {
             tenant,
             subject: Subject { account: Uuid::nil(), carriers: vec![], rights: HashMap::new(), guardian: true },
             rooms: RoomTree { root, parent: [(root, None)].into() },
+            inactive: Default::default(),
         };
         let mut ops = vec![];
-        for m in &self.model.catalog.modules {
+        for m in self.model.catalog.modules.iter().filter(|m| self.model.is_default_module(&m.name)) {
             for r in &m.rooms {
                 let local = format!("room:{r}");
                 ops.push(Op::Create { local: Some(local.clone()), room: None, types: [("base:Room".into(), attrs(json!({"name": r})))].into() });
@@ -90,12 +91,12 @@ impl Store {
         let mut c = self.client().await?;
         let tx = c.transaction().await.map_err(db)?;
         let room_of = |name: &str| -> Uuid { if name == "root" { root } else { created[&format!("room:{name}")] } };
-        for m in &self.model.catalog.modules {
+        for m in self.model.catalog.modules.iter().filter(|m| self.model.is_default_module(&m.name)) {
             for r in &m.rooms {
                 tx.execute("INSERT INTO module_room (tenant_id, name, room_id) VALUES ($1,$2,$3)", &[&tenant, r, &room_of(r)]).await.map_err(db)?;
             }
         }
-        for profile in self.model.profiles() {
+        for profile in self.model.catalog.modules.iter().filter(|m| self.model.is_default_module(&m.name)).flat_map(|m| m.profiles.iter()) {
             tx.execute("INSERT INTO profile (tenant_id, name, guardian) VALUES ($1,$2,$3)", &[&tenant, &profile.name, &profile.guardian]).await.map_err(db)?;
             for (i, r) in profile.rights.iter().enumerate() {
                 let sign = match r.sign {
@@ -278,4 +279,149 @@ pub struct TokenInfo {
     pub expires_at: Option<DateTime<Utc>>,
     pub revoked_at: Option<DateTime<Utc>>,
     pub last_used: Option<DateTime<Utc>>,
+}
+
+impl Store {
+    /// Whether a module is active in a tenant. Modules of the kernel image that were never
+    /// activated explicitly count as active in tenants created before 0.6 (no rows yet).
+    pub async fn module_active(&self, tenant: Uuid, module: &str) -> Result<bool> {
+        let c = self.client().await?;
+        let any: bool = c.query_one("SELECT EXISTS (SELECT 1 FROM module_active WHERE tenant_id=$1)", &[&tenant]).await.map_err(db)?.get(0);
+        if !any {
+            return Ok(true);
+        }
+        Ok(c.query_one("SELECT EXISTS (SELECT 1 FROM module_active WHERE tenant_id=$1 AND name=$2)", &[&tenant, &module]).await.map_err(db)?.get(0))
+    }
+}
+
+/// What an activation did; the rights it adds are listed so the tenant administrator sees them
+/// (DEC-080: new rights are shown, red where they reach existing data).
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct Activation {
+    pub module: String,
+    pub txn: i64,
+    pub rooms: Vec<String>,
+    pub profiles: Vec<String>,
+    pub carriers: Vec<String>,
+    /// Per right of the module's profiles: `red` if it reaches types of other modules or the
+    /// root room, else `green`.
+    pub rights: Vec<serde_json::Value>,
+    /// Objects that received imprinted types (catch-up, DEC-062).
+    pub imprinted: i64,
+}
+
+impl Store {
+    /// Activate an installed module in a tenant: dependencies must be active; rooms, profiles and
+    /// carriers of the module are created; imprinting rules are applied to existing objects. All
+    /// or nothing (DEC-062).
+    pub async fn activate_module(&self, ctx: &Ctx, name: &str) -> Result<Activation> {
+        if !ctx.subject.may(i3cm_core::Art::Grant, i3cm_core::ANY, &[ctx.rooms.root]) {
+            return Err(BaseError::not_found("rights.denied", "not allowed or not found").with("art", "grant"));
+        }
+        let m = self.model.catalog.modules.iter().find(|m| m.name == name).ok_or_else(|| BaseError::not_found("module.not_installed", "module is not installed").with("module", name))?.clone();
+        if !ctx.inactive.contains(name) {
+            return Err(BaseError::conflict("module.active", "module is already active").with("module", name));
+        }
+        for r in &m.requires {
+            if ctx.inactive.contains(r) {
+                return Err(BaseError::invalid("module.requires_inactive", "a required module is not active").with("module", name).with("requires", r.clone()));
+            }
+        }
+        let tenant = ctx.tenant;
+        let root = ctx.rooms.root;
+        // guardian context with the module visible, for creating its rooms and carriers
+        let mut gctx = ctx.clone();
+        gctx.subject.guardian = true;
+        gctx.inactive.remove(name);
+        let mut sess = self.begin(&gctx, &crate::session::Audit { module: Some(name.into()), function: Some("activate".into()), tool: None }).await?;
+        let res = async {
+            let mut created: BTreeMap<String, Uuid> = BTreeMap::new();
+            for r in &m.rooms {
+                let local = format!("room:{r}");
+                let id = sess.apply(self, &mut gctx, &Op::Create { local: Some(local.clone()), room: None, types: [("base:Room".into(), attrs(json!({"name": r})))].into() }).await?;
+                sess.apply(self, &mut gctx, &Op::Link { reference: "base:Room.parent".into(), from: local, to: root.to_string(), rank: None }).await?;
+                created.insert(r.clone(), id.ok_or_else(|| BaseError::internal("room not created"))?);
+            }
+            let room_of = |n: &str| -> Uuid { if n == "root" { root } else { created.get(n).copied().unwrap_or(root) } };
+            let c = sess.client();
+            for r in &m.rooms {
+                c.execute("INSERT INTO module_room (tenant_id, name, room_id) VALUES ($1,$2,$3)", &[&tenant, r, &room_of(r)]).await.map_err(db)?;
+            }
+            let mut rights = vec![];
+            for profile in &m.profiles {
+                c.execute("INSERT INTO profile (tenant_id, name, guardian) VALUES ($1,$2,$3)", &[&tenant, &profile.name, &profile.guardian]).await.map_err(db)?;
+                for (i, r) in profile.rights.iter().enumerate() {
+                    let sign = match r.sign {
+                        Sign::Plus => "+",
+                        Sign::Minus => "-",
+                        Sign::Block => "block",
+                    };
+                    let arts: Vec<String> = r.art.iter().map(|a| a.as_str().to_string()).collect();
+                    c.execute(
+                        "INSERT INTO profile_right (tenant_id, profile, idx, sign, arts, types, room_id, cond) VALUES ($1,$2,$3,$4,$5,$6,$7,$8)",
+                        &[&tenant, &profile.name, &(i as i32), &sign, &arts, &r.types, &room_of(&r.room), &r.when],
+                    )
+                    .await
+                    .map_err(db)?;
+                    let foreign = r.room == "root" || r.types.iter().any(|t| t == "*" || Model::module_of(t) != name);
+                    rights.push(json!({ "profile": profile.name, "art": arts, "types": r.types, "room": r.room, "color": if foreign && sign == "+" { "red" } else { "green" } }));
+                }
+                for inc in &profile.includes {
+                    c.execute("INSERT INTO profile_include (tenant_id, profile, includes) VALUES ($1,$2,$3)", &[&tenant, &profile.name, inc]).await.map_err(db)?;
+                }
+            }
+            // carriers: agent accounts of the module with their profiles
+            let mut carriers = vec![];
+            for cr in &m.carriers {
+                let id = sess
+                    .apply(self, &mut gctx, &Op::Create { local: Some(format!("carrier:{}", cr.name)), room: None, types: [("base:AgentAccount".into(), attrs(json!({"login": cr.name, "purpose": format!("module {name}")})))].into() })
+                    .await?
+                    .ok_or_else(|| BaseError::internal("carrier not created"))?;
+                let txn = sess.txn;
+                for p in &cr.profiles {
+                    sess.client()
+                        .execute("INSERT INTO assignment (tenant_id, id, profile, carrier, valid_from) VALUES ($1,$2,$3,$4,$5)", &[&tenant, &Uuid::new_v4(), p, &id, &txn])
+                        .await
+                        .map_err(db)?;
+                }
+                carriers.push(cr.name.clone());
+            }
+            // catch-up of imprinting rules on existing objects (DEC-062)
+            let mut imprinted = 0i64;
+            for t in self.model.catalog.types.iter().filter(|t| Model::module_of(&t.name) == name && !t.imprints_on.is_empty()) {
+                if t.attributes.iter().any(|a| a.required) {
+                    return Err(BaseError::invalid("module.catch_up_value", "an imprinted type with required attributes needs catch-up values").with("type", t.name.clone()));
+                }
+                let tb = type_table(t);
+                let n = sess
+                    .client()
+                    .execute(
+                        &format!(
+                            "WITH hit AS (SELECT DISTINCT ot.object_id FROM object_type ot WHERE ot.tenant_id=$1 AND ot.valid_to IS NULL AND ot.deleted_at IS NULL AND ot.type_name = ANY($2) \
+                             AND NOT EXISTS (SELECT 1 FROM object_type x WHERE x.tenant_id=$1 AND x.object_id=ot.object_id AND x.type_name=$3 AND x.valid_to IS NULL AND x.deleted_at IS NULL)), \
+                             ins AS (INSERT INTO object_type (tenant_id, object_id, type_name, implied, valid_from) SELECT $1, object_id, $3, true, $4 FROM hit RETURNING object_id) \
+                             INSERT INTO {tb} (tenant_id, object_id, valid_from) SELECT $1, object_id, $4 FROM ins"
+                        ),
+                        &[&tenant, &t.imprints_on.iter().flat_map(|x| self.model.subtypes_closure(x)).collect::<Vec<String>>(), &t.name, &sess.txn],
+                    )
+                    .await
+                    .map_err(db)?;
+                imprinted += n as i64;
+            }
+            sess.client().execute("INSERT INTO module_active (tenant_id, name, txn) VALUES ($1,$2,$3)", &[&tenant, &name, &sess.txn]).await.map_err(db)?;
+            Ok::<_, BaseError>((m.rooms.clone(), m.profiles.iter().map(|p| p.name.clone()).collect::<Vec<_>>(), carriers, rights, imprinted))
+        }
+        .await;
+        match res {
+            Ok((rooms, profiles, carriers, rights, imprinted)) => {
+                let txn = sess.txn;
+                sess.finish(self, &mut gctx, true).await?;
+                Ok(Activation { module: name.into(), txn, rooms, profiles, carriers, rights, imprinted })
+            }
+            Err(e) => {
+                sess.abort().await;
+                Err(e)
+            }
+        }
+    }
 }

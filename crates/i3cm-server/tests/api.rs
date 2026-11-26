@@ -86,6 +86,10 @@ fn test_model() -> Model {
         }))
         .unwrap(),
     );
+    // all modules active from the start, as before activation existed (0.6)
+    for m in &mut c.modules {
+        m.mandatory = true;
+    }
     Model::new(c).unwrap()
 }
 

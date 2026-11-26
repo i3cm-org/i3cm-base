@@ -3,11 +3,12 @@ use serde_json::{Map, Value};
 
 /// Error reported to callers: a stable id, a description and key/value parameters
 /// (the description is a fallback; clients translate by `error_id`).
-#[derive(Debug, Clone, Serialize, thiserror::Error)]
+#[derive(Debug, Clone, Serialize, serde::Deserialize, thiserror::Error)]
 #[error("{error_id}: {description}")]
 pub struct BaseError {
     pub error_id: String,
     pub description: String,
+    #[serde(default)]
     pub params: Map<String, Value>,
     #[serde(skip)]
     pub kind: ErrorKind,

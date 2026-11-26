@@ -150,7 +150,29 @@ async fn count(axum::extract::State(m): axum::extract::State<Arc<Metrics>>, req:
     next.run(req).await
 }
 
+/// The API without module code (hooks and module operations unavailable).
 pub fn router(store: Store) -> Router {
+    router_with(store, None)
+}
+
+#[derive(Clone)]
+struct Mods {
+    store: Store,
+    rt: Option<i3cm_wasm::Runtime>,
+}
+
+/// The API with the WebAssembly runtime for module operations and hooks (DEC-119).
+pub fn router_with(store: Store, rt: Option<i3cm_wasm::Runtime>) -> Router {
+    let mods = Router::new()
+        .route("/v1/orders", post(mod_order))
+        .route("/v1/modules", get(modules))
+        .route("/v1/modules/{m}/activate", post(activate))
+        .route("/v1/modules/{m}/ops/{op}", post(module_op))
+        .with_state(Mods { store: store.clone(), rt });
+    base_router(store).merge(mods)
+}
+
+fn base_router(store: Store) -> Router {
     let metrics = Arc::new(Metrics::default());
     let m = metrics.clone();
     Router::new()
@@ -161,7 +183,6 @@ pub fn router(store: Store) -> Router {
         .route("/skill.zip", get(|| async { ([(header::CONTENT_TYPE, "application/zip")], describe::skill_zip()) }))
         .route("/v1/version", get(|| async { Json(json!({"version": env!("CARGO_PKG_VERSION"), "revision": env!("I3CM_REV")})) }))
         .route("/v1/catalog", get(catalog))
-        .route("/v1/orders", post(order))
         .route("/v1/objects", post(create))
         .route("/v1/objects/{id}", get(object).patch(update).delete(remove))
         .route("/v1/objects/{id}/types/{t}", post(attach).delete(detach))
@@ -218,8 +239,51 @@ async fn run(s: &Store, h: &HeaderMap, order: Order) -> R<Json<Value>> {
     Ok(Json(serde_json::to_value(res).unwrap_or_default()))
 }
 
-async fn order(State(s): State<Store>, h: HeaderMap, Json(o): Json<Order>) -> R<Json<Value>> {
-    run(&s, &h, o).await
+async fn mod_order(State(m): State<Mods>, h: HeaderMap, Json(o): Json<Order>) -> R<Json<Value>> {
+    match &m.rt {
+        Some(rt) => {
+            let mut r = auth(&m.store, &h).await?;
+            let res = rt.execute(&mut r.ctx, &o).await?;
+            Ok(Json(serde_json::to_value(res).unwrap_or_default()))
+        }
+        None => run(&m.store, &h, o).await,
+    }
+}
+
+async fn modules(State(m): State<Mods>, h: HeaderMap) -> R<Json<Value>> {
+    let r = auth(&m.store, &h).await?;
+    let list: Vec<Value> = m
+        .store
+        .model
+        .catalog
+        .modules
+        .iter()
+        .map(|x| {
+            json!({
+                "name": x.name, "requires": x.requires, "mandatory": x.mandatory || x.name == "base",
+                "active": !r.ctx.inactive.contains(&x.name),
+                "operations": x.operations.iter().map(|o| o.name.clone()).collect::<Vec<_>>(),
+                "code": m.rt.is_some() && !x.operations.is_empty(),
+            })
+        })
+        .collect();
+    Ok(Json(json!(list)))
+}
+
+async fn activate(State(m): State<Mods>, h: HeaderMap, Path(name): Path<String>) -> R<Json<Value>> {
+    let r = auth(&m.store, &h).await?;
+    let a = m.store.activate_module(&r.ctx, &name).await?;
+    Ok(Json(serde_json::to_value(a).unwrap_or_default()))
+}
+
+async fn module_op(State(m): State<Mods>, h: HeaderMap, Path((name, op)): Path<(String, String)>, body: Option<Json<Value>>) -> R<Json<Value>> {
+    let r = auth(&m.store, &h).await?;
+    let rt = m.rt.as_ref().ok_or_else(|| BaseError::not_found("module.no_runtime", "this server runs without module code"))?;
+    if r.ctx.inactive.contains(&name) {
+        return Err(BaseError::not_found("module.inactive", "module is not active in the tenant").with("module", name).into());
+    }
+    let params = body.map(|Json(v)| v).unwrap_or(Value::Null);
+    Ok(Json(rt.run_op(&r.ctx, &name, &op, &params, Some("api")).await?))
 }
 
 async fn create(State(s): State<Store>, h: HeaderMap, Query(d): Query<DryRun>, Json(b): Json<CreateBody>) -> R<Json<Value>> {

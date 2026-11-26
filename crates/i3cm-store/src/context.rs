@@ -43,6 +43,8 @@ pub struct Ctx {
     pub tenant: Uuid,
     pub subject: Subject,
     pub rooms: RoomTree,
+    /// Installed modules not active in this tenant: their types are invisible (DEC-035).
+    pub inactive: std::collections::BTreeSet<String>,
 }
 
 impl Ctx {
@@ -129,7 +131,15 @@ impl Store {
         }
 
         let rooms = self.load_rooms(c, tenant).await?;
-        Ok(Ctx { tenant, subject, rooms })
+        let inactive = self.inactive_modules(c, tenant).await?;
+        Ok(Ctx { tenant, subject, rooms, inactive })
+    }
+
+    /// Modules of the catalog that are neither default nor activated in the tenant.
+    pub(crate) async fn inactive_modules<C: GenericClient>(&self, c: &C, tenant: Uuid) -> Result<std::collections::BTreeSet<String>> {
+        let active: std::collections::BTreeSet<String> =
+            c.query("SELECT name FROM module_active WHERE tenant_id=$1", &[&tenant]).await.map_err(db)?.iter().map(|r| r.get(0)).collect();
+        Ok(self.model.catalog.modules.iter().filter(|m| !self.model.is_default_module(&m.name) && !active.contains(&m.name)).map(|m| m.name.clone()).collect())
     }
 
     pub(crate) async fn load_rooms<C: GenericClient>(&self, c: &C, tenant: Uuid) -> Result<RoomTree> {

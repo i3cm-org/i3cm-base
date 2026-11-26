@@ -1,0 +1,28 @@
+package i3cm:module@0.6.0;
+
+/// What the kernel offers module code: a handle on the open order, nothing more (DEC-117, DEC-119).
+interface host {
+  resource connection {
+    /// The account (identity) this handle acts as.
+    me: func() -> string;
+    /// Read one object as JSON (only what the identity may read).
+    get: func(id: string) -> result<string, string>;
+    /// Objects of a type whose own attributes equal the JSON object `filter`; JSON array.
+    query: func(%type: string, filter: string) -> result<string, string>;
+    /// Apply operations (JSON array, same form as `POST /v1/orders` ops) immediately in the open
+    /// order; returns the created objects as a JSON object `{local name: id}`. Any error aborts
+    /// the whole order.
+    order: func(ops: string) -> result<string, string>;
+    /// Call an operation of a module (`ns:op`) through the kernel, same order, same identity.
+    call: func(op: string, params: string) -> result<string, string>;
+    /// A new handle acting as a carrier of this module; only for operations marked for it.
+    impersonate: func(carrier: string) -> result<connection, string>;
+  }
+}
+
+world module {
+  import host;
+  use host.{connection};
+  /// Run operation `op` of this module with JSON `params`; returns JSON.
+  export run: func(conn: borrow<connection>, op: string, params: string) -> result<string, string>;
+}

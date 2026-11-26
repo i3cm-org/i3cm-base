@@ -125,6 +125,14 @@ impl Exec<'_> {
         self.ctx.tenant
     }
 
+    /// Types of modules not active in the tenant do not exist for it (DEC-035).
+    fn active(&self, t: &str) -> Result<()> {
+        if self.ctx.inactive.contains(Model::module_of(t)) {
+            return Err(BaseError::not_found("module.inactive", "the module of this type is not active in the tenant").with("type", t));
+        }
+        Ok(())
+    }
+
     fn resolve(&self, s: &str) -> Result<Uuid> {
         if let Some(id) = self.local.get(s) {
             return Ok(*id);
@@ -359,8 +367,9 @@ impl Exec<'_> {
                     if self.m.require_type(t)?.is_abstract {
                         return Err(BaseError::invalid("type.abstract", "abstract types cannot be attached").with("type", t.clone()));
                     }
+                    self.active(t)?;
                 }
-                let closure = self.m.implied_closure(&explicit);
+                let closure = self.m.implied_closure_in(&explicit, &self.ctx.inactive);
                 let tables = self.m.table_types(&closure);
                 let values = self.distribute(types, &tables)?;
                 let mut need: BTreeSet<&String> = explicit.iter().collect();
@@ -404,6 +413,7 @@ impl Exec<'_> {
                 self.touched.insert(id);
             }
             Op::Attach { id, type_name, values } => {
+                self.active(type_name)?;
                 let id = self.resolve(id)?;
                 let (_, path) = self.live(id).await?;
                 let def = self.m.require_type(type_name)?;
@@ -415,7 +425,7 @@ impl Exec<'_> {
                     return Err(BaseError::conflict("type.already_attached", "type already attached").with("type", type_name.clone()));
                 }
                 let explicit: BTreeSet<String> = cur.iter().filter(|(_, imp)| !**imp).map(|(t, _)| t.clone()).chain([type_name.clone()]).collect();
-                let closure = self.m.implied_closure(&explicit);
+                let closure = self.m.implied_closure_in(&explicit, &self.ctx.inactive);
                 let old_tables = self.m.table_types(&cur.keys().cloned().collect());
                 let new_tables = self.m.table_types(&closure);
                 let given: BTreeMap<String, Map<String, Value>> = [(type_name.clone(), values.clone())].into();
@@ -468,7 +478,7 @@ impl Exec<'_> {
                 if explicit.is_empty() {
                     return Err(BaseError::invalid("type.last", "the last type cannot be detached; delete the object instead"));
                 }
-                let closure = self.m.implied_closure(&explicit);
+                let closure = self.m.implied_closure_in(&explicit, &self.ctx.inactive);
                 let old_tables = self.m.table_types(&cur.keys().cloned().collect());
                 let new_tables = self.m.table_types(&closure);
                 for t in cur.keys().filter(|t| !closure.contains(*t)) {

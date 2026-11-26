@@ -1,5 +1,5 @@
 use anyhow::Result;
-use i3cm_server::{connect, default_catalog, serve, EmbeddedDb};
+use i3cm_server::{connect, default_catalog, runtime, serve, serve_with, spawn_scheduler, EmbeddedDb};
 use clap::{Parser, Subcommand};
 use std::net::SocketAddr;
 use std::path::PathBuf;
@@ -13,6 +13,9 @@ struct Cli {
     /// catalog.json produced by typecat
     #[arg(long, env = "I3CM_CATALOG", global = true)]
     catalog: Option<PathBuf>,
+    /// Directory with module code (`<module>.wasm`); without it, module operations and hooks are off
+    #[arg(long, env = "I3CM_MODULES_DIR", global = true)]
+    modules_dir: Option<PathBuf>,
     #[command(subcommand)]
     cmd: Cmd,
 }
@@ -62,7 +65,15 @@ async fn main() -> Result<()> {
     match cli.cmd {
         Cmd::Serve { listen, pool } => {
             let store = connect(&db()?, &catalog, pool).await?;
-            let (addr, task) = serve(store, listen).await?;
+            let rt = match &cli.modules_dir {
+                Some(d) => Some(runtime(&store, d)?),
+                None => None,
+            };
+            if let Some(rt) = &rt {
+                let worker = format!("{}-{}", std::env::var("HOSTNAME").unwrap_or_else(|_| "server".into()), std::process::id());
+                spawn_scheduler(rt.clone(), worker, std::time::Duration::from_secs(20));
+            }
+            let (addr, task) = serve_with(store, rt, listen).await?;
             tracing::info!(%addr, "listening");
             task.await?;
         }
