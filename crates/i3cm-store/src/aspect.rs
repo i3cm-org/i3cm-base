@@ -10,7 +10,7 @@ use i3cm_core::fhirpath::{check_profile, eval, group_key, parse, BoxFut, Expr, G
 use i3cm_core::values::{display, Col, Val};
 use chrono::{DateTime, Utc};
 use i3cm_core::{BaseError, ErrorKind, Result};
-use i3cm_tools::{fs_name, ino};
+use i3cm_tools::{fs_name, ino, project, Named, Slot};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 use std::collections::{BTreeSet, HashMap};
@@ -171,6 +171,13 @@ pub struct NodeOut {
     /// Name in paths: the display name without `/` (FUSE, tools).
     #[serde(default)]
     pub name: String,
+    /// Name in paths by the fallback rule of the aspect (Fluent attribute `.fallback` of the name),
+    /// used instead of `name` when names in a directory collide.
+    #[serde(rename = "fallbackName", skip_serializing_if = "Option::is_none")]
+    pub fallback_name: Option<String>,
+    /// Display name by the fallback rule (not serialized; source of `fallback_name`).
+    #[serde(skip)]
+    pub fallback_display: Option<String>,
     /// Bytes of the file; for a node: of its index.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub size: Option<u64>,
@@ -329,7 +336,8 @@ impl Store {
             }
         }
         let (n, d) = self.i18n.names_in(Some(&a.name), lang, &t, &attrs);
-        Ok(Some(NodeOut { node: format!("o:{id}"), file: false, display_name: n, display_description: d, count: None, type_name: Some(t), id: Some(id), ..Default::default() }))
+        let fallback_display = self.i18n.fallback_in(Some(&a.name), lang, &t, &attrs);
+        Ok(Some(NodeOut { node: format!("o:{id}"), file: false, display_name: n, display_description: d, count: None, type_name: Some(t), id: Some(id), fallback_display, ..Default::default() }))
     }
 
     /// SQL text of a grouping key applied to the value expression `v`.
@@ -470,6 +478,7 @@ impl Store {
         }
         for n in out.iter_mut() {
             n.name = fs_name(&n.display_name);
+            n.fallback_name = n.fallback_display.as_deref().map(fs_name);
         }
         self.decorate(ctx, &nav, aspect, lang, &mut out).await?;
         Ok(out)
@@ -882,6 +891,30 @@ impl Store {
         Ok(())
     }
 
+    /// Directory names of the node entries below `node`, as FUSE and the tools show them (complete
+    /// listing, collisions resolved by [`project`]); key: node id.
+    async fn dir_names_below(&self, ctx: &Ctx, nav: &StoreNav<'_>, aspect: &str, node: &str, lang: &str) -> Result<HashMap<String, String>> {
+        let mut all: Vec<NodeOut> = vec![];
+        let mut offset = 0;
+        loop {
+            let page = Page { offset, limit: Some(MAX_LIST) };
+            let (mut out, paged) = if is_builtin(aspect) { self.builtin_children(ctx, nav, aspect, node, lang, page).await? } else { self.children_raw(ctx, nav, aspect, node, lang, page).await? };
+            let n = out.len() as i64;
+            all.append(&mut out);
+            if !paged || n < MAX_LIST {
+                break;
+            }
+            offset += n;
+        }
+        for c in all.iter_mut() {
+            c.name = fs_name(&c.display_name);
+            c.fallback_name = c.fallback_display.as_deref().map(fs_name);
+        }
+        let named: Vec<Named> = all.iter().map(|c| Named { name: &c.name, file: c.file, fallback: c.fallback_name.as_deref(), key: &c.node }).collect();
+        let entries = project(&named);
+        Ok(entries.iter().filter_map(|(name, slot)| match slot { Slot::Dir(i) => Some((all[*i].node.clone(), name.clone())), _ => None }).collect())
+    }
+
     /// The index of a node as Markdown. Objects: front matter with the reserved fields and the
     /// readable attributes, then the display name and references as `[[links]]` (relative below
     /// `dir`, otherwise `/_id/<id>`). Groups and folders: their name.
@@ -908,12 +941,18 @@ impl Store {
         }
         let link = |target: String, label: &str| format!("- [[{target}|{}]]\n", label.replace('|', "-"));
         let ends = self.filled_ends(ctx, &v).await?;
+        // links name exactly the entry a listing shows (DEC: unique names by fallback and key)
+        let here = self.dir_names_below(ctx, nav, aspect, &n.node, lang).await?;
+        let name_in = |m: &HashMap<String, String>, node: &str, display: &str| m.get(node).cloned().unwrap_or_else(|| fs_name(display));
         if is_builtin(aspect) {
             for e in ends {
                 s.push_str(&format!("\n## {e}\n\n"));
+                let folder = format!("f:{id}:{e}");
+                let below = self.dir_names_below(ctx, nav, aspect, &folder, lang).await?;
+                let fname = name_in(&here, &folder, &e);
                 for x in self.ends(ctx, id, &e, MAX_LIST, 0, lang).await? {
                     if let Some(c) = self.plain_object_out(nav, x.id, lang).await? {
-                        s.push_str(&link(format!("{dir}/{}/{}", fs_name(&e), fs_name(&c.display_name)), &c.display_name));
+                        s.push_str(&link(format!("{dir}/{fname}/{}", name_in(&below, &c.node, &c.display_name)), &c.display_name));
                     }
                 }
             }
@@ -931,9 +970,15 @@ impl Store {
                 }
                 let label = if sn.folder { self.i18n.label(&a.name, lang, &sn.label) } else { sn.label.clone() };
                 s.push_str(&format!("\n## {label}\n\n"));
+                let folder = format!("f:{id}:{}", sn.label);
+                let below = if sn.folder { self.dir_names_below(ctx, nav, aspect, &folder, lang).await? } else { HashMap::new() };
                 for x in ids {
                     if let Some(c) = self.object_out(nav, a, x, lang).await? {
-                        let target = if sn.folder { format!("{dir}/{}/{}", fs_name(&label), fs_name(&c.display_name)) } else { format!("{dir}/{}", fs_name(&c.display_name)) };
+                        let target = if sn.folder {
+                            format!("{dir}/{}/{}", name_in(&here, &folder, &label), name_in(&below, &c.node, &c.display_name))
+                        } else {
+                            format!("{dir}/{}", name_in(&here, &c.node, &c.display_name))
+                        };
                         s.push_str(&link(target, &c.display_name));
                     }
                 }

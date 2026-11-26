@@ -21,6 +21,9 @@ pub struct Child {
     pub display_name: String,
     #[serde(default)]
     pub name: String,
+    /// Name by the aspect's fallback rule, used when names collide.
+    #[serde(rename = "fallbackName")]
+    pub fallback_name: Option<String>,
     pub id: Option<String>,
     pub size: Option<u64>,
     #[serde(rename = "changedAt")]

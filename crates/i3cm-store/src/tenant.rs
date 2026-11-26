@@ -126,7 +126,8 @@ impl Store {
         .map_err(db)?;
         tx.commit().await.map_err(db)?;
         let admin = created["admin"];
-        let token = self.create_token_unchecked(tenant, admin).await?;
+        // the first token is a start key: valid for one day
+        let token = self.create_token_unchecked(tenant, admin, Some(INIT_TOKEN_TTL_DAYS)).await?.token;
         Ok(TenantInit { tenant, root_room: root, admin_account: admin, admin_group: admins, token })
     }
 
@@ -149,9 +150,11 @@ impl Store {
             .ok_or_else(|| BaseError::not_found("account.not_found", "unknown login").with("login", login))
     }
 
-    /// Issue a token without rights check (command line, bootstrap); no expiry.
-    pub async fn create_token_unchecked(&self, tenant: Uuid, account: Uuid) -> Result<String> {
-        Ok(self.issue_token(tenant, account, None, None).await?.token)
+    /// Issue a token without rights check (command line, bootstrap). `ttl_days`: default 90,
+    /// at most 365; every token expires.
+    pub async fn create_token_unchecked(&self, tenant: Uuid, account: Uuid, ttl_days: Option<i64>) -> Result<Issued> {
+        let days = check_ttl(ttl_days)?;
+        self.issue_token(tenant, account, Some("command line"), Some(Utc::now() + Duration::days(days))).await
     }
 
     /// Issue a token without rights check.
@@ -183,10 +186,7 @@ impl Store {
     /// expires no later than the token of the request); for another account the right to grant
     /// rights is needed. `ttl_days`: default 90, at most 365.
     pub async fn create_token_with(&self, ctx: &Ctx, auth: &Auth, account: Option<Uuid>, label: Option<&str>, ttl_days: Option<i64>) -> Result<Issued> {
-        let days = ttl_days.unwrap_or(TOKEN_TTL_DAYS);
-        if !(1..=TOKEN_TTL_MAX_DAYS).contains(&days) {
-            return Err(BaseError::invalid("token.bad_ttl", "ttl must be between 1 and 365 days").with("ttl", days));
-        }
+        let days = check_ttl(ttl_days)?;
         let mut expires = Utc::now() + Duration::days(days);
         let account = match account {
             Some(a) if a != ctx.me() => {
@@ -247,7 +247,18 @@ impl Store {
 }
 
 pub const TOKEN_TTL_DAYS: i64 = 90;
+/// Lifetime of the first token of a new tenant (start key).
+pub const INIT_TOKEN_TTL_DAYS: i64 = 1;
+/// Longest lifetime of a token.
 pub const TOKEN_TTL_MAX_DAYS: i64 = 365;
+
+fn check_ttl(ttl_days: Option<i64>) -> Result<i64> {
+    let days = ttl_days.unwrap_or(TOKEN_TTL_DAYS);
+    if !(1..=TOKEN_TTL_MAX_DAYS).contains(&days) {
+        return Err(BaseError::invalid("token.bad_ttl", "ttl must be between 1 and 365 days").with("ttl", days));
+    }
+    Ok(days)
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Issued {

@@ -48,6 +48,8 @@ export function brings(..._t: Ctor[]): ClassDeco { return noopC; }
 export function hasContent(_mediaType?: string): ClassDeco { return noopC; }
 /** Text types attachable to objects of this type, as "name:mediaType". */
 export function texts(..._defs: string[]): ClassDeco { return noopC; }
+/** Text types of this class (by name) that `grep` does not search, e.g. the OCR of a scan. */
+export function noGrep(..._names: string[]): ClassDeco { return noopC; }
 
 /* ---------- field decorators ---------- */
 /** Minimum number of entries for a list reference at this end. */

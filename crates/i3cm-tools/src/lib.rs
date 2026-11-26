@@ -267,19 +267,62 @@ pub fn fs_name(display: &str) -> String {
     s
 }
 
-/// Unique names for a full directory listing, in order: a later entry whose name is taken gets
-/// ` ~2`, ` ~3`, …
-pub fn unique_names<'a>(names: impl IntoIterator<Item = &'a str>) -> Vec<String> {
-    let mut seen = std::collections::HashSet::new();
-    let mut out = vec![];
-    for n in names {
-        let mut cand = n.to_string();
-        let mut i = 2;
-        while !seen.insert(cand.clone()) {
-            cand = format!("{n} ~{i}");
-            i += 1;
+/// One entry of a complete directory listing as input for [`project`]: its name in paths, whether
+/// it is a file, the name by the fallback rule of its aspect (if any) and a stable key (the node
+/// id) that orders entries whose names still collide.
+#[derive(Debug, Clone, Copy)]
+pub struct Named<'a> {
+    pub name: &'a str,
+    pub file: bool,
+    pub fallback: Option<&'a str>,
+    pub key: &'a str,
+}
+
+impl<'a> Named<'a> {
+    pub fn new(name: &'a str, file: bool, key: &'a str) -> Self {
+        Named { name, file, fallback: None, key }
+    }
+}
+
+/// Unique names for a complete listing `(name, fallback, key)`, in input order. An entry whose
+/// name occurs more than once takes its fallback name if it has one; names that still collide
+/// keep the name for the smallest key, the others get ` ~2`, ` ~3`, … in key order. The result
+/// depends only on the entries, never on their order, so a name always means the same entry.
+pub fn unique_names(items: &[(&str, Option<&str>, &str)]) -> Vec<String> {
+    use std::collections::{BTreeMap, HashMap, HashSet};
+    let mut count: HashMap<&str, usize> = HashMap::new();
+    for (n, _, _) in items {
+        *count.entry(n).or_default() += 1;
+    }
+    let cand: Vec<String> = items
+        .iter()
+        .map(|(n, f, _)| match f {
+            Some(f) if count[n] > 1 => f.to_string(),
+            _ => n.to_string(),
+        })
+        .collect();
+    let mut groups: BTreeMap<&str, Vec<usize>> = BTreeMap::new();
+    for (i, c) in cand.iter().enumerate() {
+        groups.entry(c.as_str()).or_default().push(i);
+    }
+    let mut taken: HashSet<String> = cand.iter().cloned().collect();
+    let mut out = cand.clone();
+    for (c, mut idx) in groups {
+        if idx.len() < 2 {
+            continue;
         }
-        out.push(cand);
+        idx.sort_by(|a, b| items[*a].2.cmp(items[*b].2).then(a.cmp(b)));
+        let mut k = 2;
+        for &i in &idx[1..] {
+            let mut name = format!("{c} ~{k}");
+            while taken.contains(&name) {
+                k += 1;
+                name = format!("{c} ~{k}");
+            }
+            taken.insert(name.clone());
+            out[i] = name;
+            k += 1;
+        }
     }
     out
 }
@@ -292,22 +335,27 @@ pub enum Slot {
     File(usize),
 }
 
-/// Directory entries for a complete listing of children `(name, is_file)`, in order: a node
-/// gives the directory `<name>` and its index `<name>.md`, a file gives `<name>`. Names are made
-/// unique as in [`unique_names`]; the slot points into `children`.
-pub fn project(children: &[(&str, bool)]) -> Vec<(String, Slot)> {
-    let base = unique_names(children.iter().map(|c| c.0));
-    let mut seq: Vec<(String, Slot)> = vec![];
+/// Directory entries for a complete listing, in order: a node gives the directory `<name>` and its
+/// index `<name>.md`, a file gives `<name>`. Names are made unique as in [`unique_names`]; the slot
+/// points into `children`.
+pub fn project(children: &[Named]) -> Vec<(String, Slot)> {
+    let base = unique_names(&children.iter().map(|c| (c.name, c.fallback, c.key)).collect::<Vec<_>>());
+    let mut seq: Vec<(String, Slot, String)> = vec![];
     for (i, (b, c)) in base.iter().zip(children).enumerate() {
-        if c.1 {
-            seq.push((b.clone(), Slot::File(i)));
+        if c.file {
+            seq.push((b.clone(), Slot::File(i), format!("{}\0f\0{}", c.key, c.name)));
         } else {
-            seq.push((b.clone(), Slot::Dir(i)));
-            seq.push((format!("{b}.md"), Slot::Index(i)));
+            seq.push((b.clone(), Slot::Dir(i), format!("{}\0d", c.key)));
+            seq.push((format!("{b}.md"), Slot::Index(i), format!("{}\0i", c.key)));
         }
     }
-    let names = unique_names(seq.iter().map(|x| x.0.as_str()));
-    seq.into_iter().zip(names).map(|((_, slot), n)| (n, slot)).collect()
+    let names = unique_names(&seq.iter().map(|x| (x.0.as_str(), None, x.2.as_str())).collect::<Vec<_>>());
+    seq.into_iter().zip(names).map(|((_, slot, _), n)| (n, slot)).collect()
+}
+
+/// The directory name of child `i` in a result of [`project`] (also the name its index links from).
+pub fn dir_name(entries: &[(String, Slot)], i: usize) -> Option<&str> {
+    entries.iter().find(|e| e.1 == Slot::Dir(i)).map(|e| e.0.as_str())
 }
 
 /// Stable inode number from a key (content: `["c", id]`, text: `["t", id, textType]`, object
@@ -401,8 +449,16 @@ mod tests {
     fn names_paths_and_globs() {
         assert_eq!(fs_name("a/b"), "a_b");
         assert_eq!(fs_name(".."), "_..");
-        assert_eq!(unique_names(["x", "y", "x", "x"]), vec!["x", "y", "x ~2", "x ~3"]);
-        let p = project(&[("a", false), ("f", true), ("a", false)]);
+        let n = |v: &[(&str, &str)]| unique_names(&v.iter().map(|(a, k)| (*a, None, *k)).collect::<Vec<_>>());
+        assert_eq!(n(&[("x", "1"), ("y", "2"), ("x", "3"), ("x", "4")]), vec!["x", "y", "x ~2", "x ~3"]);
+        // numbering follows the key, not the order of the listing
+        assert_eq!(n(&[("x", "9"), ("x", "1"), ("x", "5")]), vec!["x ~3", "x", "x ~2"]);
+        // a taken name is skipped
+        assert_eq!(n(&[("x", "1"), ("x", "2"), ("x ~2", "0")]), vec!["x", "x ~3", "x ~2"]);
+        // the fallback applies only to colliding names, then the key decides
+        let f = unique_names(&[("a", Some("a (1)"), "k1"), ("a", Some("a (2)"), "k2"), ("b", Some("b (3)"), "k3"), ("a", Some("a (2)"), "k0")]);
+        assert_eq!(f, vec!["a (1)", "a (2) ~2", "b", "a (2)"]);
+        let p = project(&[Named::new("a", false, "o:1"), Named::new("f", true, "o:2"), Named::new("a", false, "o:3")]);
         let names: Vec<&str> = p.iter().map(|x| x.0.as_str()).collect();
         assert_eq!(names, vec!["a", "a.md", "f", "a ~2", "a ~2.md"]);
         assert_eq!(p[4].1, Slot::Index(2));

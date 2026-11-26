@@ -74,11 +74,20 @@ Every entry also carries `name` (the display name without `/`, used in paths), `
 `changedAt` and `ino`. For a file they describe its bytes; for a node they describe its
 **index**. `ino` is derived from what the bytes are: the content and the texts of an object
 have the same number in every view, the index of an object is the same within one aspect.
+An object of an aspect whose name rule has a fallback (below) also carries `fallbackName`.
+
+**Equal names.** `name` need not be unique within a listing; clients that need unique names
+(FUSE, tools) resolve collisions over the complete listing: an entry whose `name` occurs more
+than once takes its `fallbackName`, names that still collide stay plain for the smallest node id
+and get ` ~2`, ` ~3`, … in node id order. The result does not depend on the order of the listing,
+so a name always means the same object (`i3cm_tools::project`). An index shown under such a
+name links relative to that name and has its own `ino`.
 
 The **index** of an object node is a Markdown file: front matter with `_id`, `_type`, `_room`
 and the readable attributes, then the display name, the description and the references as
 `[[target|label]]` links. Targets below the node (its sub nodes and folders) are relative to the
-directory name given as `name` (default: the node's `name`), everything else is `/_id/<id>`.
+directory name given as `name` (default: the node's `name`) and name exactly the entry a listing
+shows (collisions resolved as above), everything else is `/_id/<id>`.
 The index of a group or folder is its name as a heading. `GET /v1/aspects` reports `size` and
 `ino` of the index of each aspect's entry.
 
@@ -97,7 +106,8 @@ Built-in views need no definition and are listed before the module aspects:
 A token belongs to an account; the server stores only its hash. Without `account`, a caller
 issues a token for itself; it needs no right and never expires later than the token of the
 request. A token for another account needs the right to grant rights. `ttl` is in days
-(default 90, at most 365). Tokens created on the command line (`i3cm-server init-tenant`,
-`create-token`) do not expire. `GET /v1/tokens` lists the caller's tokens, or all tokens of the
+(default 90, at most 365). Tokens created on the command line expire as well:
+`i3cm-server create-token <tenant> <login> [--ttl <days>]` (default 90, at most 365); the first
+token printed by `init-tenant` is a start key valid for one day. `GET /v1/tokens` lists the caller's tokens, or all tokens of the
 tenant with the right to grant rights (`?account=` filters); `DELETE /v1/tokens/{id}` revokes a
 token at once.

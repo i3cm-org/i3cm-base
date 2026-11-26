@@ -35,8 +35,10 @@ The mount (and the tree the tools see) has one directory per aspect, with its in
 ```
 
 A node of an aspect is a directory `<name>/` with its index `<name>.md` beside it; a file is a
-file. Names are display names with `/` replaced by `_`; equal names in one directory get
-` ~2`, ` ~3`. Everything is read-only. A file of an object shows the same inode in every view
+file. Names are display names with `/` replaced by `_`; equal names in one directory take the
+fallback name of their aspect's name rule if it has one (mailbox: with the time received), and
+names that still collide get ` ~2`, ` ~3` in object id order, so a name always opens the same
+object. Everything is read-only. A file of an object shows the same inode in every view
 (content and texts) and `nlink` 2, so `find -samefile`, `du` and `tar` see one file.
 
 The driver fetches a directory completely (paged internally) and reads the small files of a
@@ -69,8 +71,8 @@ Options (anything else is an error that lists these, never a silent fallback):
 | `grep` | `-r -R -i -n -l -c -v -w -F -E -e PATTERN` and the long forms |
 | `find` | `-name -iname -path -type f\|d -maxdepth -mindepth -print`, one `-exec CMD {} ;` or `+` |
 
-`grep -r` searches the texts of objects and the indexes, not binary content (a text type can be
-excluded with `@texts("ocr.txt:text/plain:noGrep")`). A file named on the command line is always
+`grep -r` searches the texts of objects and the indexes, not binary content (a text type is
+excluded with the class decorator `@noGrep("ocr.txt")`). A file named on the command line is always
 searched. A trigram index (PostgreSQL extension `pg_trgm`) prefilters literal patterns; without
 the extension the prefilter scans the texts. `find -exec` runs our tools on the server (`;`
 per file, `+` once); another program runs locally per file through the mount. Standard input

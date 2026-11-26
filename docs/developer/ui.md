@@ -69,4 +69,5 @@ docker compose -f deploy/compose.ui.yaml -p i3cm-ui exec server i3cm-server init
 python3 deploy/ui/seed-demo.py http://localhost:8090 <token>   # optional demo data
 ```
 
-Open `http://localhost:8090/` and sign in with the token printed by `init-tenant`.
+Open `http://localhost:8090/` and sign in with the token printed by `init-tenant` (valid one day;
+`i3cm-server create-token demo admin` issues a longer one).

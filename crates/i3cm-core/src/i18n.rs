@@ -66,9 +66,17 @@ impl I18n {
     }
 
     fn render(&self, lang: &str, id: &str, attrs: &Map<String, Value>) -> Option<String> {
+        self.render_part(lang, id, None, attrs)
+    }
+
+    /// Render a message, or one of its attributes (`.fallback`).
+    fn render_part(&self, lang: &str, id: &str, attribute: Option<&str>, attrs: &Map<String, Value>) -> Option<String> {
         let b = self.bundles.get(lang)?;
         let msg = b.get_message(id)?;
-        let pattern = msg.value()?;
+        let pattern = match attribute {
+            Some(a) => msg.get_attribute(a)?.value(),
+            None => msg.value()?,
+        };
         let mut args = FluentArgs::new();
         for (k, v) in attrs {
             args.set(k.clone(), display(v));
@@ -92,6 +100,20 @@ impl I18n {
             }
         }
         (n, d)
+    }
+
+    /// Name by the fallback rule: the attribute `.fallback` of the name message in force (the
+    /// aspect's, else the global one); used when names in a directory collide.
+    pub fn fallback_in(&self, aspect: Option<&str>, lang: &str, type_name: &str, attrs: &Map<String, Value>) -> Option<String> {
+        let t = type_name.replace(':', "-");
+        // the fallback belongs to the name rule that is in force
+        if let Some(a) = aspect {
+            let id = format!("{}--{t}-name", a.replace(':', "-"));
+            if self.bundles.get(lang).is_some_and(|b| b.has_message(&id)) {
+                return self.render_part(lang, &id, Some("fallback"), attrs);
+            }
+        }
+        self.render_part(lang, &format!("{t}-name"), Some("fallback"), attrs)
     }
 
     /// Label of an attribute, folder, tab, column or function within an aspect.

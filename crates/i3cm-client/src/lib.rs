@@ -223,6 +223,9 @@ pub struct AspectNode {
     /// Name in paths (FUSE, tools).
     #[serde(default)]
     pub name: String,
+    /// Name in paths by the aspect's fallback rule, used when names collide.
+    #[serde(rename = "fallbackName", default)]
+    pub fallback_name: Option<String>,
     /// Bytes of the file; for a node: of its index.
     pub size: Option<u64>,
     #[serde(rename = "changedAt")]

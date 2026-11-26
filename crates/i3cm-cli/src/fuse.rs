@@ -5,7 +5,7 @@
 //! so a recursive reader costs requests per directory, not per file.
 
 use crate::api::{Api, Child};
-use i3cm_tools::{fs_name, project, Slot};
+use i3cm_tools::{fs_name, project, Named, Slot};
 use fuser::{Errno, FileAttr, FileHandle, FileType, FopenFlags, Generation, INodeNo, OpenFlags, ReplyAttr, ReplyData, ReplyDirectory, ReplyEntry, ReplyOpen, Request};
 use serde_json::{json, Value};
 use std::collections::HashMap;
@@ -135,9 +135,10 @@ impl Fs {
 
     /// Register the entries of a listing and return (name, node id).
     fn register(&self, st: &mut State, parent: u64, ppath: &str, aspect: &str, children: &[Child]) -> Vec<(String, u64)> {
-        let pairs: Vec<(&str, bool)> = children.iter().map(|c| (c.name.as_str(), c.file)).collect();
+        let named: Vec<Named> = children.iter().map(|c| Named { name: &c.name, file: c.file, fallback: c.fallback_name.as_deref(), key: &c.node }).collect();
+        let entries = project(&named);
         let mut out = vec![];
-        for (name, slot) in project(&pairs) {
+        for (name, slot) in entries.iter().cloned() {
             let (id, ino) = match slot {
                 Slot::Dir(i) => {
                     let c = &children[i];
@@ -148,8 +149,10 @@ impl Fs {
                 Slot::Index(i) => {
                     let c = &children[i];
                     let obj = c.id.is_some() && c.node.starts_with("o:");
-                    let id = c.ino.unwrap_or_else(|| i3cm_tools::ino(&["i", aspect, &c.node]));
-                    let kind = Kind::Index { aspect: aspect.into(), node: c.node.clone(), dir: c.name.clone() };
+                    let dir = i3cm_tools::dir_name(&entries, i).unwrap_or(&c.name).to_string();
+                    // under another name than the server assumed, the index links differ: own inode
+                    let id = if dir == c.name { c.ino.unwrap_or_else(|| i3cm_tools::ino(&["i", aspect, &c.node])) } else { i3cm_tools::ino(&["i", aspect, &c.node, &dir]) };
+                    let kind = Kind::Index { aspect: aspect.into(), node: c.node.clone(), dir };
                     (id, Ino { kind, dir: false, size: c.size.unwrap_or(0), nlink: if obj { 2 } else { 1 }, mtime: time(&c.changed_at, self.started), parent, path: String::new() })
                 }
                 Slot::File(i) => {
@@ -201,9 +204,13 @@ impl Fs {
             }
             Kind::Dir { aspect, node } => {
                 let children = self.api.children(&aspect, &node).map_err(|_| Errno::EIO)?;
-                let mut st = self.st.lock().unwrap();
-                let out = self.register(&mut st, dir, &path, &aspect, &children);
-                st.listings.insert(dir, (Instant::now(), out.clone()));
+                let out = {
+                    let mut st = self.st.lock().unwrap();
+                    let out = self.register(&mut st, dir, &path, &aspect, &children);
+                    st.listings.insert(dir, (Instant::now(), out.clone()));
+                    out
+                };
+                self.fetch_renamed_indexes(&aspect, &children, &out);
                 out
             }
             _ => return Err(Errno::ENOTDIR),
@@ -267,6 +274,36 @@ impl Fs {
         let d = Arc::new(bytes);
         self.st.lock().unwrap().data.insert(id, (Instant::now(), d.clone()));
         Ok(d)
+    }
+
+    /// Indexes shown under another name than the server assumed (collisions) have other links and
+    /// so another size: fetch them in one request so that `stat` is exact.
+    fn fetch_renamed_indexes(&self, aspect: &str, children: &[Child], out: &[(String, u64)]) {
+        let mut items: Vec<(u64, Value)> = vec![];
+        {
+            let st = self.st.lock().unwrap();
+            for (_, id) in out {
+                if let Some(Ino { kind: Kind::Index { node, dir, .. }, .. }) = st.inodes.get(id)
+                    && children.iter().any(|c| &c.node == node && !c.file && &c.name != dir) {
+                        items.push((*id, json!({"node": node, "name": dir, "index": true})));
+                    }
+            }
+        }
+        if items.is_empty() {
+            return;
+        }
+        let body: Vec<Value> = items.iter().map(|x| x.1.clone()).collect();
+        if let Ok(res) = self.api.files(aspect, &body) {
+            let mut st = self.st.lock().unwrap();
+            for ((id, _), d) in items.iter().zip(res) {
+                if let Some(d) = d {
+                    if let Some(i) = st.inodes.get_mut(id) {
+                        i.size = d.len() as u64;
+                    }
+                    st.data.insert(*id, (Instant::now(), Arc::new(d)));
+                }
+            }
+        }
     }
 
     /// Fetch all small, not yet cached files of a directory in one request per aspect.

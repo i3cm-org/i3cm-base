@@ -551,6 +551,23 @@ async fn tokens_expire_and_are_revoked() {
     assert_eq!(lea.revoke_token(env.admin.tokens().await.unwrap().iter().find(|x| x.account == env.init.admin_account).unwrap().id).await.unwrap_err().status(), Some(404));
 }
 
+#[tokio::test]
+async fn command_line_tokens_expire() {
+    let env = env().await;
+    let days = |exp: chrono::DateTime<chrono::Utc>| (exp - chrono::Utc::now()).num_hours() as f64 / 24.0;
+    // the first token of a tenant is a start key for one day
+    let first = env.admin.tokens().await.unwrap().into_iter().find(|x| x.account == env.init.admin_account).unwrap();
+    let exp = chrono::DateTime::parse_from_rfc3339(first.expires_at.as_deref().unwrap()).unwrap().with_timezone(&chrono::Utc);
+    assert!((0.9..=1.0).contains(&days(exp)), "start key: {exp}");
+    let t = env.store.create_token_unchecked(env.init.tenant, env.init.admin_account, None).await.unwrap();
+    assert!((89.9..=90.0).contains(&days(t.expires_at.unwrap())));
+    let t = env.store.create_token_unchecked(env.init.tenant, env.init.admin_account, Some(365)).await.unwrap();
+    assert!((364.9..=365.0).contains(&days(t.expires_at.unwrap())));
+    for bad in [0, 366] {
+        assert_eq!(env.store.create_token_unchecked(env.init.tenant, env.init.admin_account, Some(bad)).await.unwrap_err().error_id, "token.bad_ttl");
+    }
+}
+
 /// Mail with two attachments, content and a text (as in the mailbox test).
 async fn mail_fixture(env: &Env) -> Uuid {
     let mut o = Order::new();
@@ -650,6 +667,55 @@ async fn tools_over_the_api() {
     let (_, lea) = env.person("lea", &[]).await;
     let v = lea.tool_exec("/", &["grep", "-r", "Hallo", "/base:mailbox"]).await.unwrap();
     assert_eq!((v["stdout"].as_str().unwrap(), v["status"].as_i64().unwrap()), ("", 1));
+}
+
+#[tokio::test]
+async fn equal_names_use_the_fallback_then_the_id() {
+    let env = env().await;
+    let de = env.admin.clone().with_lang("de");
+    let mut o = Order::new();
+    // two mails with equal sender and subject at different times, two more at the same time
+    for (k, at) in [("a", "08:15"), ("b", "09:30"), ("c", "10:00"), ("d", "10:00")] {
+        o.create(k, None, json!({"base:Mail": {"receivedAt": format!("2026-11-24T{at}:00+01:00"), "sender": "anna@example.org", "subject": "Angebot"}}));
+    }
+    o.create("x", None, json!({"base:MailAttachment": {"filename": "file.pdf"}}));
+    o.link("base:MailAttachment.mail", "x", "d");
+    let r = env.admin.order(&o).await.unwrap();
+    let ls = |cwd: &'static str| {
+        let de = de.clone();
+        async move { de.tool_exec(cwd, &["ls", "."]).await.unwrap()["stdout"].as_str().unwrap().to_string() }
+    };
+    let day = ls("/base:mailbox/2026-11-24").await;
+    let dirs: Vec<&str> = day.lines().filter(|l| !l.ends_with(".md")).collect();
+    assert_eq!(dirs.len(), 4, "{day}");
+    assert!(dirs.iter().any(|d| d.starts_with("anna@example.org - Angebot (2026-11-24T07:15")), "fallback with the time: {day}");
+    let at10: Vec<&&str> = dirs.iter().filter(|d| d.contains("T09:00")).collect();
+    assert_eq!(at10.len(), 2, "{day}");
+    assert!(at10.iter().any(|d| d.ends_with(" ~2")), "same time: numbered: {day}");
+    // the numbering follows the id, so a name always means the same mail
+    let (c, d) = (r.created["c"], r.created["d"]);
+    let (first, second) = if c < d { (c, d) } else { (d, c) };
+    let plain = at10.iter().find(|x| !x.ends_with(" ~2")).unwrap().to_string();
+    let numbered = format!("{plain} ~2");
+    let id_of = |name: String| {
+        let de = de.clone();
+        async move {
+            let p = format!("/base:mailbox/2026-11-24/{name}.md");
+            let v = de.tool_exec("/", &["head", "-n", "2", &p]).await.unwrap();
+            v["stdout"].as_str().unwrap().lines().nth(1).unwrap().trim_start_matches("_id: ").trim_matches('"').parse::<Uuid>().unwrap()
+        }
+    };
+    assert_eq!(id_of(plain.clone()).await, first);
+    assert_eq!(id_of(numbered.clone()).await, second);
+    // the index of the attachment links to exactly its mail's entry
+    let att = de.aspect_children("base:mailbox", &format!("f:{d}:attachments")).await.unwrap();
+    let idx = de.aspect_index("base:mailbox", &att[0].node, Some("file.pdf")).await.unwrap();
+    let mail_name = if d == first { &plain } else { &numbered };
+    assert!(!idx.is_empty());
+    let mail_idx = de.aspect_index("base:mailbox", &format!("o:{d}"), Some(mail_name)).await.unwrap();
+    assert!(mail_idx.contains(&format!("[[{mail_name}/Anhänge/file.pdf|")), "{mail_idx}");
+    // without a collision the plain name stays
+    assert!(ls("/base:mailbox").await.contains("2026-11-24\n"));
 }
 
 fn mail_static() -> &'static str {

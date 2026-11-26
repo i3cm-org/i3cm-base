@@ -136,6 +136,7 @@ export function buildCatalog(typesDir) {
         const full = `${ns}:${st.name.text}`;
         const t = { name: full, ns, local: st.name.text, abstract: false, extends: null, attributes: [],
           requires: { mode: "any", types: [] }, imprintsOn: [], brings: [], content: null, textTypes: [] };
+        const ownTexts = [], noGrep = [];
         for (const d of decoratorsOf(st)) {
           const typeArgs = () => d.args.map((a) => classFullName(a));
           switch (d.name) {
@@ -148,15 +149,22 @@ export function buildCatalog(typesDir) {
             case "hasContent": t.content = { mediaType: d.args[0] ? d.args[0].text : null }; break;
             case "texts":
               for (const a of d.args) {
-                const [name, media, flag] = a.text.split(":");
-                if (flag !== undefined && flag !== "noGrep")
-                  throw new CatError("typecat.bad_text_flag", "unknown flag of a text type (only noGrep)", { class: full, text: a.text });
-                const tt = { name: `${ns}:${name}`, mediaType: media ?? "text/plain", owner: full, grep: flag !== "noGrep" };
-                t.textTypes.push(tt.name); textTypes.push(tt);
+                const parts = a.text.split(":");
+                if (parts.length > 2)
+                  throw new CatError("typecat.bad_text", "a text type is \"name:mediaType\"", { class: full, text: a.text });
+                const [name, media] = parts;
+                const tt = { name: `${ns}:${name}`, mediaType: media ?? "text/plain", owner: full, grep: true };
+                t.textTypes.push(tt.name); textTypes.push(tt); ownTexts.push(tt);
               }
               break;
+            case "noGrep": noGrep.push(...d.args.map((a) => a.text)); break;
             default: throw new CatError("typecat.unknown_decorator", "unknown class decorator", { class: full, decorator: d.name });
           }
+        }
+        for (const n of noGrep) {
+          const tt = ownTexts.find((x) => x.name === `${ns}:${n}`);
+          if (!tt) throw new CatError("typecat.unknown_text", "@noGrep names a text type the class does not declare", { class: full, text: n });
+          tt.grep = false;
         }
         const ext = st.heritageClauses?.find((h) => h.token === ts.SyntaxKind.ExtendsKeyword);
         if (ext) t.extends = classFullName(ext.types[0].expression);

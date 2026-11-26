@@ -6,7 +6,7 @@ use crate::aspect::{NodeOut, Page, VIEW_ID};
 use crate::{Ctx, Store};
 use i3cm_core::fhirpath::Item;
 use i3cm_core::ErrorKind;
-use i3cm_tools::{fs_name, project, Entry, Fut, Node, Slot, Tree};
+use i3cm_tools::{dir_name, fs_name, project, Entry, Fut, Named, Node, Slot, Tree};
 use std::collections::{HashMap, HashSet};
 use std::sync::Mutex;
 use uuid::Uuid;
@@ -77,10 +77,12 @@ impl<'a> FsTree<'a> {
     }
 
     /// Nodes for the entries of a complete listing (shared with the FUSE driver's layout).
-    pub fn nodes(&self, parent: &str, aspect: &str, children: &[NodeOut]) -> Vec<Node> {
-        let pairs: Vec<(&str, bool)> = children.iter().map(|c| (c.name.as_str(), c.file)).collect();
+    /// `renamed`: sizes of indexes shown under another name than in the listing (key: node, NUL, name).
+    pub fn nodes(&self, parent: &str, aspect: &str, children: &[NodeOut], renamed: &HashMap<String, u64>) -> Vec<Node> {
+        let named: Vec<Named> = children.iter().map(|c| Named { name: &c.name, file: c.file, fallback: c.fallback_name.as_deref(), key: &c.node }).collect();
+        let entries = project(&named);
         let mut out = vec![];
-        for (name, slot) in project(&pairs) {
+        for (name, slot) in entries.iter().cloned() {
             let path = child_path(parent, &name);
             match slot {
                 Slot::Dir(i) => {
@@ -97,10 +99,13 @@ impl<'a> FsTree<'a> {
                 Slot::Index(i) => {
                     let c = &children[i];
                     let obj = c.id.is_some() && c.node.starts_with("o:");
+                    let dir = dir_name(&entries, i).unwrap_or(&c.name).to_string();
+                    // under another name than assumed in the listing (collision) the links differ
+                    let (size, ino) = if dir == c.name { (c.size.unwrap_or(0), c.ino) } else { (renamed.get(&format!("{}\0{dir}", c.node)).copied().unwrap_or(0), Some(i3cm_tools::ino(&["i", aspect, &c.node, &dir]))) };
                     out.push(Node {
                         path,
-                        entry: Entry { name, dir: false, size: c.size.unwrap_or(0), nlink: if obj { 2 } else { 1 }, mtime: mtime(c), ino: c.ino },
-                        handle: handle(&H::Index { aspect: aspect.into(), node: c.node.clone(), dir: c.name.clone() }),
+                        entry: Entry { name, dir: false, size, nlink: if obj { 2 } else { 1 }, mtime: mtime(c), ino },
+                        handle: handle(&H::Index { aspect: aspect.into(), node: c.node.clone(), dir }),
                         grep: true,
                         key: None,
                     });
@@ -136,7 +141,20 @@ impl<'a> FsTree<'a> {
             }
             offset += PAGE;
         }
-        Ok(self.nodes(parent, aspect, &all))
+        // indexes under another name than the listing assumed (collisions) have other links
+        let named: Vec<Named> = all.iter().map(|c| Named { name: &c.name, file: c.file, fallback: c.fallback_name.as_deref(), key: &c.node }).collect();
+        let entries = project(&named);
+        let mut renamed = HashMap::new();
+        for (_, slot) in &entries {
+            if let Slot::Index(i) = slot {
+                let dir = dir_name(&entries, *i).unwrap_or_default();
+                if dir != all[*i].name {
+                    let idx = self.store.aspect_index(self.ctx, aspect, &all[*i].node, Some(dir), &self.lang).await.map_err(|e| e.description)?;
+                    renamed.insert(format!("{}\0{dir}", all[*i].node), idx.len() as u64);
+                }
+            }
+        }
+        Ok(self.nodes(parent, aspect, &all, &renamed))
     }
 
     /// `/_id/<id>` and `/_id/<id>.md` (the entry of `_id` lists nothing).

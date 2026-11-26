@@ -26,14 +26,20 @@ enum Cmd {
         #[arg(long, default_value_t = 32)]
         pool: usize,
     },
-    /// Create a tenant with root room, roles and an admin login; prints the admin token
+    /// Create a tenant with root room, roles and an admin login; prints the admin token (valid one day)
     InitTenant {
         name: String,
         #[arg(long, default_value = "admin")]
         admin: String,
     },
-    /// Issue a token for an existing login
-    CreateToken { tenant: String, login: String },
+    /// Issue a token for an existing login; prints token and expiry
+    CreateToken {
+        tenant: String,
+        login: String,
+        /// Lifetime in days (default 90, at most 365)
+        #[arg(long)]
+        ttl: Option<i64>,
+    },
     /// Development: embedded PostgreSQL in a data directory, tenant "dev", serve
     Dev {
         #[arg(long, default_value = ".pgdata")]
@@ -65,11 +71,15 @@ async fn main() -> Result<()> {
             let init = store.init_tenant(&name, &admin).await.map_err(|e| anyhow::anyhow!("{e}"))?;
             println!("{}", serde_json::to_string_pretty(&init)?);
         }
-        Cmd::CreateToken { tenant, login } => {
+        Cmd::CreateToken { tenant, login, ttl } => {
             let store = connect(&db()?, &catalog, 4).await?;
             let t = store.tenant_by_name(&tenant).await.map_err(|e| anyhow::anyhow!("{e}"))?;
             let a = store.account_by_login(t, &login).await.map_err(|e| anyhow::anyhow!("{e}"))?;
-            println!("{}", store.create_token_unchecked(t, a).await.map_err(|e| anyhow::anyhow!("{e}"))?);
+            let issued = store.create_token_unchecked(t, a, ttl).await.map_err(|e| anyhow::anyhow!("{e}"))?;
+            if let Some(exp) = issued.expires_at {
+                eprintln!("expires: {}", exp.to_rfc3339());
+            }
+            println!("{}", issued.token);
         }
         Cmd::Dev { data, listen } => {
             let pg = EmbeddedDb::start(Some(std::fs::canonicalize(".").unwrap_or_default().join(data))).await?;

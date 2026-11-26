@@ -6,7 +6,7 @@ mod common;
 use i3cm_cli::api::Api;
 use i3cm_cli::config::Config;
 use i3cm_cli::fuse::Fs;
-use i3cm_tools::{project, Slot};
+use i3cm_tools::{project, Named, Slot};
 use common::*;
 use std::time::Duration;
 
@@ -54,8 +54,8 @@ fn requests_grow_with_directories_not_files() {
 
 fn compare(env: &Env, fs: &Fs, dir: u64, aspect: &str, node: &str, depth: u32, seen: &mut u64) {
     let children = rt().block_on(env.admin.aspect_children(aspect, node)).unwrap();
-    let pairs: Vec<(&str, bool)> = children.iter().map(|c| (c.name.as_str(), c.file)).collect();
-    let expected = project(&pairs);
+    let named: Vec<Named> = children.iter().map(|c| Named { name: &c.name, file: c.file, fallback: c.fallback_name.as_deref(), key: &c.node }).collect();
+    let expected = project(&named);
     let got: Vec<String> = fs.entries(dir).unwrap().into_iter().map(|e| e.0).collect();
     assert_eq!(got, expected.iter().map(|e| e.0.clone()).collect::<Vec<_>>(), "listing of {aspect} {node}");
     for (name, slot) in &expected {
@@ -71,13 +71,18 @@ fn compare(env: &Env, fs: &Fs, dir: u64, aspect: &str, node: &str, depth: u32, s
             Slot::Index(i) | Slot::File(i) => {
                 let c = &children[i];
                 let api = match slot {
-                    Slot::Index(_) => rt().block_on(env.admin.aspect_index(aspect, &c.node, Some(&c.name))).unwrap().into_bytes(),
+                    Slot::Index(i) => rt().block_on(env.admin.aspect_index(aspect, &c.node, i3cm_tools::dir_name(&expected, *i))).unwrap().into_bytes(),
                     _ => rt().block_on(env.admin.aspect_file(aspect, &c.node, &c.display_name)).unwrap(),
                 };
                 let bytes = fs.content(a.ino.0).unwrap();
                 assert_eq!(*bytes, api, "bytes of {name}");
                 assert_eq!(a.size, api.len() as u64, "size of {name}");
-                assert_eq!(Some(a.ino.0), c.ino, "inode of {name}");
+                // an index under another name than the listing assumed (collision) has its own inode
+                let want = match slot {
+                    Slot::Index(i) if i3cm_tools::dir_name(&expected, *i) != Some(c.name.as_str()) => Some(i3cm_tools::ino(&["i", aspect, &c.node, i3cm_tools::dir_name(&expected, *i).unwrap()])),
+                    _ => c.ino,
+                };
+                assert_eq!(Some(a.ino.0), want, "inode of {name}");
                 let object = c.id.is_some() && (c.file || c.node.starts_with("o:"));
                 assert_eq!(a.nlink, if object { 2 } else { 1 }, "nlink of {name}");
                 assert_eq!(a.perm, 0o444);

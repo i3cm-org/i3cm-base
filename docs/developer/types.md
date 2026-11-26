@@ -25,8 +25,8 @@ export class JournalLine {
   qualification in paths (``person.`verein:memberships` ``). Names starting with `_` are reserved.
 * Class decorators: `@ns`, `@abstractType`, `@requires(A, B)` (one of), `@requiresAll(A, B)`,
   `@brings(B)` (every object of this type is also a B), `@imprintsOn(A)` (every A is also of
-  this type), `@hasContent(mediaType?)`, `@texts("name:mediaType[:noGrep]", ...)` (`noGrep`: not
-  searched by `grep`, e.g. the OCR layer of a scan).
+  this type), `@hasContent(mediaType?)`, `@texts("name:mediaType", ...)`, `@noGrep("name", ...)` (text
+  types not searched by `grep`, e.g. the OCR layer of a scan).
 * Attribute decorators: `@indexed`, `@unique`; reference decorators: `@partOf`, `@ordered`,
   `@rightsRelevant`, `@min`.
 
@@ -90,6 +90,14 @@ export const mailbox = aspect("mailbox", {
 
 Display texts within an aspect: `<ns>-<aspect>--<ns>-<Type>-name`/`-description` override the
 global texts; `<ns>-<aspect>--label-<key>` names attributes, folders, tabs, columns and functions.
+A name rule may carry a fallback as the Fluent attribute `.fallback`; it applies when names in one
+directory collide (otherwise ` ~2`, ` ~3` in id order):
+
+```ftl
+base-mailbox--base-Mail-name = { $sender } - { $subject }
+    .fallback = { $sender } - { $subject } ({ $receivedAt })
+```
+
 A grouping rule is an attribute of the entry type itself, optionally with `.toString()`,
 `.substring(0, n)` and finally `.upper()` or `.lower()`; list attributes are allowed. Grouping
 always runs in SQL; other expressions are rejected when the catalog is loaded. A tab lists the objects reached by its
