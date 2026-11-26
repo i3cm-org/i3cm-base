@@ -168,7 +168,7 @@ pub fn check(m: &Model) -> Result<()> {
 }
 
 /// Names that every object has in paths (DEC: reserved names with underscore).
-pub const PATH_RESERVED: &[&str] = &["_content", "_texts", "_id", "_room", "_createdBy", "_createdAt"];
+pub const PATH_RESERVED: &[&str] = &["_content", "_texts", "_id", "_room", "_createdBy", "_createdAt", "_changedBy", "_changedAt"];
 
 fn check_path(m: &Model, aspect: &str, focus: Option<&str>, path: &str) -> Result<crate::fhirpath::Expr> {
     use crate::fhirpath::{check_profile, first_name, parse, VIEW_FUNCTIONS};
@@ -193,8 +193,18 @@ fn check_aspect(m: &Model, a: &crate::catalog::AspectDef) -> Result<()> {
     if m.type_def(entry).is_none() {
         return Err(err("aspect.unknown_type", "aspect names an unknown type").with("aspect", a.name.clone()).with("type", entry.clone()));
     }
+    let entry_def = m.type_def(entry).unwrap();
     for g in &a.entry.group_by {
-        check_path(m, &a.name, Some(entry), g)?;
+        let e = check_path(m, &a.name, Some(entry), g)?;
+        let bad = |why: &str| {
+            err("aspect.bad_group", "a grouping rule is an attribute of the entry type, optionally with a standard function")
+                .with("aspect", a.name.clone()).with("rule", g.clone()).with("reason", why)
+        };
+        let k = crate::fhirpath::group_key(&e).ok_or_else(|| bad("not an attribute with a standard function"))?;
+        let ad = entry_def.attributes.iter().find(|x| x.name == k.attr).ok_or_else(|| bad("not an attribute of the entry type itself"))?;
+        if crate::values::Col::of(&ad.vt) == crate::values::Col::Json {
+            return Err(bad("structured attributes cannot be grouped"));
+        }
     }
     for (t, n) in &a.nodes {
         if m.type_def(t).is_none() {

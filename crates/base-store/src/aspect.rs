@@ -6,8 +6,9 @@ use crate::schema::{col, type_table};
 use crate::sql::{param, refs, Param};
 use crate::Store;
 use base_core::catalog::{AspectDef, NodeDef};
-use base_core::fhirpath::{check_profile, eval, parse, simple_prefix, BoxFut, Expr, Item, Nav, VIEW_FUNCTIONS};
+use base_core::fhirpath::{check_profile, eval, group_key, parse, BoxFut, Expr, GroupKey, Item, Nav, VIEW_FUNCTIONS};
 use base_core::values::{display, Col, Val};
+use chrono::{DateTime, Utc};
 use base_core::{BaseError, ErrorKind, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
@@ -58,6 +59,16 @@ impl<'a> StoreNav<'a> {
         Ok(v)
     }
 
+    /// Last change of any readable part: time and account (from the history).
+    async fn changed(&self, id: Uuid) -> Result<Option<(DateTime<Utc>, Option<Uuid>)>> {
+        let last = self.store.versions(self.ctx, id).await?.pop();
+        Ok(last.map(|v| {
+            let at = v["at"].as_str().and_then(|x| DateTime::parse_from_rfc3339(x).ok()).map(|x| x.with_timezone(&Utc)).unwrap_or_default();
+            let by = v["account"].as_str().and_then(|x| Uuid::parse_str(x).ok());
+            (at, by)
+        }))
+    }
+
     fn attrs(v: &ObjectView) -> Map<String, Value> {
         let mut m = Map::new();
         for p in &v.parts {
@@ -87,6 +98,8 @@ impl Nav for StoreNav<'_> {
                         "_room" => out.push(Item::Obj(v.room)),
                         "_createdBy" => out.extend(v.created_by.map(Item::Obj)),
                         "_createdAt" => out.push(Item::Val(Value::String(v.created_at.to_rfc3339()))),
+                        "_changedBy" => out.extend(self.changed(*id).await?.and_then(|(_, by)| by).map(Item::Obj)),
+                        "_changedAt" => out.extend(self.changed(*id).await?.map(|(at, _)| Item::Val(Value::String(at.to_rfc3339())))),
                         "_content" => {
                             if v.content.is_some() {
                                 out.push(Item::Content(*id))
@@ -131,9 +144,10 @@ impl Nav for StoreNav<'_> {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct NodeOut {
+    /// Opaque node id; clients pass it back unchanged. For a file: the id of its node.
     pub node: String,
-    /// group, object, folder or file
-    pub kind: String,
+    /// A file (bytes) instead of a node (index and children).
+    pub file: bool,
     #[serde(rename = "displayName")]
     pub display_name: String,
     #[serde(rename = "displayDescription", skip_serializing_if = "String::is_empty", default)]
@@ -243,115 +257,90 @@ impl Store {
             }
         }
         let (n, d) = self.i18n.names_in(Some(&a.name), lang, &t, &attrs);
-        Ok(Some(NodeOut { node: format!("o:{id}"), kind: "object".into(), display_name: n, display_description: d, count: None, type_name: Some(t), id: Some(id) }))
+        Ok(Some(NodeOut { node: format!("o:{id}"), file: false, display_name: n, display_description: d, count: None, type_name: Some(t), id: Some(id) }))
     }
 
-    /// SQL expression for a simple group expression on the entry type's own table.
-    fn group_sql(&self, a: &AspectDef, e: &Expr) -> Option<String> {
-        let (attr, n) = simple_prefix(e)?;
-        let def = self.model.type_def(&a.entry.type_name)?;
-        let ad = def.attributes.iter().find(|x| x.name == attr && !x.list)?;
-        let c = format!("x.{}", col(&attr));
-        let txt = match Col::of(&ad.vt) {
-            Col::Ts => format!("to_char({c} AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS\"+00:00\"')"),
-            Col::Json => return None,
-            Col::Text => c,
-            _ => format!("{c}::text"),
+    /// SQL text of a grouping key applied to the value expression `v`.
+    fn key_sql(v: &str, c: Col, k: &GroupKey) -> String {
+        let mut t = match c {
+            Col::Ts => format!("to_char({v} AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS\"+00:00\"')"),
+            Col::Text => v.to_string(),
+            _ => format!("{v}::text"),
         };
-        Some(match n {
-            Some(n) => format!("substring({txt}, 1, {n})"),
-            None => txt,
-        })
+        if let Some(n) = k.len {
+            t = format!("substring({t}, 1, {n})");
+        }
+        if let Some(f) = k.case {
+            t = format!("{f}({t})");
+        }
+        t
     }
 
-    /// Keys of grouping level `level` below `prefix` (with counts), or the objects at full depth.
-    async fn group_level(&self, ctx: &Ctx, nav: &StoreNav<'_>, a: &AspectDef, prefix: &[String], lang: &str) -> Result<Vec<NodeOut>> {
-        let exprs: Vec<Expr> = a.entry.group_by.iter().map(|g| expr(g)).collect::<Result<_>>()?;
+    /// Group keys of level `prefix.len()` below `prefix` (with counts), or the objects at full
+    /// depth. Always in SQL; a list attribute places an object under each of its values.
+    async fn group_level(&self, ctx: &Ctx, nav: &StoreNav<'_>, a: &AspectDef, prefix: &[String], lang: &str, page: Page) -> Result<Vec<NodeOut>> {
+        let def = self.model.require_type(&a.entry.type_name)?;
+        let mut cols = vec![];
+        for g in &a.entry.group_by {
+            let bad = || BaseError::invalid("aspect.bad_group", "grouping rule cannot run in SQL").with("rule", g.clone());
+            let k = group_key(&expr(g)?).ok_or_else(bad)?;
+            let ad = def.attributes.iter().find(|x| x.name == k.attr).ok_or_else(bad)?;
+            let c = Col::of(&ad.vt);
+            if c == Col::Json {
+                return Err(bad());
+            }
+            cols.push((format!("x.{}", col(&k.attr)), c, ad.list, k));
+        }
         let level = prefix.len();
-        if level > exprs.len() {
+        if level > cols.len() {
             return Err(BaseError::invalid("aspect.bad_node", "too many group levels"));
         }
-        let sqls: Option<Vec<String>> = exprs.iter().map(|e| self.group_sql(a, e)).collect();
-        let def = self.model.require_type(&a.entry.type_name)?;
         let rooms = self.readable_rooms_for(ctx, &a.entry.type_name);
-        match sqls {
-            Some(sqls) => {
-                let mut params: Vec<Param> = vec![Box::new(ctx.tenant), Box::new(rooms)];
-                let mut conds = String::new();
-                for (i, k) in prefix.iter().enumerate() {
-                    params.push(param(&Val::Text(k.clone()), Col::Text, false));
-                    conds.push_str(&format!(" AND {} = ${}", sqls[i], params.len()));
-                }
-                let from = format!(
-                    "FROM {} x JOIN object_state s ON s.tenant_id=x.tenant_id AND s.object_id=x.object_id AND s.valid_to IS NULL AND s.deleted_at IS NULL AND s.room_id = ANY($2) \
-                     WHERE x.tenant_id=$1 AND x.valid_to IS NULL AND x.deleted_at IS NULL{conds}",
-                    type_table(def)
-                );
-                let c = self.client().await?;
-                if level < exprs.len() {
-                    let sql = format!("SELECT k, count(*) FROM (SELECT {} AS k {from}) q WHERE k IS NOT NULL GROUP BY k ORDER BY k", sqls[level]);
-                    let rows = c.query(&sql, &refs(&params)).await.map_err(db)?;
-                    Ok(rows
-                        .iter()
-                        .map(|r| {
-                            let k: String = r.get(0);
-                            let path: Vec<String> = prefix.iter().cloned().chain([k.clone()]).map(|x| esc(&x)).collect();
-                            NodeOut { node: format!("g:{}", path.join("/")), kind: "group".into(), display_name: k, display_description: String::new(), count: Some(r.get(1)), type_name: None, id: None }
-                        })
-                        .collect())
-                } else {
-                    let sql = format!("SELECT x.object_id {from} ORDER BY x.object_id LIMIT {MAX_LIST}");
-                    let ids: Vec<Uuid> = c.query(&sql, &refs(&params)).await.map_err(db)?.iter().map(|r| r.get(0)).collect();
-                    drop(c);
-                    let mut out = vec![];
-                    for id in ids {
-                        out.extend(self.object_out(nav, a, id, lang).await?);
-                    }
-                    out.sort_by(|x, y| x.display_name.cmp(&y.display_name));
-                    Ok(out)
-                }
+        let limit = page.limit.unwrap_or(MAX_LIST).clamp(1, MAX_LIST);
+        let mut params: Vec<Param> = vec![Box::new(ctx.tenant), Box::new(rooms)];
+        let mut conds = String::new();
+        for (i, k) in prefix.iter().enumerate() {
+            let (c, ct, list, gk) = &cols[i];
+            params.push(param(&Val::Text(k.clone()), Col::Text, false));
+            let n = params.len();
+            if *list {
+                conds.push_str(&format!(" AND EXISTS (SELECT 1 FROM unnest({c}) u WHERE {} = ${n})", Self::key_sql("u", *ct, gk)));
+            } else {
+                conds.push_str(&format!(" AND {} = ${n}", Self::key_sql(c, *ct, gk)));
             }
-            None => {
-                // in-memory: evaluate the group expressions per object
-                let q = crate::read::ListQuery { limit: Some(MAX_LIST), ..Default::default() };
-                let all = self.list(ctx, &a.entry.type_name, &q, lang).await?;
-                let mut groups: std::collections::BTreeMap<String, i64> = Default::default();
-                let mut hits = vec![];
-                'obj: for s in all {
-                    let focus = [Item::Obj(s.id)];
-                    // a multi-valued expression places the object under each of its values
-                    for (i, k) in prefix.iter().enumerate() {
-                        let v = eval(nav, &exprs[i], &focus).await?;
-                        if !v.iter().any(|x| &display(&x.to_json()) == k) {
-                            continue 'obj;
-                        }
-                    }
-                    if level < exprs.len() {
-                        let keys: BTreeSet<String> = eval(nav, &exprs[level], &focus).await?.iter().map(|x| display(&x.to_json())).collect();
-                        for k in keys {
-                            *groups.entry(k).or_default() += 1;
-                        }
-                    } else {
-                        hits.push(s.id);
-                    }
-                }
-                if level < exprs.len() {
-                    Ok(groups
-                        .into_iter()
-                        .map(|(k, n)| {
-                            let path: Vec<String> = prefix.iter().cloned().chain([k.clone()]).map(|x| esc(&x)).collect();
-                            NodeOut { node: format!("g:{}", path.join("/")), kind: "group".into(), display_name: k, display_description: String::new(), count: Some(n), type_name: None, id: None }
-                        })
-                        .collect())
-                } else {
-                    let mut out = vec![];
-                    for id in hits {
-                        out.extend(self.object_out(nav, a, id, lang).await?);
-                    }
-                    out.sort_by(|x, y| x.display_name.cmp(&y.display_name));
-                    Ok(out)
-                }
+        }
+        let from = format!(
+            "FROM {} x JOIN object_state s ON s.tenant_id=x.tenant_id AND s.object_id=x.object_id AND s.valid_to IS NULL AND s.deleted_at IS NULL AND s.room_id = ANY($2)",
+            type_table(def)
+        );
+        let wh = format!("WHERE x.tenant_id=$1 AND x.valid_to IS NULL AND x.deleted_at IS NULL{conds}");
+        let c = self.client().await?;
+        if level < cols.len() {
+            let (cn, ct, list, gk) = &cols[level];
+            let inner = if *list {
+                format!("SELECT DISTINCT x.object_id, {} AS k {from} CROSS JOIN LATERAL unnest({cn}) u {wh}", Self::key_sql("u", *ct, gk))
+            } else {
+                format!("SELECT {} AS k {from} {wh}", Self::key_sql(cn, *ct, gk))
+            };
+            let sql = format!("SELECT k, count(*) FROM ({inner}) q WHERE k IS NOT NULL GROUP BY k ORDER BY k LIMIT {limit} OFFSET {}", page.offset.max(0));
+            let rows = c.query(&sql, &refs(&params)).await.map_err(db)?;
+            Ok(rows
+                .iter()
+                .map(|r| {
+                    let k: String = r.get(0);
+                    let path: Vec<String> = prefix.iter().cloned().chain([k.clone()]).map(|x| esc(&x)).collect();
+                    NodeOut { node: format!("g:{}", path.join("/")), file: false, display_name: k, display_description: String::new(), count: Some(r.get(1)), type_name: None, id: None }
+                })
+                .collect())
+        } else {
+            let sql = format!("SELECT x.object_id {from} {wh} ORDER BY x.object_id LIMIT {limit} OFFSET {}", page.offset.max(0));
+            let ids: Vec<Uuid> = c.query(&sql, &refs(&params)).await.map_err(db)?.iter().map(|r| r.get(0)).collect();
+            drop(c);
+            let mut out = vec![];
+            for id in ids {
+                out.extend(self.object_out(nav, a, id, lang).await?);
             }
+            Ok(out)
         }
     }
 
@@ -407,22 +396,23 @@ impl Store {
         let a = self.aspect_def(aspect)?;
         let nav = StoreNav::new(self, ctx);
         match parse_node(node)? {
-            NodeRef::Root => self.group_level(ctx, &nav, a, &[], lang).await,
-            NodeRef::Group(keys) => self.group_level(ctx, &nav, a, &keys, lang).await,
+            NodeRef::Root => self.group_level(ctx, &nav, a, &[], lang, page).await,
+            NodeRef::Group(keys) => self.group_level(ctx, &nav, a, &keys, lang, page).await,
             NodeRef::Object(id) => {
                 let (v, _, n) = self.node_def(&nav, a, id).await?;
                 let Some(n) = n else { return Ok(vec![]) };
                 let attrs = StoreNav::attrs(&v);
-                let mut out = vec![];
+                let mut files = vec![];
                 for (name, _) in self.files_of(&nav, id, n, &attrs).await? {
-                    out.push(NodeOut { node: format!("o:{id}"), kind: "file".into(), display_name: name, display_description: String::new(), count: None, type_name: None, id: Some(id) });
+                    files.push(NodeOut { node: format!("o:{id}"), file: true, display_name: name, display_description: String::new(), count: None, type_name: None, id: Some(id) });
                 }
+                let mut out = vec![];
                 for s in &n.sub_nodes {
                     let ids = self.objects_of(&nav, id, &s.path).await?;
                     if s.folder {
                         out.push(NodeOut {
                             node: format!("f:{id}:{}", s.label),
-                            kind: "folder".into(),
+                            file: false,
                             display_name: self.i18n.label(&a.name, lang, &s.label),
                             display_description: String::new(),
                             count: Some(ids.len() as i64),
@@ -435,7 +425,14 @@ impl Store {
                         }
                     }
                 }
-                Ok(out)
+                // entries in the order of the definition (files block and sub-node block)
+                if n.files_first {
+                    files.extend(out);
+                    Ok(files)
+                } else {
+                    out.extend(files);
+                    Ok(out)
+                }
             }
             NodeRef::Folder(id, label) => {
                 let (_, _, n) = self.node_def(&nav, a, id).await?;
@@ -462,7 +459,7 @@ impl Store {
             NodeRef::Group(keys) => {
                 let k = keys.last().cloned().unwrap_or_default();
                 return Ok(NodeDetail {
-                    node: NodeOut { node: node.to_string(), kind: "group".into(), display_name: k, display_description: String::new(), count: None, type_name: None, id: None },
+                    node: NodeOut { node: node.to_string(), file: false, display_name: k, display_description: String::new(), count: None, type_name: None, id: None },
                     attributes: vec![],
                     tabs: vec![],
                     files: vec![],
@@ -539,7 +536,7 @@ impl Store {
     // ---- built-in views (`_id`, `_type`): derived from the catalog, no definition needed ----
 
     fn group_out(node: String, name: String, count: Option<i64>) -> NodeOut {
-        NodeOut { node, kind: "group".into(), display_name: name, display_description: String::new(), count, type_name: None, id: None }
+        NodeOut { node, file: false, display_name: name, display_description: String::new(), count, type_name: None, id: None }
     }
 
     /// Object node with the global display texts.
@@ -553,7 +550,7 @@ impl Store {
             }
         }
         let (n, d) = self.i18n.names_in(None, lang, &t, &attrs);
-        Ok(Some(NodeOut { node: format!("o:{id}"), kind: "object".into(), display_name: n, display_description: d, count: None, type_name: Some(t), id: Some(id) }))
+        Ok(Some(NodeOut { node: format!("o:{id}"), file: false, display_name: n, display_description: d, count: None, type_name: Some(t), id: Some(id) }))
     }
 
     /// Files of an object in the built-in views: its content and its texts.
@@ -636,10 +633,10 @@ impl Store {
                 let v = nav.view(id).await?.ok_or_else(|| BaseError::not_found("object.not_found", "object not found"))?;
                 let mut out: Vec<NodeOut> = Self::plain_files(&v)
                     .into_iter()
-                    .map(|(name, _)| NodeOut { node: format!("o:{id}"), kind: "file".into(), display_name: name, display_description: String::new(), count: None, type_name: None, id: Some(id) })
+                    .map(|(name, _)| NodeOut { node: format!("o:{id}"), file: true, display_name: name, display_description: String::new(), count: None, type_name: None, id: Some(id) })
                     .collect();
                 for e in self.filled_ends(ctx, &v).await? {
-                    out.push(NodeOut { node: format!("f:{id}:{e}"), kind: "folder".into(), display_name: e, display_description: String::new(), count: None, type_name: None, id: None });
+                    out.push(NodeOut { node: format!("f:{id}:{e}"), file: false, display_name: e, display_description: String::new(), count: None, type_name: None, id: None });
                 }
                 Ok(out)
             }
@@ -672,6 +669,10 @@ impl Store {
                     LabeledValues { key: "_room".into(), label: "_room".into(), values: vec![Value::String(v.room.to_string())] },
                     LabeledValues { key: "_type".into(), label: "_type".into(), values: v.types.iter().map(|t| Value::String(t.type_name.clone())).collect() },
                 ];
+                for name in ["_createdBy", "_createdAt", "_changedBy", "_changedAt"] {
+                    let values = nav.member(&Item::Obj(id), name).await?.iter().map(|i| i.to_json()).collect();
+                    attributes.push(LabeledValues { key: name.into(), label: name.into(), values });
+                }
                 for p in &v.parts {
                     for (k, x) in &p.attributes {
                         let values = match x {

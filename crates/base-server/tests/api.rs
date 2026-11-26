@@ -407,12 +407,14 @@ async fn mailbox_aspect() {
     let de = env.admin.clone().with_lang("de");
     let days = de.aspect_children("base:mailbox", "").await.unwrap();
     assert_eq!(days.iter().map(|d| (d.display_name.as_str(), d.count)).collect::<Vec<_>>(), vec![("2026-11-24", Some(2)), ("2026-11-25", Some(1))]);
-    let mails = de.aspect_children("base:mailbox", &days[0].node).await.unwrap();
+    let mut mails = de.aspect_children("base:mailbox", &days[0].node).await.unwrap();
+    mails.sort_by(|a, b| a.display_name.cmp(&b.display_name)); // compared as a set (DEC-118)
     assert_eq!(mails.iter().map(|m| m.display_name.as_str()).collect::<Vec<_>>(), vec!["anna@example.org - Angebot", "ben@example.org - Rechnung"]);
     let inside = de.aspect_children("base:mailbox", &mails[0].node).await.unwrap();
-    let names: Vec<(&str, &str)> = inside.iter().map(|n| (n.kind.as_str(), n.display_name.as_str())).collect();
-    assert_eq!(names, vec![("file", "mail.eml"), ("file", "mail.md"), ("folder", "Anhänge")]);
-    let atts = de.aspect_children("base:mailbox", &inside[2].node).await.unwrap();
+    // order of the definition: the sub-node block comes before the files block in base:mailbox
+    let names: Vec<(bool, &str)> = inside.iter().map(|n| (n.file, n.display_name.as_str())).collect();
+    assert_eq!(names, vec![(false, "Anhänge"), (true, "mail.eml"), (true, "mail.md")]);
+    let atts = de.aspect_children("base:mailbox", &inside[0].node).await.unwrap();
     assert_eq!(atts.len(), 2);
     let att_files = de.aspect_children("base:mailbox", &atts.iter().find(|a| a.display_name == "file0.pdf").unwrap().node).await.unwrap();
     assert_eq!(att_files[0].display_name, "file0.pdf");
@@ -433,6 +435,11 @@ async fn mailbox_aspect() {
     assert_eq!(env.admin.eval(m0, "attachments.where(filename = 'file1.pdf').count()").await.unwrap(), vec![json!(1)]);
     assert_eq!(env.admin.eval(m0, "_createdBy = %x").await.unwrap_err().error_id(), Some("path.syntax"));
     assert_eq!(env.admin.eval(m0, "_createdBy._id").await.unwrap(), vec![json!(env.init.admin_account.to_string())]);
+    assert_eq!(env.admin.eval(m0, "_changedBy._id").await.unwrap(), vec![json!(env.init.admin_account.to_string())]);
+    let created = env.admin.eval(m0, "_createdAt").await.unwrap();
+    let changed = env.admin.eval(m0, "_changedAt").await.unwrap();
+    assert_eq!(changed.len(), 1);
+    assert!(changed[0].as_str().unwrap() >= created[0].as_str().unwrap(), "{changed:?} >= {created:?}");
 
     // without read rights the mailbox is empty
     let (_, lea) = env.person("lea", &[]).await;
@@ -467,8 +474,8 @@ async fn builtin_views() {
     let mails = de.aspect_children("_type", &mail.node).await.unwrap();
     assert_eq!(mails.len(), 1);
     let inside = de.aspect_children("_type", &mails[0].node).await.unwrap();
-    let names: Vec<(&str, &str)> = inside.iter().map(|n| (n.kind.as_str(), n.display_name.as_str())).collect();
-    assert_eq!(names, vec![("file", "content"), ("file", "mail.md"), ("folder", "attachments")]);
+    let names: Vec<(bool, &str)> = inside.iter().map(|n| (n.file, n.display_name.as_str())).collect();
+    assert_eq!(names, vec![(true, "content"), (true, "mail.md"), (false, "attachments")]);
     assert_eq!(de.aspect_children("_type", &inside[2].node).await.unwrap().len(), 2);
     let page = de.aspect_children_page("_type", &inside[2].node, 1, 1).await.unwrap();
     assert_eq!(page.len(), 1);
@@ -502,7 +509,11 @@ async fn multi_valued_group_by() {
     let groups = de.aspect_children("base:recipients", "").await.unwrap();
     // the mail exists once but appears under each of its (distinct) recipients; counts are occurrences
     assert_eq!(groups.iter().map(|g| (g.display_name.as_str(), g.count)).collect::<Vec<_>>(), vec![("ben@example.org", Some(1)), ("carla@example.org", Some(2))]);
-    let carla = de.aspect_children("base:recipients", &groups[1].node).await.unwrap();
+    // grouping is paged like every listing (DEC-108)
+    let second = de.aspect_children_page("base:recipients", "", 1, 1).await.unwrap();
+    assert_eq!(second.iter().map(|g| g.display_name.as_str()).collect::<Vec<_>>(), vec!["carla@example.org"]);
+    let mut carla = de.aspect_children("base:recipients", &groups[1].node).await.unwrap();
+    carla.sort_by(|a, b| a.display_name.cmp(&b.display_name));
     assert_eq!(carla.iter().map(|m| m.display_name.as_str()).collect::<Vec<_>>(), vec!["anna@example.org - Angebot", "ben@example.org - Frage"]);
     let ben = de.aspect_children("base:recipients", &groups[0].node).await.unwrap();
     assert_eq!(ben[0].id, carla[0].id, "same object under both groups");

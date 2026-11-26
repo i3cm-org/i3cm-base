@@ -261,6 +261,7 @@ function aspectOf(name, def) {
       files: pairs(n.files).map(([name, path]) => ({ name, path })),
       tabs: pairs(n.tabs).map(([label, v]) => ({ label, path: v.path, columns: pairs(v.columns).map(([l, p]) => ({ label: l, path: p })) })),
       functions: pairs(n.functions).map(([name, v]) => ({ name, url: v.url })),
+      filesFirst: !("subNodes" in n) || !("files" in n) || Object.keys(n).indexOf("files") < Object.keys(n).indexOf("subNodes"),
     };
   }
   return { name, entry: { type: def.entry.type, groupBy: def.entry.groupBy ?? [] }, nodes };

@@ -58,6 +58,13 @@ pub struct NodeDef {
     pub tabs: Vec<TabDef>,
     #[serde(default)]
     pub functions: Vec<FunctionDef>,
+    /// The files block comes before the sub-node block in the definition.
+    #[serde(rename = "filesFirst", default = "yes")]
+    pub files_first: bool,
+}
+
+fn yes() -> bool {
+    true
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

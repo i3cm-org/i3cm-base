@@ -210,8 +210,8 @@ pub struct ListQuery {
 #[derive(Debug, Clone, Deserialize)]
 pub struct AspectNode {
     pub node: String,
-    /// group, object, folder or file
-    pub kind: String,
+    /// A file (bytes) instead of a node (index and children).
+    pub file: bool,
     #[serde(rename = "displayName")]
     pub display_name: String,
     #[serde(rename = "displayDescription", default)]

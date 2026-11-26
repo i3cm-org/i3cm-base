@@ -52,17 +52,22 @@ back as `integrity.violated` with a list of violations.
 | `POST /v1/tokens` | `{"account": "<id>"}` issues a token |
 | `GET /v1/objects/{id}/eval?expr=` | evaluate a path (FHIRPath, profile views) on an object |
 | `GET /v1/aspects` | aspects |
-| `GET /v1/aspects/{aspect}/children?node=&offset=&limit=` | children of a node; empty `node` is the entry; built-in views page long listings |
+| `GET /v1/aspects/{aspect}/children?node=&offset=&limit=` | children of a node; empty `node` is the entry; every listing is paged |
 | `GET /v1/aspects/{aspect}/node?node=` | details: name, description, attributes, files, tabs, functions |
-| `GET /v1/aspects/{aspect}/file?node=&name=` | a file of an object node |
+| `GET /v1/aspects/{aspect}/file?node=&name=` | a file of a node |
 
-Node ids: `g:<key>[/<key>...]` (group), `o:<id>` (object), `f:<id>:<folder>` (folder).
+Every entry is either a **node** (`"file": false`: it has details and children, possibly none)
+or a **file** (`"file": true`: bytes, fetched with `file?node=&name=`). `node` is an opaque id:
+clients pass it back unchanged and never build or parse it. `id` is set when an object stands
+behind the entry, to switch to the generic object API. Entries of an object node appear in the
+order of the aspect definition.
 
 Built-in views need no definition and are listed before the module aspects:
 
-- `_id`: every object by its id (`o:<id>`); the entry lists nothing. Ids are addresses, view paths
+- `_id`: every object by its id; the entry lists nothing. Ids are addresses, view paths
   are not: store ids, never paths.
-- `_type`: types with object counts (`g:<type>`), then their objects. Below an object: its content
+- `_type`: types with object counts, then their objects. Below an object: its content
   (named by its file name, else `content`), its texts, and one folder per named end that holds
-  objects (`f:<id>:<end>`).
+  objects. Object details show `_id`, `_room`, `_type`, `_createdBy`, `_createdAt`, `_changedBy`,
+  `_changedAt` and all attributes.
 

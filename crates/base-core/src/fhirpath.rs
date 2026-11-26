@@ -584,15 +584,35 @@ pub fn simple_prefix(e: &Expr) -> Option<(String, Option<usize>)> {
         },
         Expr::Call(Some(t), f, args) if f == "substring" && args.len() == 2 => {
             let (a, None) = simple_prefix(t)? else { return None };
-            if !matches!(t.as_ref(), Expr::Call(_, g, _) if g == "toString") {
-                return None;
-            }
             match (&args[0], &args[1]) {
                 (Expr::Lit(Value::Number(s)), Expr::Lit(Value::Number(n))) if s.as_i64() == Some(0) => Some((a, Some(n.as_u64()? as usize))),
                 _ => None,
             }
         }
         _ => None,
+    }
+}
+
+/// A grouping rule: an attribute, optionally `.toString()`, `.substring(0, n)` and finally
+/// `.upper()` or `.lower()`. Only such rules are allowed in `groupBy`; they always run in SQL.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GroupKey {
+    pub attr: String,
+    pub len: Option<usize>,
+    pub case: Option<&'static str>,
+}
+
+pub fn group_key(e: &Expr) -> Option<GroupKey> {
+    match e {
+        Expr::Call(Some(t), f, args) if (f == "upper" || f == "lower") && args.is_empty() => {
+            let mut k = group_key(t)?;
+            if k.case.is_some() {
+                return None;
+            }
+            k.case = Some(if f == "upper" { "upper" } else { "lower" });
+            Some(k)
+        }
+        _ => simple_prefix(e).map(|(attr, len)| GroupKey { attr, len, case: None }),
     }
 }
 
@@ -698,6 +718,11 @@ mod tests {
         assert_eq!(first_name(&parse("attachments.where(x = 1).filename").unwrap()), Some("attachments"));
         assert_eq!(simple_prefix(&parse("receivedAt.toString().substring(0, 7)").unwrap()), Some(("receivedAt".into(), Some(7))));
         assert_eq!(simple_prefix(&parse("receivedAt").unwrap()), Some(("receivedAt".into(), None)));
-        assert_eq!(simple_prefix(&parse("receivedAt.substring(0, 7)").unwrap()), None);
+        assert_eq!(simple_prefix(&parse("subject.substring(0, 1)").unwrap()), Some(("subject".into(), Some(1))));
+        let k = group_key(&parse("subject.substring(0, 1).upper()").unwrap()).unwrap();
+        assert_eq!((k.attr.as_str(), k.len, k.case), ("subject", Some(1), Some("upper")));
+        assert_eq!(group_key(&parse("subject.upper().lower()").unwrap()), None);
+        assert_eq!(group_key(&parse("attachments.filename").unwrap()), None);
+        assert_eq!(group_key(&parse("subject.count()").unwrap()), None);
     }
 }

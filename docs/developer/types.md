@@ -69,7 +69,8 @@ and per type the attributes, sub nodes (direct or in folders), files, tabs and f
 are FHIRPath expressions (strict standard; profile "views": `where`, `ofType`, `first`, `last`,
 `count`, `exists`, `empty`, `not`, `toString`, `substring`, `upper`, `lower`). Names starting with
 `_` are reserved: `_content`, `_texts` (with one entry per text type), `_id`, `_room`,
-`_createdBy`, `_createdAt`. The order of keys is the display order.
+`_createdBy`, `_createdAt`, `_changedBy`, `_changedAt` (last change of any readable part). The
+order of keys is the display order, also between the `subNodes` and `files` blocks.
 
 ```ts
 export const mailbox = aspect("mailbox", {
@@ -88,6 +89,7 @@ export const mailbox = aspect("mailbox", {
 
 Display texts within an aspect: `<ns>-<aspect>--<ns>-<Type>-name`/`-description` override the
 global texts; `<ns>-<aspect>--label-<key>` names attributes, folders, tabs, columns and functions.
-Group expressions of the form `attr`, `attr.toString()` or `attr.toString().substring(0, n)` on
-the entry type's own attributes are evaluated in SQL, other expressions in memory. Functions are
+A grouping rule is an attribute of the entry type itself, optionally with `.toString()`,
+`.substring(0, n)` and finally `.upper()` or `.lower()`; list attributes are allowed. Grouping
+always runs in SQL; other expressions are rejected when the catalog is loaded. Functions are
 declared and delivered with the node; the base does not call them yet.

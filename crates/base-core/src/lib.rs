@@ -80,6 +80,12 @@ mod tests {
         let mut bad = c.clone();
         bad["modules"][0]["aspects"][0]["nodes"]["m:A"]["attributes"][0]["path"] = json!("x.repeat(y)");
         assert_eq!(Model::new(serde_json::from_value(bad).unwrap()).unwrap_err().error_id, "path.function_not_allowed");
+        let mut bad = c.clone();
+        bad["modules"][0]["aspects"][0]["entry"]["groupBy"] = json!(["x.count()"]);
+        assert_eq!(Model::new(serde_json::from_value(bad).unwrap()).unwrap_err().error_id, "aspect.bad_group");
+        let mut ok = c.clone();
+        ok["modules"][0]["aspects"][0]["entry"]["groupBy"] = json!(["x.toString().substring(0, 2).upper()"]);
+        assert!(Model::new(serde_json::from_value(ok).unwrap()).is_ok());
         let mut bad = c;
         bad["modules"][0]["aspects"][0]["nodes"]["m:A"]["files"] = json!([{"name": "f", "path": "_content"}]);
         assert_eq!(Model::new(serde_json::from_value(bad).unwrap()).unwrap_err().error_id, "aspect.bad_file");
