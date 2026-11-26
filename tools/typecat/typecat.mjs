@@ -42,18 +42,26 @@ function cardOf(text) {
 }
 
 // Convert a literal initializer (object/array/string/number/boolean) to JSON.
-function literalJson(node) {
-  if (ts.isAsExpression(node) || ts.isSatisfiesExpression?.(node)) return literalJson(node.expression);
+// `consts`: module-level consts of the same file (name -> initializer), so that a literal held in a
+// const can be referenced, e.g. one node definition shared by several aspects. Static only.
+function literalJson(node, consts = new Map(), seen = new Set()) {
+  if (ts.isAsExpression(node) || ts.isSatisfiesExpression?.(node)) return literalJson(node.expression, consts, seen);
+  if (ts.isIdentifier(node) && consts.has(node.text)) {
+    if (seen.has(node.text)) throw new CatError("typecat.literal_cycle", "const refers to itself", { name: node.text });
+    return literalJson(consts.get(node.text), consts, new Set([...seen, node.text]));
+  }
   if (ts.isStringLiteral(node) || ts.isNoSubstitutionTemplateLiteral(node)) return node.text;
   if (ts.isNumericLiteral(node)) return Number(node.text);
   if (node.kind === ts.SyntaxKind.TrueKeyword) return true;
   if (node.kind === ts.SyntaxKind.FalseKeyword) return false;
-  if (ts.isArrayLiteralExpression(node)) return node.elements.map(literalJson);
+  if (ts.isArrayLiteralExpression(node)) return node.elements.map((e) => literalJson(e, consts, seen));
   if (ts.isObjectLiteralExpression(node)) {
     const o = {};
     for (const p of node.properties) {
+      if (ts.isSpreadAssignment(p)) { Object.assign(o, literalJson(p.expression, consts, seen)); continue; }
+      if (ts.isShorthandPropertyAssignment(p)) { o[p.name.text] = literalJson(p.name, consts, seen); continue; }
       if (!ts.isPropertyAssignment(p)) throw new CatError("typecat.literal_expected", "plain property expected", { text: p.getText() });
-      o[p.name.getText().replace(/^["']|["']$/g, "")] = literalJson(p.initializer);
+      o[p.name.getText().replace(/^["']|["']$/g, "")] = literalJson(p.initializer, consts, seen);
     }
     return o;
   }
@@ -92,6 +100,14 @@ export function buildCatalog(typesDir, opts = {}) {
   // Stable import aliases for module sources: the type library and the types of the base.
   const paths = { ...(parsed.options.paths ?? {}), "@i3cm/lib": [path.join(typesDir, "lib/index.ts")] };
   if (fs.existsSync(path.join(typesDir, "base/index.ts"))) paths["@i3cm/base"] = [path.join(typesDir, "base/index.ts")];
+  // "@i3cm/<module>" for every module of the run that has an index.ts (in i3cm/ or i3cm/types/)
+  for (const root of [...extRoots, ...fs.readdirSync(typesDir, { withFileTypes: true }).filter((e) => e.isDirectory()).map((e) => path.join(typesDir, e.name))]) {
+    const mt = path.join(root, "module.ts");
+    if (!fs.existsSync(mt)) continue;
+    const name = /name\s*:\s*["']([\w-]+)["']/.exec(fs.readFileSync(mt, "utf8"))?.[1];
+    const index = [path.join(root, "index.ts"), path.join(root, "types/index.ts")].find((f) => fs.existsSync(f));
+    if (name && index && !paths[`@i3cm/${name}`]) paths[`@i3cm/${name}`] = [index];
+  }
   const files = [...parsed.fileNames, ...extRoots.flatMap(tsFilesUnder)];
   const program = ts.createProgram(files, { ...parsed.options, paths });
   const diags = ts.getPreEmitDiagnostics(program);
@@ -162,12 +178,17 @@ export function buildCatalog(typesDir, opts = {}) {
         }
         continue;
       }
+      const consts = new Map();
+      for (const st of sf.statements)
+        if (ts.isVariableStatement(st))
+          for (const d of st.declarationList.declarations)
+            if (d.initializer && ts.isIdentifier(d.name) && !ts.isCallExpression(d.initializer)) consts.set(d.name.text, d.initializer);
       for (const st of sf.statements) {
         if (ts.isVariableStatement(st)) {
           for (const d of st.declarationList.declarations) {
             const init = d.initializer;
             if (init && ts.isCallExpression(init) && ts.isIdentifier(init.expression) && init.expression.text === "aspect") {
-              mod.aspects.push(aspectOf(literalJson(init.arguments[0]), literalJson(init.arguments[1])));
+              mod.aspects.push(aspectOf(literalJson(init.arguments[0], consts), literalJson(init.arguments[1], consts)));
             }
           }
           continue;

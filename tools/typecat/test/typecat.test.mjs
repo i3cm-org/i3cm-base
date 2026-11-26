@@ -177,3 +177,15 @@ test("passes rights paths, view filters and dropType through to the catalog", ()
   assert.equal(a.entry.where, "owner = %me");
   assert.equal(a.nodes["x:Req"].subNodes[0].dropType, "x:Doc");
 });
+
+const extraRepo = path.join(here, "fixtures/demo-extra");
+
+test("imports types of another module of the run as @i3cm/<module>; consts shared by aspects", () => {
+  const cat = buildCatalog(typesDir, { modules: [demoRepo, extraRepo] });
+  const tag = cat.types.find((t) => t.name === "extra:Tag");
+  assert.ok(tag);
+  assert.ok(cat.references.some((r) => r.name === "extra:Tag.thing" && r.target.type === "demo:Thing"));
+  const extra = cat.modules.find((m) => m.name === "extra");
+  assert.deepEqual(extra.aspects.map((a) => a.name), ["extra:byLabel", "extra:flat"]);
+  for (const a of extra.aspects) assert.ok(a.nodes["extra:Tag"].tabs.some((t) => t.label === "thing"));
+});

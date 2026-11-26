@@ -461,6 +461,9 @@ async fn mailbox_aspect() {
 
     assert_eq!(env.admin.eval(m0, "attachments.filename").await.unwrap(), vec![json!("file0.pdf"), json!("file1.pdf")]);
     assert_eq!(env.admin.eval(m0, "attachments.where(filename = 'file1.pdf').count()").await.unwrap(), vec![json!(1)]);
+    // the stored upload file name (0.6): `_content.filename`
+    assert_eq!(env.admin.eval(r.created["a0"], "_content.filename").await.unwrap(), vec![json!("file0.pdf")]);
+    assert_eq!(env.admin.eval(m0, "attachments._content.mediaType").await.unwrap(), vec![json!("application/pdf")], "only a0 has content");
     assert_eq!(env.admin.eval(m0, "_createdBy = %x").await.unwrap_err().error_id(), Some("path.syntax"));
     assert_eq!(env.admin.eval(m0, "_createdBy._id").await.unwrap(), vec![json!(env.init.admin_account.to_string())]);
     assert_eq!(env.admin.eval(m0, "_changedBy._id").await.unwrap(), vec![json!(env.init.admin_account.to_string())]);
@@ -536,10 +539,17 @@ async fn multi_valued_group_by() {
     let de = env.admin.clone().with_lang("de");
     let groups = de.aspect_children("base:recipients", "").await.unwrap();
     // the mail exists once but appears under each of its (distinct) recipients; counts are occurrences
-    assert_eq!(groups.iter().map(|g| (g.display_name.as_str(), g.count)).collect::<Vec<_>>(), vec![("ben@example.org", Some(1)), ("carla@example.org", Some(2))]);
+    // the mail without recipients forms one group with the empty key, labelled "—" (0.6)
+    assert_eq!(
+        groups.iter().map(|g| (g.display_name.as_str(), g.count)).collect::<Vec<_>>(),
+        vec![("—", Some(1)), ("ben@example.org", Some(1)), ("carla@example.org", Some(2))]
+    );
+    let none = de.aspect_children("base:recipients", &groups[0].node).await.unwrap();
+    assert_eq!(none.iter().map(|m| m.display_name.as_str()).collect::<Vec<_>>(), vec!["carla@example.org - Ohne"]);
     // grouping is paged like every listing (DEC-108)
-    let second = de.aspect_children_page("base:recipients", "", 1, 1).await.unwrap();
+    let second = de.aspect_children_page("base:recipients", "", 2, 1).await.unwrap();
     assert_eq!(second.iter().map(|g| g.display_name.as_str()).collect::<Vec<_>>(), vec!["carla@example.org"]);
+    let groups: Vec<_> = groups.into_iter().skip(1).collect();
     let mut carla = de.aspect_children("base:recipients", &groups[1].node).await.unwrap();
     carla.sort_by(|a, b| a.display_name.cmp(&b.display_name));
     assert_eq!(carla.iter().map(|m| m.display_name.as_str()).collect::<Vec<_>>(), vec!["anna@example.org - Angebot", "ben@example.org - Frage"]);

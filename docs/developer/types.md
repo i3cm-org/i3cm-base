@@ -15,6 +15,9 @@ export class JournalLine {
 ```
 
 * Optional attributes use `?`; all others are required.
+* `extends` makes a subtype. It inherits attributes, references, `@hasContent` and `@texts` along
+  the chain; in the catalog a subtype shows `content: null` and only its own text types, and the
+  checker resolves content and texts through the ancestors.
 * `Ref<T, "end", "card">` references an object carrying type `T`; the second argument names the
   opposite end, the optional third one its cardinality (`"0..n"` by default, also `"1..n"`,
   `"0..1"`, `"1"`). Cardinality at this end follows the form: `Ref` = 1, `Ref?` = 0..1,
@@ -98,7 +101,11 @@ base-mailbox--base-Mail-name = { $sender } - { $subject }
     .fallback = { $sender } - { $subject } ({ $receivedAt })
 ```
 
-A grouping rule is an attribute of the entry type itself, optionally with `.toString()`,
+Objects without a value for the grouping rule (null, empty string, empty list) form one extra
+group with the empty key, labelled `<ns>-<aspect>--label-_none` (default "—"). A node definition
+may be held in a module-level `const` and used by several aspects of the same file (static values
+only, no function calls). Paths and name patterns may use `_content.filename`, `_content.mediaType`
+and `_content.size` (`"{_content.filename}"`). A grouping rule is an attribute of the entry type itself, optionally with `.toString()`,
 `.substring(0, n)` and finally `.upper()` or `.lower()`; list attributes are allowed. Grouping
 always runs in SQL; other expressions are rejected when the catalog is loaded. A tab lists the objects reached by its
 `path`; with `columns` a client shows it as a grid, without as a list. Functions are

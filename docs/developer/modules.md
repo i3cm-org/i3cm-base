@@ -88,3 +88,53 @@ kernel checkout:
 `typecat` does not read this file; it sets the two names itself.
 
 An example module repo is `tools/typecat/test/fixtures/demo-module`.
+
+## Importing other modules
+
+Besides `@i3cm/lib` and `@i3cm/base`, the types of every module given in the same run are
+importable as `@i3cm/<module>` if the module has an `i3cm/index.ts` (or `i3cm/types/index.ts`)
+that re-exports them, e.g. `import { Document } from "@i3cm/dms"`.
+
+## Module code (WebAssembly)
+
+Operations and hooks are a WebAssembly component (`wasm32-wasip2`) built from the module's `ops/`
+directory against the kernel's WIT world `i3cm:module` (`wit/module.wit`): the module exports
+`run(conn, op, params) -> result<string, string>`; the kernel hands it a `connection` with `me`,
+`get`, `query`, `order`, `call` and `impersonate`. One order is one database transaction; writes go
+in immediately, any error or trap aborts the whole order; every order has a deadline of 10 s.
+`examples/example-module` is a complete module (types, profiles, carrier, operations, a hook, a
+schedule) with its code in Rust (`wit-bindgen`).
+
+`module.ts` declares the code:
+
+```ts
+export const module = { name: "example", requires: ["base"] };      // mandatory: true for kernel-delivered modules
+export const carriers: CarrierDef[] = [ { name: "system", profiles: ["writer"] } ];
+export const operations: OperationDef[] = [ { name: "greet" }, { name: "stamp", impersonates: ["system"] } ];
+export const hooks: HookDef[] = [ { type: "example:Note", on: "create", phase: "before", op: "checkNote" } ];
+export const schedules: ScheduleDef[] = [ { op: "tick", rrule: "FREQ=MINUTELY" } ];
+```
+
+* A carrier is an agent account of the module, created on activation with the given profiles.
+  `impersonate` is allowed only for operations listing the carrier.
+* Hooks get read-only handles; a `before` hook rejects the order by returning an error (a JSON
+  error object `{"error_id", "description", "params"}` or text).
+* Schedules run per tenant in the identity of the module's first carrier, exactly once per
+  period even with several main containers (`FREQ=MINUTELY|HOURLY|DAILY|WEEKLY;INTERVAL=n`).
+
+Build and run:
+
+```sh
+cd ops && cargo build --release --target wasm32-wasip2
+mkdir -p ../modules && cp target/wasm32-wasip2/release/<crate>.wasm ../modules/<module>.wasm
+i3cm-server serve --modules-dir ../modules
+```
+
+## Activation
+
+A tenant has the base and the mandatory modules from its creation. Other installed modules are
+activated by the tenant administrator: `POST /v1/modules/{name}/activate` checks that required
+modules are active, creates the module's rooms, profiles and carriers, applies imprinting rules to
+existing objects, all or nothing, and reports the new rights (`red` where they reach the root room
+or types of other modules). Types of modules not active in a tenant do not exist for it.
+

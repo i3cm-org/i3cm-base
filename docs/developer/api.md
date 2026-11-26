@@ -138,3 +138,15 @@ request. A token for another account needs the right to grant rights. `ttl` is i
 token printed by `init-tenant` is a start key valid for one day. `GET /v1/tokens` lists the caller's tokens, or all tokens of the
 tenant with the right to grant rights (`?account=` filters); `DELETE /v1/tokens/{id}` revokes a
 token at once. A token unused for 90 days lapses (`auth.unused_token`).
+
+## Modules
+
+| Method and path | Purpose |
+|---|---|
+| `GET /v1/modules` | Installed modules: requires, mandatory, active in the tenant, operations |
+| `POST /v1/modules/{name}/activate` | Activate a module in the tenant (needs `grant` at the root) |
+| `POST /v1/modules/{name}/ops/{op}` | Run an operation of the module as one order; body: JSON params |
+
+With module code loaded (`--modules-dir`), `POST /v1/orders` runs the hooks of the modules around
+each operation. Errors from module code come back with status 400 and the module's error id.
+

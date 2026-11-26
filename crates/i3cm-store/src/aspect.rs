@@ -86,6 +86,10 @@ impl<'a> StoreNav<'a> {
         for p in &v.parts {
             m.extend(p.attributes.clone());
         }
+        // name patterns may use the stored upload file name: `{_content.filename}`
+        if let Some(f) = v.content.as_ref().and_then(|c| c.get("filename")).filter(|f| !f.is_null()) {
+            m.insert("_content.filename".into(), f.clone());
+        }
         m
     }
 }
@@ -130,6 +134,15 @@ impl Nav for StoreNav<'_> {
                                 }
                             }
                         }
+                    }
+                    Ok(out)
+                }
+                // `_content.filename`, `_content.mediaType`, `_content.size`
+                Item::Content(id) => {
+                    let Some(v) = self.view(*id).await? else { return Ok(vec![]) };
+                    let mut out = vec![];
+                    if let Some(x) = v.content.as_ref().and_then(|c| c.get(name)) {
+                        push(&mut out, x);
                     }
                     Ok(out)
                 }
@@ -343,6 +356,26 @@ impl Store {
     }
 
     /// SQL text of a grouping key applied to the value expression `v`.
+    /// SQL element type of a list column, for an empty-list placeholder.
+    fn elem_sql(c: Col) -> &'static str {
+        match c {
+            Col::Text => "text",
+            Col::Int => "bigint",
+            Col::Num => "numeric",
+            Col::Bool => "boolean",
+            Col::Date => "date",
+            Col::Ts => "timestamptz",
+            Col::Time => "time",
+            _ => "text",
+        }
+    }
+
+    /// Label of the group of objects without a value: `<aspect>--label-_none`, default "—".
+    fn none_label(&self, aspect: &str, lang: &str) -> String {
+        let l = self.i18n.label(aspect, lang, "_none");
+        if l == "_none" { "—".to_string() } else { l }
+    }
+
     fn key_sql(v: &str, c: Col, k: &GroupKey) -> String {
         let mut t = match c {
             Col::Ts => format!("to_char({v} AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS\"+00:00\"')"),
@@ -355,7 +388,8 @@ impl Store {
         if let Some(f) = k.case {
             t = format!("{f}({t})");
         }
-        t
+        // objects without a value form one group with the empty key
+        format!("coalesce({t}, '')")
     }
 
     /// The chain of nodes from the top of a view down to `node` (for opening a tree at a node).
@@ -445,7 +479,7 @@ impl Store {
             params.push(param(&Val::Text(k.clone()), Col::Text, false));
             let n = params.len();
             if *list {
-                conds.push_str(&format!(" AND EXISTS (SELECT 1 FROM unnest({c}) u WHERE {} = ${n})", Self::key_sql("u", *ct, gk)));
+                conds.push_str(&format!(" AND EXISTS (SELECT 1 FROM unnest(coalesce(nullif({c}, '{{}}'), ARRAY[NULL]::{}[])) u WHERE {} = ${n})", Self::elem_sql(*ct), Self::key_sql("u", *ct, gk)));
             } else {
                 conds.push_str(&format!(" AND {} = ${n}", Self::key_sql(c, *ct, gk)));
             }
@@ -472,7 +506,7 @@ impl Store {
             }
             let (cn, ct, list, gk) = &cols[level];
             let inner = if *list {
-                format!("SELECT DISTINCT x.object_id, {} AS k {from} CROSS JOIN LATERAL unnest({cn}) u {wh}", Self::key_sql("u", *ct, gk))
+                format!("SELECT DISTINCT x.object_id, {} AS k {from} CROSS JOIN LATERAL unnest(coalesce(nullif({cn}, '{{}}'), ARRAY[NULL]::{}[])) u {wh}", Self::key_sql("u", *ct, gk), Self::elem_sql(*ct))
             } else {
                 format!("SELECT {} AS k {from} {wh}", Self::key_sql(cn, *ct, gk))
             };
@@ -483,7 +517,8 @@ impl Store {
                 .map(|r| {
                     let k: String = r.get(0);
                     let path: Vec<String> = prefix.iter().cloned().chain([k.clone()]).map(|x| esc(&x)).collect();
-                    NodeOut { node: format!("g:{}", path.join("/")), file: false, display_name: k, display_description: String::new(), count: Some(r.get(1)), type_name: None, id: None, ..Default::default() }
+                    let shown = if k.is_empty() { self.none_label(&a.name, lang) } else { k };
+                    NodeOut { node: format!("g:{}", path.join("/")), file: false, display_name: shown, display_description: String::new(), count: Some(r.get(1)), type_name: None, id: None, ..Default::default() }
                 })
                 .collect())
         } else {
