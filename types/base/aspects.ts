@@ -8,7 +8,7 @@ export const mailbox = aspect("mailbox", {
       attributes: { sender: "sender", subject: "subject", received: "receivedAt", attachmentCount: "attachments.count()" },
       subNodes: { attachments: { path: "attachments", folder: true } },
       files: { "mail.eml": "_content", "mail.md": "_texts.`mail.md`", "body.html": "_texts.`body.html`" },
-      tabs: { attachments: { path: "attachments", columns: { file: "filename" } } },
+      tabs: { attachments: { path: "attachments", columns: { file: "filename", added: "_createdAt" } } },
       functions: { reply: { url: "/modules/mail/reply" } },
     },
     "base:MailAttachment": {
@@ -25,6 +25,7 @@ export const recipients = aspect("recipients", {
     "base:Mail": {
       attributes: { sender: "sender", subject: "subject", received: "receivedAt" },
       files: { "mail.eml": "_content", "mail.md": "_texts.`mail.md`" },
+      tabs: { attachments: { path: "attachments" } }, // no columns: shown as a list
     },
   },
 });

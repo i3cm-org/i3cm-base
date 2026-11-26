@@ -417,6 +417,21 @@ impl Client {
         Ok(Self::check(r.send().await?).await?.bytes().await?.to_vec())
     }
 
+    /// One tab of an object node; `query` holds `offset`, `limit`, `sort`, `desc` as needed.
+    pub async fn aspect_tab(&self, aspect: &str, node: &str, tab: &str, query: &[(&str, &str)]) -> Result<Value> {
+        let mut q = vec![("node", node), ("tab", tab)];
+        q.extend_from_slice(query);
+        self.get_q(&format!("/aspects/{aspect}/tab"), &q).await
+    }
+    /// All rows of a tab as `csv` or `xlsx`: (bytes, content type, content disposition).
+    pub async fn aspect_tab_export(&self, aspect: &str, node: &str, tab: &str, format: &str) -> Result<(Vec<u8>, String, String)> {
+        let r = self.req(reqwest::Method::GET, &format!("/aspects/{aspect}/tab")).query(&[("node", node), ("tab", tab), ("format", format)]);
+        let r = Self::check(r.send().await?).await?;
+        let h = |k: reqwest::header::HeaderName| r.headers().get(k).and_then(|v| v.to_str().ok()).unwrap_or_default().to_string();
+        let (ct, cd) = (h(reqwest::header::CONTENT_TYPE), h(reqwest::header::CONTENT_DISPOSITION));
+        Ok((r.bytes().await?.to_vec(), ct, cd))
+    }
+
     pub async fn roles(&self) -> Result<Vec<Value>> {
         self.get("/roles").await
     }

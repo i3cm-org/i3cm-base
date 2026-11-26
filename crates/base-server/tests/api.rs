@@ -427,7 +427,7 @@ async fn mailbox_aspect() {
     assert_eq!(labels, vec!["Absender", "Betreff", "Empfangen", "Anzahl Anhänge"]);
     assert_eq!(detail["attributes"][3]["values"], json!([2]));
     assert_eq!(detail["tabs"][0]["label"], json!("Anhänge"));
-    assert_eq!(detail["tabs"][0]["columns"], json!(["Datei"]));
+    assert_eq!(detail["tabs"][0]["columns"], json!(["Datei", "Hinzugefügt"]));
     assert_eq!(detail["tabs"][0]["rows"].as_array().unwrap().len(), 2);
     assert_eq!(detail["functions"][0]["label"], json!("Antworten"));
 
@@ -654,4 +654,37 @@ async fn tools_over_the_api() {
 
 fn mail_static() -> &'static str {
     "/base:mailbox/2026-11-24/anna@example.org - Angebot"
+}
+
+#[tokio::test]
+async fn tab_paging_sorting_and_export() {
+    let env = env().await;
+    let mut o = Order::new();
+    o.create("m", None, json!({"base:Mail": {"receivedAt": "2026-11-24T08:15:00+01:00", "sender": "anna@example.org", "subject": "Angebot"}}));
+    for (j, f) in ["b.pdf", "a, \"quoted\".pdf", "c.pdf"].iter().enumerate() {
+        let a = format!("a{j}");
+        o.create(&a, None, json!({"base:MailAttachment": {"filename": f}}));
+        o.link("base:MailAttachment.mail", a.as_str(), "m");
+    }
+    let m = env.admin.order(&o).await.unwrap().created["m"];
+    let node = format!("o:{m}");
+    let page = env.admin.aspect_tab("base:mailbox", &node, "attachments", &[("sort", "0"), ("limit", "2")]).await.unwrap();
+    assert_eq!(page["total"], 3);
+    let names: Vec<_> = page["rows"].as_array().unwrap().iter().map(|r| r["cells"][0][0].as_str().unwrap().to_string()).collect();
+    assert_eq!(names, vec!["a, \"quoted\".pdf", "b.pdf"]);
+    assert_eq!(page["rows"][0]["type"], "base:MailAttachment");
+    let last = env.admin.aspect_tab("base:mailbox", &node, "attachments", &[("sort", "0"), ("desc", "true"), ("offset", "2")]).await.unwrap();
+    assert_eq!(last["rows"][0]["cells"][0][0], "a, \"quoted\".pdf");
+    // export: every row, not only a page
+    let (csv, ct, cd) = env.admin.aspect_tab_export("base:mailbox", &node, "attachments", "csv").await.unwrap();
+    assert!(ct.starts_with("text/csv") && cd.contains(".csv"));
+    let csv = String::from_utf8(csv).unwrap();
+    let lines: Vec<_> = csv.trim_start_matches('\u{feff}').lines().collect();
+    assert_eq!(lines.len(), 4, "{csv}");
+    assert_eq!(lines[0], "File,Added");
+    assert!(lines.iter().any(|l| l.starts_with("\"a, \"\"quoted\"\".pdf\",")), "{csv}");
+    let (xlsx, ct, _) = env.admin.aspect_tab_export("base:mailbox", &node, "attachments", "xlsx").await.unwrap();
+    assert!(ct.contains("spreadsheetml") && xlsx.starts_with(b"PK"));
+    assert_eq!(env.admin.aspect_tab_export("base:mailbox", &node, "attachments", "pdf").await.unwrap_err().status(), Some(400));
+    assert_eq!(env.admin.aspect_tab("base:mailbox", &node, "nope", &[]).await.unwrap_err().status(), Some(404));
 }

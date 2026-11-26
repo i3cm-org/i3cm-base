@@ -28,6 +28,7 @@ base-mailbox--label-received = Received
 base-mailbox--label-attachmentCount = Attachments
 base-mailbox--label-attachments = Attachments
 base-mailbox--label-file = File
+base-mailbox--label-added = Added
 base-mailbox--label-reply = Reply
 
 ## Built-in views
@@ -38,3 +39,4 @@ base--label-_type = By type
 base-mailbox--label-_name = Mailbox
 base-recipients--label-_name = Mails by recipient
 base-recipients--base-Mail-name = { $sender } - { $subject }
+base-recipients--label-attachments = Attachments

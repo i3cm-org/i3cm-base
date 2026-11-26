@@ -76,7 +76,8 @@ export interface NodeDef {
   subNodes?: Record<string, { path: string; folder?: boolean }>;
   /** File name -> `_content` or `_texts.<text type>`; `{attr}` in the name is replaced. */
   files?: Record<string, string>;
-  tabs?: Record<string, { path: string; columns: Record<string, string> }>;
+  /** Objects reached by `path`; with `columns` shown as a grid, without as a list. */
+  tabs?: Record<string, { path: string; columns?: Record<string, string> }>;
   functions?: Record<string, { url: string }>;
 }
 export interface AspectDef {

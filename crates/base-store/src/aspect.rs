@@ -200,6 +200,43 @@ pub struct TabOut {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TabRow {
+    pub node: String,
+    #[serde(rename = "displayName")]
+    pub display_name: String,
+    #[serde(rename = "type", skip_serializing_if = "Option::is_none")]
+    pub type_name: Option<String>,
+    pub cells: Vec<Value>,
+}
+
+/// A page of one tab; `total` counts all rows.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TabPage {
+    pub key: String,
+    pub label: String,
+    pub columns: Vec<String>,
+    pub total: usize,
+    pub rows: Vec<TabRow>,
+}
+
+/// A cell as text: values joined with ", " (export and sorting).
+pub fn cell_text(v: &Value) -> String {
+    fn one(v: &Value) -> String {
+        match v {
+            Value::String(s) => s.clone(),
+            Value::Null => String::new(),
+            Value::Object(o) if o.contains_key("amount") && o.contains_key("currency") => format!("{} {}", one(&o["amount"]), one(&o["currency"])),
+            Value::Object(o) if o.contains_key("content") => one(&o["content"]),
+            other => other.to_string(),
+        }
+    }
+    match v {
+        Value::Array(xs) => xs.iter().map(one).collect::<Vec<_>>().join(", "),
+        x => one(x),
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct NodeDetail {
     pub node: NodeOut,
     pub attributes: Vec<LabeledValues>,
@@ -548,6 +585,50 @@ impl Store {
             .map(|f| serde_json::json!({"name": f.name, "label": self.i18n.label(&a.name, lang, &f.name), "url": f.url}))
             .collect();
         Ok(NodeDetail { node: out, attributes, tabs, files, functions })
+    }
+
+    /// One tab of an object node, sorted and paged by the server. `sort` is a column index
+    /// (values compared as text), `limit: None` returns all rows (export). Every row carries
+    /// the object's display name and type, so a tab without columns can be shown as a list.
+    pub async fn aspect_tab(&self, ctx: &Ctx, aspect: &str, node: &str, tab: &str, sort: Option<(usize, bool)>, page: Page, lang: &str) -> Result<TabPage> {
+        let a = self.aspect_def(aspect)?;
+        let nav = StoreNav::new(self, ctx);
+        let NodeRef::Object(id) = parse_node(node)? else {
+            return Err(BaseError::not_found("aspect.no_tab", "no such tab").with("tab", tab));
+        };
+        let (_, _, n) = self.node_def(&nav, a, id).await?;
+        let t = n.and_then(|n| n.tabs.iter().find(|t| t.label == tab)).ok_or_else(|| BaseError::not_found("aspect.no_tab", "no such tab").with("tab", tab))?.clone();
+        let mut rows = vec![];
+        for row in self.objects_of(&nav, id, &t.path).await? {
+            let Some(o) = self.plain_object_out(&nav, row, lang).await? else { continue };
+            let mut cells = vec![];
+            for c in &t.columns {
+                let vals = eval(&nav, &expr(&c.path)?, &[Item::Obj(row)]).await?;
+                cells.push(Value::Array(vals.iter().map(|i| i.to_json()).collect()));
+            }
+            rows.push(TabRow { node: o.node, display_name: o.display_name, type_name: o.type_name, cells });
+        }
+        if let Some((col, desc)) = sort {
+            if col >= t.columns.len() {
+                return Err(BaseError::invalid("aspect.bad_sort", "sort names a column index of the tab").with("sort", col.to_string()));
+            }
+            rows.sort_by_cached_key(|r| cell_text(&r.cells[col]).to_lowercase());
+            if desc {
+                rows.reverse();
+            }
+        }
+        let total = rows.len();
+        let rows = match page.limit {
+            Some(l) => rows.into_iter().skip(page.offset.max(0) as usize).take(l.clamp(1, 1000) as usize).collect(),
+            None => rows,
+        };
+        Ok(TabPage {
+            key: t.label.clone(),
+            label: self.i18n.label(&a.name, lang, &t.label),
+            columns: t.columns.iter().map(|c| self.i18n.label(&a.name, lang, &c.label)).collect(),
+            total,
+            rows,
+        })
     }
 
     /// Content of a file of an object node: (bytes, media type).

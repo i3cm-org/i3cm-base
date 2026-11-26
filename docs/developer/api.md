@@ -58,6 +58,7 @@ back as `integrity.violated` with a list of violations.
 | `GET /v1/aspects/{aspect}/children?node=&offset=&limit=` | children of a node; empty `node` is the entry; every listing is paged |
 | `GET /v1/aspects/{aspect}/node?node=` | details: name, description, attributes, files, tabs, functions |
 | `GET /v1/aspects/{aspect}/file?node=&name=` | a file of a node |
+| `GET /v1/aspects/{aspect}/tab?node=&tab=&offset=&limit=&sort=&desc=&format=` | one tab of an object node: `{key, label, columns, total, rows: [{node, displayName, type, cells}]}`, paged (default 100, at most 1000), sorted by the server by column index `sort` (as text, `desc=true` descending); `format=csv` or `format=xlsx` returns **all** rows as a download (CSV: UTF-8 with BOM, RFC 4180; a tab without columns exports the display names) |
 | `GET /v1/aspects/{aspect}/index?node=&name=` | the index of a node (Markdown, see below) |
 | `GET /v1/aspects/{aspect}/entry?node=&name=` | the node itself with the metadata of a listing |
 | `POST /v1/aspects/{aspect}/files` | several files at once: `{"items": [{"node", "name"}, {"node", "index": true, "name"}]}`, answers `[{"data": "<base64>"}, …]` |

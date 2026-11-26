@@ -69,3 +69,11 @@ docs = order(ops)
 for i in range(2):
     call("PUT", f"/v1/objects/{docs[f'd{i}']}/texts/base:plain", f"Demo document {i}.\n".encode(), "text/plain")
 print("persons, companies, documents: done")
+
+# one mail with many attachments: a grid with several pages
+ops = [{"op": "create", "ref": "scan", "types": {"base:Mail": {"receivedAt": "2026-11-25T18:00:00+01:00", "sender": "scanner@example.org", "subject": "Scan batch", "recipients": ["anna@example.org"]}}}]
+for j in range(60):
+    ops.append({"op": "create", "ref": f"s{j}", "types": {"base:MailAttachment": {"filename": f"scan-{j:03d}.pdf"}}})
+    ops.append({"op": "link", "reference": "base:MailAttachment.mail", "from": f"s{j}", "to": "scan"})
+order(ops)
+print("scan batch with 60 attachments: done")

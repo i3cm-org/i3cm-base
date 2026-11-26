@@ -192,6 +192,7 @@ pub fn router(store: Store) -> Router {
         .route("/v1/aspects/{a}/children", get(aspect_children))
         .route("/v1/aspects/{a}/node", get(aspect_node))
         .route("/v1/aspects/{a}/file", get(aspect_file))
+        .route("/v1/aspects/{a}/tab", get(aspect_tab))
         .route("/v1/objects/{id}/eval", get(eval_path))
         .layer(axum::middleware::from_fn_with_state(metrics, count))
         .with_state(store)
@@ -394,6 +395,82 @@ async fn aspect_children(State(s): State<Store>, h: HeaderMap, Path(a): Path<Str
 async fn aspect_node(State(s): State<Store>, h: HeaderMap, Path(a): Path<String>, Query(q): Query<NodeQ>) -> R<Json<Value>> {
     let r = auth(&s, &h).await?;
     Ok(Json(serde_json::to_value(s.aspect_node(&r.ctx, &a, &q.node, &r.lang).await?).unwrap_or_default()))
+}
+
+#[derive(Deserialize)]
+struct TabQ {
+    #[serde(default)]
+    node: String,
+    tab: String,
+    offset: Option<i64>,
+    limit: Option<i64>,
+    sort: Option<usize>,
+    #[serde(default)]
+    desc: bool,
+    format: Option<String>,
+}
+
+/// One tab of an object node: JSON paged (`offset`, `limit`, default 100), or every row as
+/// `format=csv` / `format=xlsx` for download. Sorting by column index, done by the server.
+async fn aspect_tab(State(s): State<Store>, h: HeaderMap, Path(a): Path<String>, Query(q): Query<TabQ>) -> R<Response> {
+    let r = auth(&s, &h).await?;
+    let format = q.format.as_deref().unwrap_or("json");
+    let page = match format {
+        "json" => base_store::aspect::Page { offset: q.offset.unwrap_or(0).max(0), limit: Some(q.limit.unwrap_or(100)) },
+        "csv" | "xlsx" => base_store::aspect::Page { offset: 0, limit: None },
+        _ => return Err(BaseError::invalid("tab.bad_format", "format is json, csv or xlsx").with("format", format).into()),
+    };
+    let t = s.aspect_tab(&r.ctx, &a, &q.node, &q.tab, q.sort.map(|c| (c, q.desc)), page, &r.lang).await?;
+    if format == "json" {
+        return Ok(Json(serde_json::to_value(t).unwrap_or_default()).into_response());
+    }
+    // a tab without columns exports the display names
+    let head: Vec<String> = if t.columns.is_empty() { vec!["Name".into()] } else { t.columns.clone() };
+    let rows: Vec<Vec<String>> = t
+        .rows
+        .iter()
+        .map(|row| if t.columns.is_empty() { vec![row.display_name.clone()] } else { row.cells.iter().map(base_store::aspect::cell_text).collect() })
+        .collect();
+    let file: String = t.label.chars().map(|c| if c.is_alphanumeric() || c == '-' || c == '_' { c } else { '_' }).collect();
+    let (body, media) = if format == "csv" {
+        let field = |x: &str| if x.contains([',', '"', '\n', '\r']) { format!("\"{}\"", x.replace('"', "\"\"")) } else { x.to_string() };
+        let mut out = String::from("\u{feff}");
+        for line in std::iter::once(&head).chain(rows.iter()) {
+            out.push_str(&line.iter().map(|x| field(x)).collect::<Vec<_>>().join(","));
+            out.push_str("\r\n");
+        }
+        (out.into_bytes(), "text/csv; charset=utf-8")
+    } else {
+        (xlsx(&t.label, &head, &rows).map_err(|e| BaseError::internal(format!("export failed: {e}")))?, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+    };
+    Ok((
+        StatusCode::OK,
+        [(header::CONTENT_TYPE, media.to_string()), (header::CONTENT_DISPOSITION, format!("attachment; filename=\"{file}.{format}\""))],
+        body,
+    )
+        .into_response())
+}
+
+fn xlsx(sheet: &str, head: &[String], rows: &[Vec<String>]) -> Result<Vec<u8>, rust_xlsxwriter::XlsxError> {
+    use rust_xlsxwriter::{Format, Workbook};
+    let mut wb = Workbook::new();
+    let ws = wb.add_worksheet();
+    let name: String = sheet.chars().filter(|c| !"[]:*?/\\".contains(*c)).take(31).collect();
+    if !name.is_empty() {
+        ws.set_name(name)?;
+    }
+    let bold = Format::new().set_bold();
+    for (c, h) in head.iter().enumerate() {
+        ws.write_string_with_format(0, c as u16, h, &bold)?;
+    }
+    for (r, row) in rows.iter().enumerate() {
+        for (c, x) in row.iter().enumerate() {
+            ws.write_string(r as u32 + 1, c as u16, x)?;
+        }
+    }
+    ws.set_freeze_panes(1, 0)?;
+    ws.autofit();
+    wb.save_to_buffer()
 }
 
 async fn aspect_file(State(s): State<Store>, h: HeaderMap, Path(a): Path<String>, Query(q): Query<NodeQ>) -> R<Response> {

@@ -28,6 +28,7 @@ base-mailbox--label-received = Empfangen
 base-mailbox--label-attachmentCount = Anzahl Anhänge
 base-mailbox--label-attachments = Anhänge
 base-mailbox--label-file = Datei
+base-mailbox--label-added = Hinzugefügt
 base-mailbox--label-reply = Antworten
 
 ## Built-in views
@@ -38,3 +39,4 @@ base--label-_type = Nach Typ
 base-mailbox--label-_name = Mail-Ablage
 base-recipients--label-_name = Mails nach Empfänger
 base-recipients--base-Mail-name = { $sender } - { $subject }
+base-recipients--label-attachments = Anhänge

@@ -92,5 +92,6 @@ Display texts within an aspect: `<ns>-<aspect>--<ns>-<Type>-name`/`-description`
 global texts; `<ns>-<aspect>--label-<key>` names attributes, folders, tabs, columns and functions.
 A grouping rule is an attribute of the entry type itself, optionally with `.toString()`,
 `.substring(0, n)` and finally `.upper()` or `.lower()`; list attributes are allowed. Grouping
-always runs in SQL; other expressions are rejected when the catalog is loaded. Functions are
+always runs in SQL; other expressions are rejected when the catalog is loaded. A tab lists the objects reached by its
+`path`; with `columns` a client shows it as a grid, without as a list. Functions are
 declared and delivered with the node; the base does not call them yet.

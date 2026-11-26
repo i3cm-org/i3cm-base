@@ -48,6 +48,7 @@
     overflow: auto; border-right: 1px solid var(--colorNeutralStroke2);
     background: var(--colorNeutralBackground1); padding: 8px 4px;
   }
+  fluent-tree-item { white-space: nowrap; }
   .more { color: var(--colorBrandForeground1); font-style: italic; }
   .count { color: var(--colorNeutralForeground3); margin-left: 6px; }
   section#detail { overflow: auto; padding: 16px 24px; min-width: 0; }
@@ -69,6 +70,37 @@
   .preview img { max-width: 100%; }
   .preview iframe { width: 100%; height: 60vh; border: 1px solid var(--colorNeutralStroke2); background: #fff; }
   .empty { color: var(--colorNeutralForeground3); }
+  /* ---- frame components: base-list-view, base-grid-view, module templates ---- */
+  base-list-view, base-grid-view { display: block; }
+  .lv { list-style: none; margin: 0; padding: 0; }
+  .lv li {
+    display: grid; grid-template-columns: 28px 1fr auto; gap: 2px 10px; align-items: center;
+    padding: 8px 10px; border-radius: var(--borderRadiusMedium, 4px); cursor: pointer; outline: none;
+  }
+  .lv li:hover { background: var(--colorNeutralBackground1Hover); }
+  .lv li[aria-selected="true"] { background: var(--colorNeutralBackground1Selected); }
+  .lv li:focus-visible { box-shadow: 0 0 0 2px var(--colorStrokeFocus2) inset; }
+  .lv .icon { grid-row: span 2; color: var(--colorBrandForeground1); display: grid; place-items: center; }
+  .lv .primary { font-weight: var(--fontWeightSemibold); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .lv .secondary { grid-column: 2; color: var(--colorNeutralForeground3); font-size: var(--fontSizeBase200); }
+  .lv .badge { grid-row: span 2; grid-column: 3; color: var(--colorNeutralForeground3); }
+  .lv-foot, .gv-bar { display: flex; gap: 8px; align-items: center; margin-top: 8px; }
+  .gv-bar { margin: 0 0 8px; }
+  .gv-bar .spacer { flex: 1; }
+  .gv-info { color: var(--colorNeutralForeground3); }
+  .gv table { table-layout: auto; }
+  .gv th { cursor: pointer; user-select: none; white-space: nowrap; position: sticky; top: 0; background: var(--colorNeutralBackground1); }
+  .gv th .dir { color: var(--colorBrandForeground1); margin-left: 4px; }
+  .gv tbody tr { cursor: pointer; }
+  .gv tbody tr:hover { background: var(--colorNeutralBackground1Hover); }
+  .summary { margin: 0 0 4px; }
+  .summary .card {
+    display: grid; grid-template-columns: max-content 1fr; gap: 4px 16px; padding: 12px 16px;
+    background: var(--colorNeutralBackground1); border-left: 4px solid var(--colorBrandBackground);
+    border-radius: var(--borderRadiusMedium, 4px); box-shadow: var(--shadow2);
+  }
+  .summary .card dt { color: var(--colorNeutralForeground3); }
+  .summary .card dd { margin: 0; }
   @media (max-width: 720px) {
     main { grid-template-columns: 1fr; grid-template-rows: 40% 60%; }
     nav { border-right: 0; border-bottom: 1px solid var(--colorNeutralStroke2); }
@@ -106,12 +138,16 @@
       <div id="view" hidden>
         <h2 id="title"></h2>
         <div class="meta" id="meta"></div>
+        <div class="summary" id="summary"></div>
         <fluent-tablist id="tabs"></fluent-tablist>
         <div id="panels"></div>
       </div>
     </section>
   </main>
 </div>
+
+<!-- Templates of the modules are loaded here (modules/<namespace>.html, DEC-127). -->
+<div id="module-templates" hidden></div>
 
 <script type="module">
 import "./vendor/fluentui-web-components-3.2.1/web-components-all.min.js";
@@ -239,6 +275,124 @@ $("#tree").addEventListener("change", (ev) => {
   select(i.aspect, i.entry, i.parentName);
 });
 
+// ---- frame web components (modules rely on them) ------------------------------------------
+const ICONS = {
+  node: '<svg width="20" height="20" viewBox="0 0 20 20" fill="currentColor"><path d="M2 5.5A1.5 1.5 0 0 1 3.5 4h4l1.5 1.5h7.5A1.5 1.5 0 0 1 18 7v7.5a1.5 1.5 0 0 1-1.5 1.5h-13A1.5 1.5 0 0 1 2 14.5z"/></svg>',
+  object: '<svg width="20" height="20" viewBox="0 0 20 20" fill="currentColor"><path d="M4 3.5A1.5 1.5 0 0 1 5.5 2h9A1.5 1.5 0 0 1 16 3.5v13a1.5 1.5 0 0 1-1.5 1.5h-9A1.5 1.5 0 0 1 4 16.5zM7 6h6v1H7zm0 3h6v1H7zm0 3h4v1H7z"/></svg>',
+  file: '<svg width="20" height="20" viewBox="0 0 20 20" fill="currentColor"><path d="M5 2h6l4 4v10.5A1.5 1.5 0 0 1 13.5 18h-8A1.5 1.5 0 0 1 4 16.5v-13A1.5 1.5 0 0 1 5.5 2zm6 1v3h3z"/></svg>',
+};
+
+/**
+ * <base-list-view>: items with icon, display name and a secondary line; paged with "Load more",
+ * selectable with mouse and keyboard; fires `open` with the item.
+ * Set `source = async (offset, limit) => items` (item: {displayName, secondary?, badge?, icon?}).
+ */
+class BaseListView extends HTMLElement {
+  pageSize = 50;
+  set source(fn) { this._source = fn; this.reload(); }
+  async reload() {
+    this.items = []; this.replaceChildren(this.ul = el("ul", { class: "lv", role: "listbox", "aria-label": this.getAttribute("label") || "List" }), this.foot = el("div", { class: "lv-foot" }));
+    this.ul.addEventListener("keydown", (ev) => this.key(ev));
+    await this.more();
+  }
+  async more() {
+    this.foot.replaceChildren(el("fluent-spinner", { size: "tiny" }));
+    let page;
+    try { page = await this._source(this.items.length, this.pageSize); }
+    catch (e) { this.foot.replaceChildren(el("span", { class: "error" }, e.message)); return; }
+    for (const it of page) {
+      const li = el("li", { role: "option", tabindex: this.items.length ? "-1" : "0", "aria-selected": "false" },
+        el("span", { class: "icon" }), el("span", { class: "primary" }, it.displayName),
+        it.badge != null ? el("span", { class: "badge" }, it.badge) : null, el("span", { class: "secondary" }, it.secondary || ""));
+      li.querySelector(".icon").innerHTML = ICONS[it.icon] || ICONS.object;
+      li.addEventListener("click", () => this.choose(li, it, true));
+      li._item = it;
+      this.items.push(it); this.ul.append(li);
+    }
+    this.foot.replaceChildren(
+      this.items.length ? el("span", { class: "gv-info" }, `${this.items.length} shown`) : el("span", { class: "empty" }, "No entries."),
+      page.length === this.pageSize ? el("fluent-button", { size: "small", onclick: () => this.more() }, "Load more") : null);
+  }
+  choose(li, it, open) {
+    this.ul.querySelectorAll("li").forEach((x) => { x.setAttribute("aria-selected", x === li ? "true" : "false"); x.tabIndex = x === li ? 0 : -1; });
+    li.focus();
+    if (open) this.dispatchEvent(new CustomEvent("open", { detail: it }));
+  }
+  key(ev) {
+    const lis = [...this.ul.children], i = lis.indexOf(document.activeElement);
+    const go = (j) => { ev.preventDefault(); if (lis[j]) this.choose(lis[j], lis[j]._item, false); };
+    if (ev.key === "ArrowDown") go(i + 1); else if (ev.key === "ArrowUp") go(i - 1);
+    else if (ev.key === "Home") go(0); else if (ev.key === "End") go(lis.length - 1);
+    else if (ev.key === "Enter" && i >= 0) this.choose(lis[i], lis[i]._item, true);
+  }
+}
+customElements.define("base-list-view", BaseListView);
+
+/**
+ * <base-grid-view>: columns, paging and sorting done by the server; fires `open` with a row.
+ * Always offers "Download as XLSX / CSV" for all rows (exported by the server, not the client).
+ * Set `columns`, then `source = async ({offset, limit, sort, desc}) => ({rows, total})` and
+ * `exporter = async (format) => void`.
+ */
+class BaseGridView extends HTMLElement {
+  pageSize = 25; offset = 0; sort = null; desc = false;
+  set source(fn) { this._source = fn; this.offset = 0; this.load(); }
+  async load() {
+    const bar = el("div", { class: "gv-bar" },
+      this.info = el("span", { class: "gv-info" }, "Loading…"), el("span", { class: "spacer" }),
+      el("fluent-button", { size: "small", onclick: () => this.export("xlsx") }, "Download as XLSX"),
+      el("fluent-button", { size: "small", onclick: () => this.export("csv") }, "Download as CSV"));
+    const page = el("div", { class: "lv-foot" },
+      this.prev = el("fluent-button", { size: "small", onclick: () => { this.offset = Math.max(0, this.offset - this.pageSize); this.fill(); } }, "Previous"),
+      this.next = el("fluent-button", { size: "small", onclick: () => { this.offset += this.pageSize; this.fill(); } }, "Next"));
+    this.replaceChildren(el("div", { class: "gv" }, bar, this.tableBox = el("div"), page));
+    await this.fill();
+  }
+  async fill() {
+    let r;
+    try { r = await this._source({ offset: this.offset, limit: this.pageSize, sort: this.sort, desc: this.desc }); }
+    catch (e) { this.tableBox.replaceChildren(el("div", { class: "error" }, e.message)); return; }
+    const head = el("tr", {}, this.columns.map((c, i) => el("th", { onclick: () => this.sortBy(i), "aria-sort": this.sort === i ? (this.desc ? "descending" : "ascending") : "none" },
+      c, this.sort === i ? el("span", { class: "dir" }, this.desc ? "▼" : "▲") : null)));
+    const body = r.rows.map((row) => el("tr", { onclick: () => this.dispatchEvent(new CustomEvent("open", { detail: row })) },
+      (row.cells.length ? row.cells : [row.displayName]).map((c) => el("td", {}, fmt(c)))));
+    this.tableBox.replaceChildren(r.rows.length ? el("table", {}, el("thead", {}, head), el("tbody", {}, body)) : el("p", { class: "empty" }, "No entries."));
+    this.info.textContent = r.total ? `${this.offset + 1}–${this.offset + r.rows.length} of ${r.total}` : "0 rows";
+    this.prev.disabled = this.offset === 0; this.next.disabled = this.offset + r.rows.length >= r.total;
+  }
+  sortBy(i) { if (this.sort === i) this.desc = !this.desc; else { this.sort = i; this.desc = false; } this.offset = 0; this.fill(); }
+  async export(format) {
+    this.info.textContent = `Exporting ${format.toUpperCase()}…`;
+    try { await this.exporter(format); } catch (e) { alert(e.message); }
+    this.fill();
+  }
+}
+customElements.define("base-grid-view", BaseGridView);
+
+// ---- module templates (DEC-127): one file per module, templates only, no code ----------------
+const loadedModules = new Set();
+async function loadModule(ns) {
+  if (loadedModules.has(ns)) return;
+  loadedModules.add(ns);
+  try {
+    const r = await fetch(`modules/${encodeURIComponent(ns)}.html`, { cache: "no-cache" });
+    if (!r.ok) return;
+    const doc = new DOMParser().parseFromString(await r.text(), "text/html");
+    for (const t of doc.querySelectorAll("template[data-aspect][data-type]")) $("#module-templates").append(document.importNode(t, true));
+  } catch {}
+}
+/** Fill a module template: `data-attr` takes the attribute values by key, `data-field` a field of the node. */
+function moduleSummary(aspect, type, detail) {
+  const t = [...$("#module-templates").querySelectorAll("template")].find((x) => x.dataset.aspect === aspect && x.dataset.type === type);
+  if (!t) return null;
+  const frag = t.content.cloneNode(true);
+  const attrs = Object.fromEntries((detail.attributes || []).map((a) => [a.key, a]));
+  frag.querySelectorAll("[data-attr]").forEach((e) => (e.textContent = fmt(attrs[e.dataset.attr]?.values)));
+  frag.querySelectorAll("[data-label]").forEach((e) => (e.textContent = attrs[e.dataset.label]?.label ?? e.textContent));
+  frag.querySelectorAll("[data-field]").forEach((e) => (e.textContent = fmt(detail.node?.[e.dataset.field])));
+  return frag;
+}
+
 // ---- detail pane with tabs -----------------------------------------------------------------
 let tabSeq = 0;
 function tabs(list) {
@@ -266,14 +420,6 @@ function table(columns, rows, cell = (r, c) => r[c]) {
   return el("table", {}, el("thead", {}, el("tr", {}, columns.map((c) => el("th", {}, c)))),
     el("tbody", {}, rows.map((r) => el("tr", {}, columns.map((c) => el("td", {}, fmt(cell(r, c))))))));
 }
-/** A tab of the aspect: rows are objects (`node`), `cells` follow `columns`; a row opens its node. */
-function tabTable(aspect, t) {
-  if (!t.rows.length) return el("p", { class: "empty" }, "No entries.");
-  return el("table", {}, el("thead", {}, el("tr", {}, t.columns.map((c) => el("th", {}, c)))),
-    el("tbody", {}, t.rows.map((r) => el("tr", {}, r.cells.map((c, i) => el("td", {}, i === 0
-      ? el("a", { class: "link", onclick: () => select(aspect, { node: r.node, file: false, displayName: fmt(c) }) }, fmt(c))
-      : fmt(c)))))));
-}
 function fmt(v) {
   if (v == null) return "";
   if (Array.isArray(v)) return v.map(fmt).join(", ");
@@ -291,16 +437,53 @@ async function select(aspect, entry, parentName) {
   $("#meta").textContent = [entry.type, entry.id, entry.changedAt && new Date(entry.changedAt).toLocaleString(), entry.size != null && `${entry.size} bytes`].filter(Boolean).join(" · ");
   if (entry.file) return tabs([["Preview", () => preview(aspect, entry.node, entry.name || entry.displayName)]]);
   let detail;
-  try { detail = await nodeDetail(aspect, entry.node); } catch (e) { detail = { attributes: [], tabs: [], files: [], error: e.message }; }
+  // the entry of a view has no details; everything else asks the server
+  try { detail = entry.node ? await nodeDetail(aspect, entry.node) : { attributes: [], tabs: [], files: [] }; }
+  catch (e) { detail = { attributes: [], tabs: [], files: [], error: e.message }; }
   if (current?.entry !== entry) return;
   if (detail.node?.displayName) $("#title").textContent = detail.node.displayName;
+  const isObject = !!(detail.node?.id || entry.id);
+  $("#summary").replaceChildren(moduleSummary(aspect, detail.node?.type ?? entry.type, detail) ?? "");
   tabs([
-    ["Details", async () => detail.error ? el("p", { class: entry.node ? "error" : "empty" }, entry.node ? detail.error : "The entry of a view has no attributes; expand it in the tree.")
-      : table(["Attribute", "Value"], detail.attributes, (r, c) => (c === "Attribute" ? r.label : r.values))],
+    ...(isObject ? [["Details", async () => table(["Attribute", "Value"], detail.attributes, (r, c) => (c === "Attribute" ? r.label : r.values))]] : []),
+    ...(detail.tabs || []).map((t) => [t.label, async () => tabView(aspect, entry.node, t)]),
+    ["Contents", async () => contentsView(aspect, entry)],
     ["Index", async () => indexView(aspect, entry, await nodeIndex(aspect, entry.node, entry.name))],
-    ["Files", async () => filesView(aspect, entry.node, detail.files || [])],
-    ...(detail.tabs || []).map((t) => [t.label, async () => tabTable(aspect, t)]),
+    ...(isObject ? [["Files", async () => filesView(aspect, entry.node, detail.files || [])]] : []),
   ]);
+}
+
+/** Children of a node as a list; opening an item shows it here. */
+function contentsView(aspect, entry) {
+  const lv = el("base-list-view", { label: "Contents" });
+  lv.source = (offset, limit) => api(`/v1/aspects/${encodeURIComponent(aspect)}/children?${q({ node: entry.node, offset, limit })}`).then((r) => r.json())
+    .then((xs) => xs.map((c) => ({ ...c, icon: c.file ? "file" : c.id ? "object" : "node", badge: c.count,
+      secondary: [c.type, c.file && c.size != null ? `${c.size} bytes` : null, c.changedAt && new Date(c.changedAt).toLocaleString()].filter(Boolean).join(" · ") })));
+  lv.addEventListener("open", (ev) => select(aspect, ev.detail, entry.name));
+  return lv;
+}
+
+/** A tab of the aspect: with columns a grid, without a list (DEC-127 frame components). */
+function tabView(aspect, node, t) {
+  const base = `/v1/aspects/${encodeURIComponent(aspect)}/tab?`;
+  const page = (o) => api(base + q({ node, tab: t.key, ...o })).then((r) => r.json());
+  const open = (row) => select(aspect, { node: row.node, file: false, displayName: row.displayName, type: row.type });
+  if (!t.columns.length) {
+    const lv = el("base-list-view", { label: t.label });
+    lv.source = (offset, limit) => page({ offset, limit }).then((p) => p.rows.map((r) => ({ ...r, icon: "object", secondary: r.type })));
+    lv.addEventListener("open", (ev) => open(ev.detail));
+    return lv;
+  }
+  const gv = el("base-grid-view", { label: t.label });
+  gv.columns = t.columns;
+  gv.exporter = async (format) => {
+    const r = await api(base + q({ node, tab: t.key, format }));
+    const name = /filename="([^"]+)"/.exec(r.headers.get("content-disposition") || "")?.[1] || `${t.key}.${format}`;
+    save(await r.blob(), name);
+  };
+  gv.source = ({ offset, limit, sort, desc }) => page({ offset, limit, ...(sort != null ? { sort, desc } : {}) });
+  gv.addEventListener("open", (ev) => open(ev.detail));
+  return gv;
 }
 
 function indexView(aspect, entry, md) {
@@ -367,6 +550,7 @@ async function start() {
   const me = await (await api("/v1/me")).json();
   $("#user").textContent = me.displayName || me.types?.[0]?.displayName || "";
   const aspects = await (await api("/v1/aspects")).json();
+  await Promise.all([...new Set(aspects.filter((a) => a.name.includes(":")).map((a) => a.name.split(":")[0]))].map(loadModule));
   const tree = $("#tree");
   tree.replaceChildren(...aspects.map((a) => treeItem(a.name, { node: "", file: false, displayName: a.displayName || a.name, name: a.displayName || a.name }, "")));
   show("#app");
