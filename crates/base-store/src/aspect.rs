@@ -10,6 +10,7 @@ use base_core::fhirpath::{check_profile, eval, group_key, parse, BoxFut, Expr, G
 use base_core::values::{display, Col, Val};
 use chrono::{DateTime, Utc};
 use base_core::{BaseError, ErrorKind, Result};
+use base_tools::{fs_name, ino};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 use std::collections::{BTreeSet, HashMap};
@@ -34,16 +35,20 @@ pub struct Page {
     pub limit: Option<i64>,
 }
 
+/// Last change of an object: time and account.
+type Change = (DateTime<Utc>, Option<Uuid>);
+
 /// Navigator over the store for one request; sees only what the caller may read.
 pub struct StoreNav<'a> {
     store: &'a Store,
     ctx: &'a Ctx,
     cache: Mutex<HashMap<Uuid, Option<Arc<ObjectView>>>>,
+    changed: Mutex<HashMap<Uuid, Option<Change>>>,
 }
 
 impl<'a> StoreNav<'a> {
     pub fn new(store: &'a Store, ctx: &'a Ctx) -> Self {
-        StoreNav { store, ctx, cache: Mutex::new(HashMap::new()) }
+        StoreNav { store, ctx, cache: Mutex::new(HashMap::new()), changed: Mutex::new(HashMap::new()) }
     }
 
     pub(crate) async fn view(&self, id: Uuid) -> Result<Option<Arc<ObjectView>>> {
@@ -61,12 +66,17 @@ impl<'a> StoreNav<'a> {
 
     /// Last change of any readable part: time and account (from the history).
     async fn changed(&self, id: Uuid) -> Result<Option<(DateTime<Utc>, Option<Uuid>)>> {
+        if let Some(c) = self.changed.lock().unwrap().get(&id) {
+            return Ok(*c);
+        }
         let last = self.store.versions(self.ctx, id).await?.pop();
-        Ok(last.map(|v| {
+        let c = last.map(|v| {
             let at = v["at"].as_str().and_then(|x| DateTime::parse_from_rfc3339(x).ok()).map(|x| x.with_timezone(&Utc)).unwrap_or_default();
             let by = v["account"].as_str().and_then(|x| Uuid::parse_str(x).ok());
             (at, by)
-        }))
+        });
+        self.changed.lock().unwrap().insert(id, c);
+        Ok(c)
     }
 
     fn attrs(v: &ObjectView) -> Map<String, Value> {
@@ -142,7 +152,7 @@ impl Nav for StoreNav<'_> {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct NodeOut {
     /// Opaque node id; clients pass it back unchanged. For a file: the id of its node.
     pub node: String,
@@ -158,6 +168,20 @@ pub struct NodeOut {
     pub type_name: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub id: Option<Uuid>,
+    /// Name in paths: the display name without `/` (FUSE, tools).
+    #[serde(default)]
+    pub name: String,
+    /// Bytes of the file; for a node: of its index.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub size: Option<u64>,
+    #[serde(rename = "changedAt", skip_serializing_if = "Option::is_none")]
+    pub changed_at: Option<DateTime<Utc>>,
+    /// Inode of the file; for a node: of its index. Equal content gives an equal number.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ino: Option<u64>,
+    /// Where the bytes of a file come from (content or a text).
+    #[serde(skip)]
+    pub src: Option<Item>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -235,15 +259,26 @@ impl Store {
         Ok(eval(&nav, &e, &[Item::Obj(id)]).await?.iter().map(|i| i.to_json()).collect())
     }
 
+    /// Display name of an aspect (built-in or module).
+    fn aspect_display(&self, a: &str, lang: &str) -> String {
+        if is_builtin(a) { self.i18n.label("base", lang, a) } else { self.i18n.label(a, lang, "_name").replace("_name", a) }
+    }
+
+    /// Aspects; `size` and `ino` describe the index of the entry node (FUSE: `<name>.md`).
     pub fn aspect_list(&self, lang: &str) -> Vec<Value> {
-        let mut out: Vec<Value> = [VIEW_ID, VIEW_TYPE]
-            .iter()
-            .map(|a| serde_json::json!({"name": a, "displayName": self.i18n.label("base", lang, a), "builtin": true}))
-            .collect();
-        out.extend(self.model.aspects().map(|a| {
-            serde_json::json!({"name": a.name, "displayName": self.i18n.label(&a.name, lang, "_name").replace("_name", &a.name), "entry": a.entry.type_name})
-        }));
-        out
+        let names = [VIEW_ID.to_string(), VIEW_TYPE.to_string()].into_iter().chain(self.model.aspects().map(|a| a.name.clone()));
+        names
+            .map(|a| {
+                let d = self.aspect_display(&a, lang);
+                let size = Self::group_index(&d).len();
+                let mut v = serde_json::json!({"name": a, "displayName": d, "size": size, "ino": ino(&["i", &a, ""])});
+                match self.model.aspect(&a) {
+                    Some(def) => v["entry"] = Value::String(def.entry.type_name.clone()),
+                    None => v["builtin"] = Value::Bool(true),
+                }
+                v
+            })
+            .collect()
     }
 
     async fn object_out(&self, nav: &StoreNav<'_>, a: &AspectDef, id: Uuid, lang: &str) -> Result<Option<NodeOut>> {
@@ -257,7 +292,7 @@ impl Store {
             }
         }
         let (n, d) = self.i18n.names_in(Some(&a.name), lang, &t, &attrs);
-        Ok(Some(NodeOut { node: format!("o:{id}"), file: false, display_name: n, display_description: d, count: None, type_name: Some(t), id: Some(id) }))
+        Ok(Some(NodeOut { node: format!("o:{id}"), file: false, display_name: n, display_description: d, count: None, type_name: Some(t), id: Some(id), ..Default::default() }))
     }
 
     /// SQL text of a grouping key applied to the value expression `v`.
@@ -329,7 +364,7 @@ impl Store {
                 .map(|r| {
                     let k: String = r.get(0);
                     let path: Vec<String> = prefix.iter().cloned().chain([k.clone()]).map(|x| esc(&x)).collect();
-                    NodeOut { node: format!("g:{}", path.join("/")), file: false, display_name: k, display_description: String::new(), count: Some(r.get(1)), type_name: None, id: None }
+                    NodeOut { node: format!("g:{}", path.join("/")), file: false, display_name: k, display_description: String::new(), count: Some(r.get(1)), type_name: None, id: None, ..Default::default() }
                 })
                 .collect())
         } else {
@@ -389,26 +424,37 @@ impl Store {
         self.aspect_children_paged(ctx, aspect, node, lang, Page::default()).await
     }
 
+    /// Children of a node, one page; every entry carries name, size, change time and inode.
     pub async fn aspect_children_paged(&self, ctx: &Ctx, aspect: &str, node: &str, lang: &str, page: Page) -> Result<Vec<NodeOut>> {
-        if is_builtin(aspect) {
-            return self.builtin_children(ctx, aspect, node, lang, page).await;
-        }
-        let a = self.aspect_def(aspect)?;
         let nav = StoreNav::new(self, ctx);
-        match parse_node(node)? {
-            NodeRef::Root => self.group_level(ctx, &nav, a, &[], lang, page).await,
-            NodeRef::Group(keys) => self.group_level(ctx, &nav, a, &keys, lang, page).await,
+        let (mut out, paged) = if is_builtin(aspect) { self.builtin_children(ctx, &nav, aspect, node, lang, page).await? } else { self.children_raw(ctx, &nav, aspect, node, lang, page).await? };
+        if !paged {
+            out = out.into_iter().skip(page.offset.max(0) as usize).take(page.limit.unwrap_or(MAX_LIST).clamp(1, MAX_LIST) as usize).collect();
+        }
+        for n in out.iter_mut() {
+            n.name = fs_name(&n.display_name);
+        }
+        self.decorate(ctx, &nav, aspect, lang, &mut out).await?;
+        Ok(out)
+    }
+
+    /// Children of a module aspect node, and whether `page` was applied already.
+    async fn children_raw(&self, ctx: &Ctx, nav: &StoreNav<'_>, aspect: &str, node: &str, lang: &str, page: Page) -> Result<(Vec<NodeOut>, bool)> {
+        let a = self.aspect_def(aspect)?;
+        Ok(match parse_node(node)? {
+            NodeRef::Root => (self.group_level(ctx, nav, a, &[], lang, page).await?, true),
+            NodeRef::Group(keys) => (self.group_level(ctx, nav, a, &keys, lang, page).await?, true),
             NodeRef::Object(id) => {
-                let (v, _, n) = self.node_def(&nav, a, id).await?;
-                let Some(n) = n else { return Ok(vec![]) };
+                let (v, _, n) = self.node_def(nav, a, id).await?;
+                let Some(n) = n else { return Ok((vec![], false)) };
                 let attrs = StoreNav::attrs(&v);
                 let mut files = vec![];
-                for (name, _) in self.files_of(&nav, id, n, &attrs).await? {
-                    files.push(NodeOut { node: format!("o:{id}"), file: true, display_name: name, display_description: String::new(), count: None, type_name: None, id: Some(id) });
+                for (name, it) in self.files_of(nav, id, n, &attrs).await? {
+                    files.push(NodeOut { node: format!("o:{id}"), file: true, display_name: name, display_description: String::new(), count: None, type_name: None, id: Some(id), src: Some(it), ..Default::default() });
                 }
                 let mut out = vec![];
                 for s in &n.sub_nodes {
-                    let ids = self.objects_of(&nav, id, &s.path).await?;
+                    let ids = self.objects_of(nav, id, &s.path).await?;
                     if s.folder {
                         out.push(NodeOut {
                             node: format!("f:{id}:{}", s.label),
@@ -417,35 +463,34 @@ impl Store {
                             display_description: String::new(),
                             count: Some(ids.len() as i64),
                             type_name: None,
-                            id: None,
-                        });
+                            id: None, ..Default::default() });
                     } else {
                         for x in ids {
-                            out.extend(self.object_out(&nav, a, x, lang).await?);
+                            out.extend(self.object_out(nav, a, x, lang).await?);
                         }
                     }
                 }
                 // entries in the order of the definition (files block and sub-node block)
                 if n.files_first {
                     files.extend(out);
-                    Ok(files)
+                    (files, false)
                 } else {
                     out.extend(files);
-                    Ok(out)
+                    (out, false)
                 }
             }
             NodeRef::Folder(id, label) => {
-                let (_, _, n) = self.node_def(&nav, a, id).await?;
+                let (_, _, n) = self.node_def(nav, a, id).await?;
                 let s = n
                     .and_then(|n| n.sub_nodes.iter().find(|s| s.label == label))
                     .ok_or_else(|| BaseError::invalid("aspect.bad_node", "unknown folder").with("folder", label.clone()))?;
                 let mut out = vec![];
-                for x in self.objects_of(&nav, id, &s.path).await? {
-                    out.extend(self.object_out(&nav, a, x, lang).await?);
+                for x in self.objects_of(nav, id, &s.path).await? {
+                    out.extend(self.object_out(nav, a, x, lang).await?);
                 }
-                Ok(out)
+                (out, false)
             }
-        }
+        })
     }
 
     pub async fn aspect_node(&self, ctx: &Ctx, aspect: &str, node: &str, lang: &str) -> Result<NodeDetail> {
@@ -459,7 +504,7 @@ impl Store {
             NodeRef::Group(keys) => {
                 let k = keys.last().cloned().unwrap_or_default();
                 return Ok(NodeDetail {
-                    node: NodeOut { node: node.to_string(), file: false, display_name: k, display_description: String::new(), count: None, type_name: None, id: None },
+                    node: NodeOut { node: node.to_string(), file: false, display_name: k, display_description: String::new(), count: None, type_name: None, id: None, ..Default::default() },
                     attributes: vec![],
                     tabs: vec![],
                     files: vec![],
@@ -536,7 +581,7 @@ impl Store {
     // ---- built-in views (`_id`, `_type`): derived from the catalog, no definition needed ----
 
     fn group_out(node: String, name: String, count: Option<i64>) -> NodeOut {
-        NodeOut { node, file: false, display_name: name, display_description: String::new(), count, type_name: None, id: None }
+        NodeOut { node, file: false, display_name: name, display_description: String::new(), count, type_name: None, id: None, ..Default::default() }
     }
 
     /// Object node with the global display texts.
@@ -550,7 +595,7 @@ impl Store {
             }
         }
         let (n, d) = self.i18n.names_in(None, lang, &t, &attrs);
-        Ok(Some(NodeOut { node: format!("o:{id}"), file: false, display_name: n, display_description: d, count: None, type_name: Some(t), id: Some(id) }))
+        Ok(Some(NodeOut { node: format!("o:{id}"), file: false, display_name: n, display_description: d, count: None, type_name: Some(t), id: Some(id), ..Default::default() }))
     }
 
     /// Files of an object in the built-in views: its content and its texts.
@@ -606,11 +651,10 @@ impl Store {
         Ok(c.query_one(&sql, &[&ctx.tenant, &rooms]).await.map_err(db)?.get(0))
     }
 
-    async fn builtin_children(&self, ctx: &Ctx, aspect: &str, node: &str, lang: &str, page: Page) -> Result<Vec<NodeOut>> {
-        let nav = StoreNav::new(self, ctx);
+    async fn builtin_children(&self, ctx: &Ctx, nav: &StoreNav<'_>, aspect: &str, node: &str, lang: &str, page: Page) -> Result<(Vec<NodeOut>, bool)> {
         let limit = page.limit.unwrap_or(MAX_LIST).clamp(1, MAX_LIST);
-        match (aspect, parse_node(node)?) {
-            (VIEW_ID, NodeRef::Root) => Ok(vec![]),
+        Ok(match (aspect, parse_node(node)?) {
+            (VIEW_ID, NodeRef::Root) => (vec![], true),
             (VIEW_TYPE, NodeRef::Root) => {
                 let mut out = vec![];
                 for t in &self.model.catalog.types {
@@ -619,36 +663,36 @@ impl Store {
                         out.push(Self::group_out(format!("g:{}", esc(&t.name)), t.name.clone(), Some(n)));
                     }
                 }
-                Ok(out)
+                (out, false)
             }
             (VIEW_TYPE, NodeRef::Group(keys)) if keys.len() == 1 => {
                 let q = crate::read::ListQuery { limit: Some(limit), offset: Some(page.offset), ..Default::default() };
                 let mut out = vec![];
                 for s in self.list(ctx, &keys[0], &q, lang).await? {
-                    out.extend(self.plain_object_out(&nav, s.id, lang).await?);
+                    out.extend(self.plain_object_out(nav, s.id, lang).await?);
                 }
-                Ok(out)
+                (out, true)
             }
             (_, NodeRef::Object(id)) => {
                 let v = nav.view(id).await?.ok_or_else(|| BaseError::not_found("object.not_found", "object not found"))?;
                 let mut out: Vec<NodeOut> = Self::plain_files(&v)
                     .into_iter()
-                    .map(|(name, _)| NodeOut { node: format!("o:{id}"), file: true, display_name: name, display_description: String::new(), count: None, type_name: None, id: Some(id) })
+                    .map(|(name, it)| NodeOut { node: format!("o:{id}"), file: true, display_name: name, display_description: String::new(), count: None, type_name: None, id: Some(id), src: Some(it), ..Default::default() })
                     .collect();
                 for e in self.filled_ends(ctx, &v).await? {
-                    out.push(NodeOut { node: format!("f:{id}:{e}"), file: false, display_name: e, display_description: String::new(), count: None, type_name: None, id: None });
+                    out.push(NodeOut { node: format!("f:{id}:{e}"), file: false, display_name: e, display_description: String::new(), count: None, type_name: None, id: None, ..Default::default() });
                 }
-                Ok(out)
+                (out, false)
             }
             (_, NodeRef::Folder(id, end)) => {
                 let mut out = vec![];
                 for s in self.ends(ctx, id, &end, limit, page.offset, lang).await? {
-                    out.extend(self.plain_object_out(&nav, s.id, lang).await?);
+                    out.extend(self.plain_object_out(nav, s.id, lang).await?);
                 }
-                Ok(out)
+                (out, true)
             }
-            _ => Err(BaseError::invalid("aspect.bad_node", "unknown node id").with("node", node)),
-        }
+            _ => return Err(BaseError::invalid("aspect.bad_node", "unknown node id").with("node", node)),
+        })
     }
 
     async fn builtin_node(&self, ctx: &Ctx, aspect: &str, node: &str, lang: &str) -> Result<NodeDetail> {
@@ -708,5 +752,174 @@ impl Store {
             }
             _ => Err(BaseError::not_found("aspect.no_file", "no such file")),
         }
+    }
+
+    // ---- index (object file), entry metadata, batch reading ----
+
+    fn group_index(display: &str) -> String {
+        format!("# {display}\n")
+    }
+
+    async fn text_size(&self, ctx: &Ctx, id: Uuid, tt: &str) -> Result<u64> {
+        let c = self.client().await?;
+        let r = c
+            .query_opt("SELECT octet_length(content) FROM text_part WHERE tenant_id=$1 AND object_id=$2 AND text_type=$3 AND valid_to IS NULL", &[&ctx.tenant, &id, &tt])
+            .await
+            .map_err(db)?;
+        Ok(r.map(|r| r.get::<_, i32>(0) as u64).unwrap_or(0))
+    }
+
+    /// Set size, change time and inode of entries (`name` must be set: it is the directory name
+    /// that relative links in an index start from).
+    async fn decorate(&self, ctx: &Ctx, nav: &StoreNav<'_>, aspect: &str, lang: &str, out: &mut [NodeOut]) -> Result<()> {
+        for n in out.iter_mut() {
+            if let Some(id) = n.id {
+                n.changed_at = nav.changed(id).await?.map(|c| c.0);
+            }
+            if n.file {
+                match &n.src {
+                    Some(Item::Content(id)) => {
+                        let v = nav.view(*id).await?;
+                        n.size = v.and_then(|v| v.content.as_ref().and_then(|c| c["size"].as_u64()));
+                        n.ino = Some(ino(&["c", &id.to_string()]));
+                    }
+                    Some(Item::Text(id, tt)) => {
+                        n.size = Some(self.text_size(ctx, *id, tt).await?);
+                        n.ino = Some(ino(&["t", &id.to_string(), tt]));
+                    }
+                    _ => {}
+                }
+            } else {
+                let name = n.name.clone();
+                n.size = Some(self.index_for(ctx, nav, aspect, n, &name, lang).await?.len() as u64);
+                n.ino = Some(match (n.id, n.node.starts_with("o:")) {
+                    (Some(id), true) => ino(&["i", aspect, &id.to_string()]),
+                    _ => ino(&["i", aspect, &n.node]),
+                });
+            }
+        }
+        Ok(())
+    }
+
+    /// The index of a node as Markdown. Objects: front matter with the reserved fields and the
+    /// readable attributes, then the display name and references as `[[links]]` (relative below
+    /// `dir`, otherwise `/_id/<id>`). Groups and folders: their name.
+    async fn index_for(&self, ctx: &Ctx, nav: &StoreNav<'_>, aspect: &str, n: &NodeOut, dir: &str, lang: &str) -> Result<String> {
+        let id = match parse_node(&n.node)? {
+            NodeRef::Object(id) => id,
+            NodeRef::Root => return Ok(Self::group_index(&self.aspect_display(aspect, lang))),
+            _ => return Ok(Self::group_index(&n.display_name)),
+        };
+        let v = nav.view(id).await?.ok_or_else(|| BaseError::not_found("object.not_found", "object not found"))?;
+        let j = |x: &Value| serde_json::to_string(x).unwrap_or_default();
+        let mut s = String::from("---\n");
+        s.push_str(&format!("_id: {}\n", j(&Value::String(id.to_string()))));
+        s.push_str(&format!("_type: {}\n", j(&Value::Array(v.types.iter().map(|t| Value::String(t.type_name.clone())).collect()))));
+        s.push_str(&format!("_room: {}\n", j(&Value::String(v.room.to_string()))));
+        for (k, x) in StoreNav::attrs(&v) {
+            if !x.is_null() {
+                s.push_str(&format!("{k}: {}\n", j(&x)));
+            }
+        }
+        s.push_str(&format!("---\n# {}\n", n.display_name));
+        if !n.display_description.is_empty() {
+            s.push_str(&format!("\n{}\n", n.display_description));
+        }
+        let link = |target: String, label: &str| format!("- [[{target}|{}]]\n", label.replace('|', "-"));
+        let ends = self.filled_ends(ctx, &v).await?;
+        if is_builtin(aspect) {
+            for e in ends {
+                s.push_str(&format!("\n## {e}\n\n"));
+                for x in self.ends(ctx, id, &e, MAX_LIST, 0, lang).await? {
+                    if let Some(c) = self.plain_object_out(nav, x.id, lang).await? {
+                        s.push_str(&link(format!("{dir}/{}/{}", fs_name(&e), fs_name(&c.display_name)), &c.display_name));
+                    }
+                }
+            }
+            return Ok(s);
+        }
+        let a = self.aspect_def(aspect)?;
+        let (_, _, def) = self.node_def(nav, a, id).await?;
+        let mut covered = BTreeSet::new();
+        if let Some(def) = def {
+            for sn in &def.sub_nodes {
+                covered.insert(sn.path.clone());
+                let ids = self.objects_of(nav, id, &sn.path).await?;
+                if ids.is_empty() {
+                    continue;
+                }
+                let label = if sn.folder { self.i18n.label(&a.name, lang, &sn.label) } else { sn.label.clone() };
+                s.push_str(&format!("\n## {label}\n\n"));
+                for x in ids {
+                    if let Some(c) = self.object_out(nav, a, x, lang).await? {
+                        let target = if sn.folder { format!("{dir}/{}/{}", fs_name(&label), fs_name(&c.display_name)) } else { format!("{dir}/{}", fs_name(&c.display_name)) };
+                        s.push_str(&link(target, &c.display_name));
+                    }
+                }
+            }
+        }
+        for e in ends.into_iter().filter(|e| !covered.contains(e)) {
+            s.push_str(&format!("\n## {e}\n\n"));
+            for x in self.ends(ctx, id, &e, MAX_LIST, 0, lang).await? {
+                if let Some(c) = self.plain_object_out(nav, x.id, lang).await? {
+                    s.push_str(&link(format!("/_id/{}", x.id), &c.display_name));
+                }
+            }
+        }
+        Ok(s)
+    }
+
+    /// The node itself (not its children), undecorated.
+    async fn node_out_for(&self, nav: &StoreNav<'_>, aspect: &str, node: &str, lang: &str) -> Result<NodeOut> {
+        let nf = || BaseError::not_found("object.not_found", "object not found");
+        let builtin = is_builtin(aspect);
+        let a = if builtin { None } else { Some(self.aspect_def(aspect)?) };
+        Ok(match parse_node(node)? {
+            NodeRef::Root => Self::group_out(String::new(), self.aspect_display(aspect, lang), None),
+            NodeRef::Object(id) => match a {
+                Some(a) => self.object_out(nav, a, id, lang).await?.ok_or_else(nf)?,
+                None => self.plain_object_out(nav, id, lang).await?.ok_or_else(nf)?,
+            },
+            NodeRef::Group(keys) => Self::group_out(node.to_string(), keys.last().cloned().unwrap_or_default(), None),
+            NodeRef::Folder(id, label) => {
+                nav.view(id).await?.ok_or_else(nf)?;
+                let d = match a {
+                    Some(a) => self.i18n.label(&a.name, lang, &label),
+                    None => label,
+                };
+                Self::group_out(node.to_string(), d, None)
+            }
+        })
+    }
+
+    /// One entry with metadata as in a listing; `name` overrides the directory name.
+    pub async fn aspect_entry(&self, ctx: &Ctx, aspect: &str, node: &str, name: Option<&str>, lang: &str) -> Result<NodeOut> {
+        let nav = StoreNav::new(self, ctx);
+        let mut n = self.node_out_for(&nav, aspect, node, lang).await?;
+        n.name = name.map(String::from).unwrap_or_else(|| fs_name(&n.display_name));
+        self.decorate(ctx, &nav, aspect, lang, std::slice::from_mut(&mut n)).await?;
+        Ok(n)
+    }
+
+    /// The index of a node (FUSE: `<name>.md` beside the directory `<name>/`).
+    pub async fn aspect_index(&self, ctx: &Ctx, aspect: &str, node: &str, name: Option<&str>, lang: &str) -> Result<String> {
+        let nav = StoreNav::new(self, ctx);
+        let n = self.node_out_for(&nav, aspect, node, lang).await?;
+        let dir = name.map(String::from).unwrap_or_else(|| fs_name(&n.display_name));
+        self.index_for(ctx, &nav, aspect, &n, &dir, lang).await
+    }
+
+    /// Keys (`t:<object>:<text type>`) of current texts containing `literal`: the prefilter of
+    /// `grep` (a trigram index makes it fast; without one it scans). Rights are not checked:
+    /// the result only decides what is skipped.
+    pub async fn text_candidates(&self, ctx: &Ctx, literal: &str, icase: bool) -> Result<std::collections::HashSet<String>> {
+        let esc = literal.replace('\\', "\\\\").replace('%', "\\%").replace('_', "\\_");
+        let op = if icase { "ILIKE" } else { "LIKE" };
+        let c = self.client().await?;
+        let rows = c
+            .query(&format!("SELECT object_id, text_type FROM text_part WHERE tenant_id=$1 AND valid_to IS NULL AND content {op} $2"), &[&ctx.tenant, &format!("%{esc}%")])
+            .await
+            .map_err(db)?;
+        Ok(rows.iter().map(|r| format!("t:{}:{}", r.get::<_, Uuid>(0), r.get::<_, String>(1))).collect())
     }
 }

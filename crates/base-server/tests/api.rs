@@ -311,7 +311,7 @@ async fn mail_with_attachments_content_and_texts() {
     let de = env.admin.clone().with_lang("de-DE").get_object(m, None).await.unwrap();
     assert!(en.types[0].display_description.starts_with("Mail received"));
     assert!(de.types[0].display_description.starts_with("Mail vom"));
-    assert_eq!(env.admin.put_text(m, "base:body.html", "<p>x</p>").await.unwrap() > 0, true);
+    assert!(env.admin.put_text(m, "base:body.html", "<p>x</p>").await.unwrap() > 0);
     assert_eq!(env.admin.put_text(m, "base:nope", "x").await.unwrap_err().error_id(), Some("text.unknown_type"));
 }
 
@@ -517,4 +517,141 @@ async fn multi_valued_group_by() {
     assert_eq!(carla.iter().map(|m| m.display_name.as_str()).collect::<Vec<_>>(), vec!["anna@example.org - Angebot", "ben@example.org - Frage"]);
     let ben = de.aspect_children("base:recipients", &groups[0].node).await.unwrap();
     assert_eq!(ben[0].id, carla[0].id, "same object under both groups");
+}
+
+#[tokio::test]
+async fn tokens_expire_and_are_revoked() {
+    let env = env().await;
+    let (lea_id, lea) = env.person("lea", &[]).await;
+    let t = lea.issue_token(None, Some("agent"), Some(7)).await.unwrap();
+    let agent = lea.with_token(&t.token);
+    assert_eq!(agent.me().await.unwrap().id, lea_id);
+    let list = lea.tokens().await.unwrap();
+    assert!(list.iter().any(|x| x.id == t.id && x.label.as_deref() == Some("agent")));
+    assert!(list.iter().all(|x| x.account == lea_id), "without grant only own tokens");
+    assert!(env.admin.tokens().await.unwrap().iter().any(|x| x.account == lea_id), "with grant all tokens");
+    assert_eq!(lea.issue_token(Some(env.init.admin_account), None, None).await.unwrap_err().status(), Some(404));
+    assert_eq!(lea.issue_token(None, None, Some(400)).await.unwrap_err().error_id(), Some("token.bad_ttl"));
+    // a self-issued token never outlives the token it was issued with (lea's: 90 days)
+    let long = lea.issue_token(None, None, Some(365)).await.unwrap();
+    let exp = chrono::DateTime::parse_from_rfc3339(long.expires_at.as_deref().unwrap()).unwrap();
+    assert!(exp < chrono::Utc::now() + chrono::Duration::days(91));
+
+    env.store.client().await.unwrap().execute("UPDATE token SET expires_at = now() - interval '1 second' WHERE id=$1", &[&t.id]).await.unwrap();
+    let e = agent.me().await.unwrap_err();
+    assert_eq!((e.status(), e.error_id()), (Some(401), Some("auth.expired_token")));
+
+    let t2 = lea.issue_token(None, None, None).await.unwrap();
+    let a2 = lea.with_token(&t2.token);
+    a2.me().await.unwrap();
+    a2.revoke_token(t2.id).await.unwrap();
+    let e = a2.me().await.unwrap_err();
+    assert_eq!((e.status(), e.error_id()), (Some(401), Some("auth.revoked_token")));
+    assert!(lea.tokens().await.unwrap().iter().any(|x| x.id == t2.id && x.revoked_at.is_some()));
+    assert_eq!(lea.revoke_token(env.admin.tokens().await.unwrap().iter().find(|x| x.account == env.init.admin_account).unwrap().id).await.unwrap_err().status(), Some(404));
+}
+
+/// Mail with two attachments, content and a text (as in the mailbox test).
+async fn mail_fixture(env: &Env) -> Uuid {
+    let mut o = Order::new();
+    o.create("m", None, json!({"base:Mail": {"receivedAt": "2026-11-24T08:15:00+01:00", "sender": "anna@example.org", "subject": "Angebot"}}));
+    o.create("n", None, json!({"base:Mail": {"receivedAt": "2026-11-25T09:00:00+01:00", "sender": "carla@example.org", "subject": "Termin"}}));
+    for j in 0..2 {
+        let a = format!("a{j}");
+        o.create(&a, None, json!({"base:MailAttachment": {"filename": format!("file{j}.pdf")}}));
+        o.link("base:MailAttachment.mail", a.as_str(), "m");
+    }
+    let r = env.admin.order(&o).await.unwrap();
+    let m = r.created["m"];
+    env.admin.put_content(m, b"From: anna\r\n\r\nHallo".to_vec(), "message/rfc822", None).await.unwrap();
+    env.admin.put_content(r.created["a0"], b"%PDF-1".to_vec(), "application/pdf", Some("file0.pdf")).await.unwrap();
+    env.admin.put_text(m, "base:mail.md", "# Hallo").await.unwrap();
+    m
+}
+
+#[tokio::test]
+async fn index_and_file_metadata() {
+    let env = env().await;
+    let m = mail_fixture(&env).await;
+    let de = env.admin.clone().with_lang("de");
+    let days = de.aspect_children("base:mailbox", "").await.unwrap();
+    assert_eq!(days[0].name, "2026-11-24");
+    assert_eq!(days[0].size, Some("# 2026-11-24\n".len() as u64));
+    let mail = de.aspect_children("base:mailbox", &days[0].node).await.unwrap().remove(0);
+    let idx = de.aspect_index("base:mailbox", &mail.node, None).await.unwrap();
+    assert!(idx.starts_with(&format!("---\n_id: \"{m}\"\n_type: [\"base:Mail\"]\n")), "{idx}");
+    assert!(idx.contains("sender: \"anna@example.org\"\n"), "{idx}");
+    assert!(idx.contains("---\n# anna@example.org - Angebot\n"), "{idx}");
+    assert!(idx.contains("## Anhänge\n\n- [[anna@example.org - Angebot/Anhänge/file0.pdf|file0.pdf]]\n"), "{idx}");
+    assert_eq!(mail.size, Some(idx.len() as u64), "a node's size is the size of its index");
+    let entry = de.aspect_entry("base:mailbox", &mail.node, None).await.unwrap();
+    assert_eq!((entry.size, entry.ino, entry.name.as_str()), (mail.size, mail.ino, "anna@example.org - Angebot"));
+    assert!(mail.changed_at.is_some());
+
+    let inside = de.aspect_children("base:mailbox", &mail.node).await.unwrap();
+    let md = inside.iter().find(|n| n.name == "mail.md").unwrap();
+    assert_eq!(md.size, Some(7));
+    assert_eq!(inside.iter().find(|n| n.name == "mail.eml").unwrap().size, Some(19));
+    // the same text has the same inode in every view
+    let by_id = de.aspect_children("_id", &format!("o:{m}")).await.unwrap();
+    assert_eq!(by_id.iter().find(|n| n.name == "mail.md").unwrap().ino, md.ino);
+    // in the built-in views the index links the filled ends below the object's own directory
+    let idx = de.aspect_index("_id", &format!("o:{m}"), Some(&m.to_string())).await.unwrap();
+    assert!(idx.contains(&format!("## attachments\n\n- [[{m}/attachments/")), "{idx}");
+}
+
+#[tokio::test]
+async fn tools_over_the_api() {
+    let env = env().await;
+    let m = mail_fixture(&env).await;
+    let de = env.admin.clone().with_lang("de");
+    let sh = |cwd: &'static str, argv: Vec<&'static str>| {
+        let de = de.clone();
+        async move {
+            let v = de.tool_exec(cwd, &argv).await.unwrap();
+            (v["stdout"].as_str().unwrap().to_string(), v["stderr"].as_str().unwrap().to_string(), v["status"].as_i64().unwrap())
+        }
+    };
+    let mail = "/base:mailbox/2026-11-24/anna@example.org - Angebot";
+    let root = sh("/", vec!["ls", "/"]).await.0;
+    assert!(root.contains("_id\n_id.md\n_type\n_type.md\n") && root.contains("base:mailbox\nbase:mailbox.md\n"), "{root}");
+    assert_eq!(sh("/", vec!["ls", "/base:mailbox"]).await.0, "2026-11-24\n2026-11-24.md\n2026-11-25\n2026-11-25.md\n");
+    assert_eq!(sh("/base:mailbox/2026-11-24", vec!["cat", "anna@example.org - Angebot/mail.md"]).await.0, "# Hallo");
+    // grep -r searches texts and indexes, not binary content (mail.eml also contains "Hallo")
+    assert_eq!(sh("/", vec!["grep", "-r", "Hallo", "/base:mailbox"]).await.0, format!("{mail}/mail.md:# Hallo\n"));
+    assert_eq!(sh("/", vec!["grep", "-rlF", "subject: \"Angebot", "/base:mailbox"]).await.0, format!("{mail}.md\n"));
+    // attachments link back to their mail by id
+    assert_eq!(sh("/", vec!["grep", "-rlF", "Angebot]]", "/base:mailbox"]).await.0.lines().count(), 2);
+    assert_eq!(sh("/", vec!["grep", "-c", "Hallo", &*Box::leak(format!("{mail}/mail.eml").into_boxed_str())]).await.0, "1\n", "named files are searched");
+    let pdfs = sh("/base:mailbox", vec!["find", ".", "-name", "*.pdf", "-type", "f"]).await.0;
+    assert_eq!(pdfs, "./2026-11-24/anna@example.org - Angebot/Anhänge/file0.pdf/file0.pdf\n");
+    assert_eq!(sh("/base:mailbox", vec!["find", ".", "-name", "mail.md", "-exec", "grep", "-l", "Hallo", "{}", "+"]).await.0, "./2026-11-24/anna@example.org - Angebot/mail.md\n");
+    assert_eq!(sh(mail_static(), vec!["wc", "-c", "mail.md"]).await.0, "7 mail.md\n");
+    assert_eq!(sh(mail_static(), vec!["head", "-n", "1", "../anna@example.org - Angebot.md"]).await.0, "---\n");
+    assert!(sh(mail_static(), vec!["stat", "mail.md"]).await.0.contains("Links: 2"));
+    assert!(sh(mail_static(), vec!["ls", "-l"]).await.0.contains("-r--r--r-- 2 base base"));
+    assert_eq!(sh("/", vec!["cat", &*Box::leak(format!("/_id/{m}/mail.md").into_boxed_str())]).await.0, "# Hallo");
+    assert_eq!(sh("/", vec!["cat", "/nope"]).await, (String::new(), "cat: /nope: No such file or directory\n".into(), 1));
+
+    let e = de.tool_exec("/", &["grep", "-P", "x", "/"]).await.unwrap_err();
+    assert_eq!((e.status(), e.error_id()), (Some(400), Some("tool.unknown_option")));
+    assert!(e.to_string().contains("\"-r\""), "the error lists the supported options: {e}");
+
+    let v = de.tool("grep", &json!({"cwd": "/base:mailbox", "paths": ["."], "options": {"recursive": true, "patterns": ["Hallo"], "lineNumber": true}})).await.unwrap();
+    assert_eq!(v["records"], json!([{"kind": "match", "path": "./2026-11-24/anna@example.org - Angebot/mail.md", "line": 1, "text": "# Hallo"}]));
+    assert_eq!(de.tool("grep", &json!({"paths": ["/"], "options": {"long": true, "patterns": ["x"]}})).await.unwrap_err().error_id(), Some("tool.unknown_option"));
+
+    // every request counts once
+    let before = env.admin.metrics().await.unwrap()["requests"].as_u64().unwrap();
+    de.tool_exec("/", &["ls", "/"]).await.unwrap();
+    assert_eq!(env.admin.metrics().await.unwrap()["requests"].as_u64().unwrap(), before + 1);
+
+    // without read rights there is nothing to find
+    let (_, lea) = env.person("lea", &[]).await;
+    let v = lea.tool_exec("/", &["grep", "-r", "Hallo", "/base:mailbox"]).await.unwrap();
+    assert_eq!((v["stdout"].as_str().unwrap(), v["status"].as_i64().unwrap()), ("", 1));
+}
+
+fn mail_static() -> &'static str {
+    "/base:mailbox/2026-11-24/anna@example.org - Angebot"
 }

@@ -148,8 +148,10 @@ export function buildCatalog(typesDir) {
             case "hasContent": t.content = { mediaType: d.args[0] ? d.args[0].text : null }; break;
             case "texts":
               for (const a of d.args) {
-                const [name, media] = a.text.split(":");
-                const tt = { name: `${ns}:${name}`, mediaType: media ?? "text/plain", owner: full };
+                const [name, media, flag] = a.text.split(":");
+                if (flag !== undefined && flag !== "noGrep")
+                  throw new CatError("typecat.bad_text_flag", "unknown flag of a text type (only noGrep)", { class: full, text: a.text });
+                const tt = { name: `${ns}:${name}`, mediaType: media ?? "text/plain", owner: full, grep: flag !== "noGrep" };
                 t.textTypes.push(tt.name); textTypes.push(tt);
               }
               break;

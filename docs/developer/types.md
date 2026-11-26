@@ -25,7 +25,8 @@ export class JournalLine {
   qualification in paths (``person.`verein:memberships` ``). Names starting with `_` are reserved.
 * Class decorators: `@ns`, `@abstractType`, `@requires(A, B)` (one of), `@requiresAll(A, B)`,
   `@brings(B)` (every object of this type is also a B), `@imprintsOn(A)` (every A is also of
-  this type), `@hasContent(mediaType?)`, `@texts("name:mediaType", ...)`.
+  this type), `@hasContent(mediaType?)`, `@texts("name:mediaType[:noGrep]", ...)` (`noGrep`: not
+  searched by `grep`, e.g. the OCR layer of a scan).
 * Attribute decorators: `@indexed`, `@unique`; reference decorators: `@partOf`, `@ordered`,
   `@rightsRelevant`, `@min`.
 

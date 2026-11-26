@@ -106,3 +106,14 @@ test("allows equal names from unrelated modules, rejects them against the base",
   assert.equal(cat.references.filter((r) => r.target.end === "links").length, 2);
   assert.throws(() => buildCatalog(tmpTypes(files("links?: string;"))), (e) => e.id === "typecat.name_conflict");
 });
+
+test("text types are searched by grep unless marked noGrep", () => {
+  const dir = tmpTypes({
+    "modules/x/module.ts": mod("x"),
+    "modules/x/types.ts": `import { ns, hasContent, texts } from "../../lib";\n@ns("x") @hasContent() @texts("text.md:text/markdown", "ocr.txt:text/plain:noGrep")\nexport class Scan { title!: string; }\n`,
+  });
+  const cat = buildCatalog(dir);
+  assert.deepEqual(cat.textTypes.map((t) => [t.name, t.grep]), [["x:text.md", true], ["x:ocr.txt", false]]);
+  const bad = tmpTypes({ "modules/x/module.ts": mod("x"), "modules/x/types.ts": `import { ns, texts } from "../../lib";\n@ns("x") @texts("a:text/plain:nope")\nexport class A { t!: string; }\n` });
+  assert.throws(() => buildCatalog(bad), (e) => e.id === "typecat.bad_text_flag");
+});

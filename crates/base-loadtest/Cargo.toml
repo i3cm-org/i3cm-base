@@ -7,8 +7,8 @@ repository.workspace = true
 
 [dependencies]
 anyhow = "1.0.105"
-base-client = { version = "0.2.0", path = "../base-client" }
-base-server = { version = "0.2.0", path = "../base-server" }
+base-client = { version = "0.4.0", path = "../base-client" }
+base-server = { version = "0.4.0", path = "../base-server" }
 chrono = "0.4.45"
 clap = { version = "4.6.9", features = ["derive"] }
 futures = "0.3.34"

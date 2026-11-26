@@ -6,10 +6,14 @@ use axum::extract::{Path, Query, State};
 use axum::http::{header, HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{delete, get, post};
+use base64::Engine;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
 use axum::{Json, Router};
 use base_core::{BaseError, ErrorKind};
 use base_store::read::ListQuery;
-use base_store::{Ctx, Op, Order, Store};
+use base_store::fs::FsTree;
+use base_store::{Auth, Ctx, Op, Order, Store};
 use serde::Deserialize;
 use serde_json::{json, Map, Value};
 use std::collections::BTreeMap;
@@ -44,6 +48,7 @@ type R<T> = Result<T, ApiError>;
 struct Req {
     ctx: Ctx,
     lang: String,
+    auth: Auth,
 }
 
 async fn auth(s: &Store, h: &HeaderMap) -> R<Req> {
@@ -52,10 +57,10 @@ async fn auth(s: &Store, h: &HeaderMap) -> R<Req> {
         .and_then(|v| v.to_str().ok())
         .and_then(|v| v.strip_prefix("Bearer "))
         .ok_or_else(|| BaseError::new(ErrorKind::Unauthenticated, "auth.missing_token", "bearer token required"))?;
-    let (tenant, account) = s.authenticate(token.trim()).await?;
-    let ctx = s.ctx(tenant, account).await?;
+    let auth = s.authenticate(token.trim()).await?;
+    let ctx = s.ctx(auth.tenant, auth.account).await?;
     let lang = s.i18n.pick(h.get(header::ACCEPT_LANGUAGE).and_then(|v| v.to_str().ok()));
-    Ok(Req { ctx, lang })
+    Ok(Req { ctx, lang, auth })
 }
 
 #[derive(Deserialize, Default)]
@@ -121,10 +126,32 @@ struct AssignBody {
 
 #[derive(Deserialize)]
 struct TokenBody {
-    account: Uuid,
+    account: Option<Uuid>,
+    label: Option<String>,
+    ttl: Option<i64>,
+}
+
+#[derive(Deserialize, Default)]
+struct TokenQuery {
+    account: Option<Uuid>,
+}
+
+/// Request counter (`GET /v1/metrics`), e.g. to measure what a file system walk costs.
+#[derive(Default)]
+pub struct Metrics {
+    requests: AtomicU64,
+}
+
+async fn count(axum::extract::State(m): axum::extract::State<Arc<Metrics>>, req: axum::extract::Request, next: axum::middleware::Next) -> Response {
+    if req.uri().path() != "/v1/metrics" {
+        m.requests.fetch_add(1, Ordering::Relaxed);
+    }
+    next.run(req).await
 }
 
 pub fn router(store: Store) -> Router {
+    let metrics = Arc::new(Metrics::default());
+    let m = metrics.clone();
     Router::new()
         .route("/health", get(|| async { "ok" }))
         .route("/v1/catalog", get(catalog))
@@ -150,12 +177,23 @@ pub fn router(store: Store) -> Router {
         .route("/v1/types/{t}/groups", get(groups))
         .route("/v1/roles", get(roles))
         .route("/v1/assignments", post(assign))
-        .route("/v1/tokens", post(token))
+        .route("/v1/tokens", post(token).get(tokens))
+        .route("/v1/tokens/{id}", delete(revoke))
+        .route("/v1/metrics", get(move |State(s): State<Store>, h: HeaderMap| async move {
+            auth(&s, &h).await?;
+            Ok::<_, ApiError>(Json(json!({"requests": m.requests.load(Ordering::Relaxed)})))
+        }))
+        .route("/v1/aspects/{a}/entry", get(aspect_entry))
+        .route("/v1/aspects/{a}/index", get(aspect_index))
+        .route("/v1/aspects/{a}/files", post(aspect_files))
+        .route("/v1/tools/exec", post(tool_exec))
+        .route("/v1/tools/{tool}", post(tool_call))
         .route("/v1/aspects", get(aspects))
         .route("/v1/aspects/{a}/children", get(aspect_children))
         .route("/v1/aspects/{a}/node", get(aspect_node))
         .route("/v1/aspects/{a}/file", get(aspect_file))
         .route("/v1/objects/{id}/eval", get(eval_path))
+        .layer(axum::middleware::from_fn_with_state(metrics, count))
         .with_state(store)
 }
 
@@ -227,11 +265,10 @@ async fn get_content(State(s): State<Store>, h: HeaderMap, Path(id): Path<Uuid>)
     let r = auth(&s, &h).await?;
     let (data, media, filename) = s.get_content(&r.ctx, id).await?;
     let mut resp = (StatusCode::OK, [(header::CONTENT_TYPE, media)], data).into_response();
-    if let Some(f) = filename {
-        if let Ok(v) = format!("attachment; filename=\"{}\"", f.replace('"', "")).parse() {
+    if let Some(f) = filename
+        && let Ok(v) = format!("attachment; filename=\"{}\"", f.replace('"', "")).parse() {
             resp.headers_mut().insert(header::CONTENT_DISPOSITION, v);
         }
-    }
     Ok(resp)
 }
 
@@ -315,8 +352,19 @@ async fn assign(State(s): State<Store>, h: HeaderMap, Json(b): Json<AssignBody>)
 
 async fn token(State(s): State<Store>, h: HeaderMap, Json(b): Json<TokenBody>) -> R<Json<Value>> {
     let r = auth(&s, &h).await?;
-    let t = s.create_token(&r.ctx, b.account).await?;
-    Ok(Json(json!({"token": t})))
+    let t = s.create_token_with(&r.ctx, &r.auth, b.account, b.label.as_deref(), b.ttl).await?;
+    Ok(Json(serde_json::to_value(t).unwrap_or_default()))
+}
+
+async fn tokens(State(s): State<Store>, h: HeaderMap, Query(q): Query<TokenQuery>) -> R<Json<Value>> {
+    let r = auth(&s, &h).await?;
+    Ok(Json(serde_json::to_value(s.tokens(&r.ctx, q.account).await?).unwrap_or_default()))
+}
+
+async fn revoke(State(s): State<Store>, h: HeaderMap, Path(id): Path<Uuid>) -> R<Json<Value>> {
+    let r = auth(&s, &h).await?;
+    s.revoke_token(&r.ctx, id).await?;
+    Ok(Json(json!({"revoked": id})))
 }
 
 #[derive(Deserialize, Default)]
@@ -358,4 +406,92 @@ async fn aspect_file(State(s): State<Store>, h: HeaderMap, Path(a): Path<String>
 async fn eval_path(State(s): State<Store>, h: HeaderMap, Path(id): Path<Uuid>, Query(q): Query<ExprQ>) -> R<Json<Value>> {
     let r = auth(&s, &h).await?;
     Ok(Json(Value::Array(s.eval_path(&r.ctx, id, &q.expr).await?)))
+}
+
+async fn aspect_entry(State(s): State<Store>, h: HeaderMap, Path(a): Path<String>, Query(q): Query<NodeQ>) -> R<Json<Value>> {
+    let r = auth(&s, &h).await?;
+    Ok(Json(serde_json::to_value(s.aspect_entry(&r.ctx, &a, &q.node, q.name.as_deref(), &r.lang).await?).unwrap_or_default()))
+}
+
+async fn aspect_index(State(s): State<Store>, h: HeaderMap, Path(a): Path<String>, Query(q): Query<NodeQ>) -> R<Response> {
+    let r = auth(&s, &h).await?;
+    let md = s.aspect_index(&r.ctx, &a, &q.node, q.name.as_deref(), &r.lang).await?;
+    Ok((StatusCode::OK, [(header::CONTENT_TYPE, "text/markdown; charset=utf-8")], md).into_response())
+}
+
+#[derive(Deserialize)]
+struct FileItem {
+    node: String,
+    name: Option<String>,
+    #[serde(default)]
+    index: bool,
+}
+
+#[derive(Deserialize)]
+struct FilesBody {
+    items: Vec<FileItem>,
+}
+
+/// Several files and indexes in one request (base64): a file system reads a directory at once.
+async fn aspect_files(State(s): State<Store>, h: HeaderMap, Path(a): Path<String>, Json(b): Json<FilesBody>) -> R<Json<Value>> {
+    let r = auth(&s, &h).await?;
+    if b.items.len() > 1000 {
+        return Err(BaseError::invalid("aspect.too_many_files", "at most 1000 items").into());
+    }
+    let mut out = vec![];
+    for it in b.items {
+        let res = if it.index {
+            s.aspect_index(&r.ctx, &a, &it.node, it.name.as_deref(), &r.lang).await.map(String::into_bytes)
+        } else {
+            match &it.name {
+                Some(n) => s.aspect_file(&r.ctx, &a, &it.node, n).await.map(|x| x.0),
+                None => Err(BaseError::invalid("aspect.no_file", "name required")),
+            }
+        };
+        out.push(match res {
+            Ok(d) => json!({"data": base64::engine::general_purpose::STANDARD.encode(d)}),
+            Err(e) => json!({"error_id": e.error_id, "description": e.description}),
+        });
+    }
+    Ok(Json(Value::Array(out)))
+}
+
+fn tool_error(e: base_tools::ToolError) -> ApiError {
+    ApiError(BaseError::invalid(&e.error_id, e.message).with("supported", e.supported))
+}
+
+/// Typed tool call: `{"cwd": "/", "paths": [...], "options": {...}}`.
+async fn tool_call(State(s): State<Store>, h: HeaderMap, Path(t): Path<String>, Json(req): Json<base_tools::Request>) -> R<Json<Value>> {
+    let r = auth(&s, &h).await?;
+    let tool = base_tools::TOOLS
+        .contains(&t.as_str())
+        .then(|| base_tools::Tool::from_name(&t))
+        .flatten()
+        .ok_or_else(|| BaseError::not_found("tool.unknown", "unknown tool").with("tool", t.clone()).with("supported", base_tools::TOOLS.to_vec()))?;
+    let mut call = base_tools::Call { tool, req };
+    if call.req.cwd.is_empty() {
+        call.req.cwd = "/".into();
+    }
+    base_tools::check(&call).map_err(tool_error)?;
+    let tree = FsTree::new(&s, &r.ctx, &r.lang);
+    Ok(Json(serde_json::to_value(base_tools::run(&tree, &call).await).unwrap_or_default()))
+}
+
+#[derive(Deserialize)]
+struct ExecBody {
+    #[serde(default)]
+    cwd: String,
+    argv: Vec<String>,
+}
+
+/// Shell form: `{"cwd": "/", "argv": ["grep", "-rn", "x", "."]}`; the answer also carries the
+/// output as the tool prints it.
+async fn tool_exec(State(s): State<Store>, h: HeaderMap, Json(b): Json<ExecBody>) -> R<Json<Value>> {
+    let r = auth(&s, &h).await?;
+    let mut call = base_tools::parse(&b.argv).map_err(tool_error)?;
+    call.req.cwd = if b.cwd.is_empty() { "/".into() } else { b.cwd };
+    let tree = FsTree::new(&s, &r.ctx, &r.lang);
+    let res = base_tools::run(&tree, &call).await;
+    let (out, err) = base_tools::render(&res);
+    Ok(Json(json!({"status": res.status, "records": res.records, "stdout": String::from_utf8_lossy(&out), "stderr": err})))
 }

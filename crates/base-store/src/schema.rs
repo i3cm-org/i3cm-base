@@ -13,7 +13,7 @@ pub fn type_table(t: &TypeDef) -> String {
 }
 
 pub fn ref_table(r: &RefDef) -> String {
-    format!("r_{}", ident(&r.name.replace(':', "_").replace('.', "_")))
+    format!("r_{}", ident(&r.name.replace([':', '.'], "_")))
 }
 
 /// Quoted column name of an attribute.
@@ -40,8 +40,20 @@ CREATE TABLE IF NOT EXISTS role_include (tenant_id uuid NOT NULL, role text NOT 
 CREATE TABLE IF NOT EXISTS assignment (tenant_id uuid NOT NULL, id uuid NOT NULL, role text NOT NULL, carrier uuid NOT NULL, valid_from bigint NOT NULL, valid_to bigint, PRIMARY KEY (tenant_id, id, valid_from));
 CREATE INDEX IF NOT EXISTS assignment_cur ON assignment (tenant_id, carrier) WHERE valid_to IS NULL;
 CREATE TABLE IF NOT EXISTS token (hash text PRIMARY KEY, tenant_id uuid NOT NULL, account uuid NOT NULL, created_at timestamptz NOT NULL DEFAULT now());
+ALTER TABLE token ADD COLUMN IF NOT EXISTS id uuid NOT NULL DEFAULT gen_random_uuid();
+ALTER TABLE token ADD COLUMN IF NOT EXISTS label text;
+ALTER TABLE token ADD COLUMN IF NOT EXISTS expires_at timestamptz;
+ALTER TABLE token ADD COLUMN IF NOT EXISTS revoked_at timestamptz;
+ALTER TABLE token ADD COLUMN IF NOT EXISTS last_used timestamptz;
+CREATE UNIQUE INDEX IF NOT EXISTS token_id ON token (id);
+CREATE INDEX IF NOT EXISTS token_account ON token (tenant_id, account);
 CREATE TABLE IF NOT EXISTS module_room (tenant_id uuid NOT NULL, name text NOT NULL, room_id uuid NOT NULL, PRIMARY KEY (tenant_id, name));
 "#;
+
+/// Trigram index for the search prefilter of `grep` (needs the extension pg_trgm; without it
+/// the prefilter query scans the texts).
+pub const TRIGRAM: &str = "CREATE EXTENSION IF NOT EXISTS pg_trgm; \
+CREATE INDEX IF NOT EXISTS text_part_trgm ON text_part USING gin (content gin_trgm_ops) WHERE valid_to IS NULL;";
 
 /// DDL for all catalog types and references.
 pub fn catalog_ddl(m: &Model) -> Vec<String> {

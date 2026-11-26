@@ -3,7 +3,8 @@
 use crate::context::{db, Ctx, RoomTree};
 use crate::order::{Op, Order};
 use crate::schema::type_table;
-use crate::Store;
+use crate::{Auth, Store};
+use chrono::{DateTime, Duration, Utc};
 use base_core::catalog::Sign;
 use base_core::rights::Subject;
 use base_core::{BaseError, Result};
@@ -148,25 +149,122 @@ impl Store {
             .ok_or_else(|| BaseError::not_found("account.not_found", "unknown login").with("login", login))
     }
 
-    /// Issue a token without rights check (command line, bootstrap).
+    /// Issue a token without rights check (command line, bootstrap); no expiry.
     pub async fn create_token_unchecked(&self, tenant: Uuid, account: Uuid) -> Result<String> {
+        Ok(self.issue_token(tenant, account, None, None).await?.token)
+    }
+
+    /// Issue a token without rights check.
+    pub async fn issue_token(&self, tenant: Uuid, account: Uuid, label: Option<&str>, expires_at: Option<DateTime<Utc>>) -> Result<Issued> {
         let token = new_token();
         let c = self.client().await?;
-        c.execute("INSERT INTO token (hash, tenant_id, account) VALUES ($1,$2,$3)", &[&hash_token(&token), &tenant, &account]).await.map_err(db)?;
-        Ok(token)
+        let id: Uuid = c
+            .query_one(
+                "INSERT INTO token (hash, tenant_id, account, label, expires_at) VALUES ($1,$2,$3,$4,$5) RETURNING id",
+                &[&hash_token(&token), &tenant, &account, &label, &expires_at],
+            )
+            .await
+            .map_err(db)?
+            .get(0);
+        Ok(Issued { id, token, expires_at })
+    }
+
+    fn may_grant(ctx: &Ctx) -> bool {
+        ctx.subject.may(base_core::Art::Grant, base_core::ANY, &[ctx.rooms.root])
     }
 
     /// Issue a token for an account (needs the right to grant rights).
     pub async fn create_token(&self, ctx: &Ctx, account: Uuid) -> Result<String> {
-        if !ctx.subject.may(base_core::Art::Grant, base_core::ANY, &[ctx.rooms.root]) {
-            return Err(BaseError::not_found("rights.denied", "not allowed or not found").with("art", "grant"));
-        }
-        let c = self.client().await?;
-        let set = crate::read::types_of(&**c, ctx.tenant, account, None).await?;
-        if !self.model.set_is_a(set.keys(), "base:Account") {
-            return Err(BaseError::invalid("token.not_an_account", "tokens can only be issued for accounts"));
-        }
-        drop(c);
-        self.create_token_unchecked(ctx.tenant, account).await
+        let auth = Auth { tenant: ctx.tenant, account: ctx.me(), token: Uuid::nil(), expires_at: None };
+        Ok(self.create_token_with(ctx, &auth, Some(account), None, None).await?.token)
     }
+
+    /// Issue a token. Without `account` a caller issues one for itself (no right needed; it
+    /// expires no later than the token of the request); for another account the right to grant
+    /// rights is needed. `ttl_days`: default 90, at most 365.
+    pub async fn create_token_with(&self, ctx: &Ctx, auth: &Auth, account: Option<Uuid>, label: Option<&str>, ttl_days: Option<i64>) -> Result<Issued> {
+        let days = ttl_days.unwrap_or(TOKEN_TTL_DAYS);
+        if !(1..=TOKEN_TTL_MAX_DAYS).contains(&days) {
+            return Err(BaseError::invalid("token.bad_ttl", "ttl must be between 1 and 365 days").with("ttl", days));
+        }
+        let mut expires = Utc::now() + Duration::days(days);
+        let account = match account {
+            Some(a) if a != ctx.me() => {
+                if !Self::may_grant(ctx) {
+                    return Err(BaseError::not_found("rights.denied", "not allowed or not found").with("art", "grant"));
+                }
+                let c = self.client().await?;
+                let set = crate::read::types_of(&**c, ctx.tenant, a, None).await?;
+                if !self.model.set_is_a(set.keys(), "base:Account") {
+                    return Err(BaseError::invalid("token.not_an_account", "tokens can only be issued for accounts"));
+                }
+                a
+            }
+            _ => {
+                if let Some(limit) = auth.expires_at {
+                    expires = expires.min(limit);
+                }
+                ctx.me()
+            }
+        };
+        self.issue_token(ctx.tenant, account, label, Some(expires)).await
+    }
+
+    /// Tokens of the caller; with the right to grant rights all tokens of the tenant (optionally
+    /// of one account). Secrets are never returned.
+    pub async fn tokens(&self, ctx: &Ctx, account: Option<Uuid>) -> Result<Vec<TokenInfo>> {
+        let all = Self::may_grant(ctx);
+        let filter = match (all, account) {
+            (true, a) => a,
+            (false, _) => Some(ctx.me()),
+        };
+        let c = self.client().await?;
+        let rows = c
+            .query(
+                "SELECT id, account, label, created_at, expires_at, revoked_at, last_used FROM token WHERE tenant_id=$1 AND ($2::uuid IS NULL OR account=$2) ORDER BY created_at, id",
+                &[&ctx.tenant, &filter],
+            )
+            .await
+            .map_err(db)?;
+        Ok(rows
+            .iter()
+            .map(|r| TokenInfo { id: r.get(0), account: r.get(1), label: r.get(2), created_at: r.get(3), expires_at: r.get(4), revoked_at: r.get(5), last_used: r.get(6) })
+            .collect())
+    }
+
+    /// Revoke a token: one's own, or any of the tenant with the right to grant rights.
+    pub async fn revoke_token(&self, ctx: &Ctx, id: Uuid) -> Result<()> {
+        let c = self.client().await?;
+        let owner: Option<Uuid> = c.query_opt("SELECT account FROM token WHERE tenant_id=$1 AND id=$2", &[&ctx.tenant, &id]).await.map_err(db)?.map(|r| r.get(0));
+        match owner {
+            Some(a) if a == ctx.me() || Self::may_grant(ctx) => {
+                c.execute("UPDATE token SET revoked_at=now() WHERE id=$1 AND revoked_at IS NULL", &[&id]).await.map_err(db)?;
+                Ok(())
+            }
+            _ => Err(BaseError::not_found("token.not_found", "not allowed or not found").with("id", id.to_string())),
+        }
+    }
+}
+
+pub const TOKEN_TTL_DAYS: i64 = 90;
+pub const TOKEN_TTL_MAX_DAYS: i64 = 365;
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Issued {
+    pub id: Uuid,
+    pub token: String,
+    #[serde(rename = "expiresAt")]
+    pub expires_at: Option<DateTime<Utc>>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TokenInfo {
+    pub id: Uuid,
+    pub account: Uuid,
+    pub label: Option<String>,
+    pub created_at: DateTime<Utc>,
+    pub expires_at: Option<DateTime<Utc>>,
+    pub revoked_at: Option<DateTime<Utc>>,
+    pub last_used: Option<DateTime<Utc>>,
 }

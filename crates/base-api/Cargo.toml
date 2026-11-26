@@ -7,8 +7,10 @@ repository.workspace = true
 
 [dependencies]
 axum = "0.8.9"
-base-core = { version = "0.2.0", path = "../base-core" }
-base-store = { version = "0.2.0", path = "../base-store" }
+base-core = { version = "0.4.0", path = "../base-core" }
+base-store = { version = "0.4.0", path = "../base-store" }
+base-tools = { version = "0.4.0", path = "../base-tools" }
+base64 = "0.22.1"
 hex = "0.4.3"
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.154"

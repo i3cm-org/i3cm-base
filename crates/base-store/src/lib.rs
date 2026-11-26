@@ -6,6 +6,7 @@
 //! * every row carries a validity range `valid_from`/`valid_to` (transaction marks).
 
 pub mod aspect;
+pub mod fs;
 pub mod context;
 pub mod order;
 pub mod read;
@@ -28,6 +29,17 @@ pub struct Store {
     pub pool: Pool,
     pub model: Arc<Model>,
     pub i18n: Arc<I18n>,
+    /// The trigram index for the search prefilter exists.
+    pub trigram: bool,
+}
+
+/// An authenticated request: tenant, account and the token used.
+#[derive(Debug, Clone)]
+pub struct Auth {
+    pub tenant: uuid::Uuid,
+    pub account: uuid::Uuid,
+    pub token: uuid::Uuid,
+    pub expires_at: Option<chrono::DateTime<chrono::Utc>>,
 }
 
 impl Store {
@@ -38,8 +50,8 @@ impl Store {
         cfg.pool = Some(deadpool_postgres::PoolConfig::new(pool_size));
         let pool = cfg.create_pool(Some(Runtime::Tokio1), NoTls).map_err(|e| BaseError::internal(format!("pool: {e}")))?;
         let i18n = I18n::new(&model)?;
-        let store = Store { pool, model: Arc::new(model), i18n: Arc::new(i18n) };
-        store.migrate().await?;
+        let mut store = Store { pool, model: Arc::new(model), i18n: Arc::new(i18n), trigram: false };
+        store.trigram = store.migrate().await?;
         Ok(store)
     }
 
@@ -47,7 +59,8 @@ impl Store {
         self.pool.get().await.map_err(|e| BaseError::internal(format!("pool: {e}")))
     }
 
-    async fn migrate(&self) -> Result<()> {
+    /// Create or extend the schema; returns whether the trigram index is available.
+    async fn migrate(&self) -> Result<bool> {
         let c = self.client().await?;
         c.batch_execute("SELECT pg_advisory_lock(4711)").await.map_err(db)?;
         let res = async {
@@ -55,23 +68,44 @@ impl Store {
             for stmt in schema::catalog_ddl(&self.model) {
                 c.batch_execute(&stmt).await.map_err(db)?;
             }
-            Ok::<_, BaseError>(())
+            Ok::<_, BaseError>(match c.batch_execute(schema::TRIGRAM).await {
+                Ok(()) => true,
+                Err(e) => {
+                    tracing::warn!(error = %e, "pg_trgm unavailable: the grep prefilter scans texts without index");
+                    false
+                }
+            })
         }
         .await;
         c.batch_execute("SELECT pg_advisory_unlock(4711)").await.map_err(db)?;
         res
     }
 
-    /// Resolve a bearer token to (tenant, account).
-    pub async fn authenticate(&self, token: &str) -> Result<(uuid::Uuid, uuid::Uuid)> {
+    /// Resolve a bearer token; expired and revoked tokens are rejected.
+    pub async fn authenticate(&self, token: &str) -> Result<Auth> {
         let hash = tenant::hash_token(token);
         let c = self.client().await?;
+        let unauth = |id: &str, d: &str| BaseError::new(base_core::ErrorKind::Unauthenticated, id, d);
         let row = c
-            .query_opt("SELECT tenant_id, account FROM token WHERE hash=$1", &[&hash])
+            .query_opt(
+                "SELECT tenant_id, account, id, expires_at, revoked_at IS NOT NULL, expires_at IS NOT NULL AND expires_at <= now(), \
+                 last_used IS NULL OR last_used < now() - interval '1 minute' FROM token WHERE hash=$1",
+                &[&hash],
+            )
             .await
             .map_err(db)?
-            .ok_or_else(|| BaseError::new(base_core::ErrorKind::Unauthenticated, "auth.invalid_token", "unknown token"))?;
-        Ok((row.get(0), row.get(1)))
+            .ok_or_else(|| unauth("auth.invalid_token", "unknown token"))?;
+        if row.get::<_, bool>(4) {
+            return Err(unauth("auth.revoked_token", "the token was revoked"));
+        }
+        if row.get::<_, bool>(5) {
+            return Err(unauth("auth.expired_token", "the token has expired"));
+        }
+        let id: uuid::Uuid = row.get(2);
+        if row.get::<_, bool>(6) {
+            c.execute("UPDATE token SET last_used=now() WHERE id=$1", &[&id]).await.map_err(db)?;
+        }
+        Ok(Auth { tenant: row.get(0), account: row.get(1), token: id, expires_at: row.get(3) })
     }
 
     /// Load the request context for an authenticated account.

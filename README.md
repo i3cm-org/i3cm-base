@@ -2,7 +2,8 @@
 
 A base for function portals: typed objects that carry several types at once, versioned
 storage, rooms and roles for rights, and a REST API. Modules contribute types, rooms, roles
-and display texts. This is milestone 0.2: the core without user interface.
+and display texts. This is milestone 0.4: the core without user interface, views (aspects), and the data as a
+read-only file system with Unix tools for agents.
 
 ## Concepts in one paragraph
 
@@ -26,9 +27,11 @@ or accounts, and rights are inherited down the room tree.
 | `crates/base-api` | REST API (axum) |
 | `crates/base-server` | Server binary, embedded PostgreSQL for development and tests |
 | `crates/base-client` | Rust client |
+| `crates/base-tools` | The read-only Unix tools (`ls`, `cat`, `head`, `tail`, `wc`, `stat`, `grep`, `find`): parser, engine, output |
+| `crates/base-cli` | The program `base`: FUSE driver, the tools by their Unix names, `base-init` |
 | `crates/base-loadtest` | Load test with the accounting example |
 | `deploy/` | Dockerfile and compose file |
-| `docs/developer/` | Type notation and API reference |
+| `docs/developer/` | Type notation, API reference, tools and file system |
 
 ## Quick start
 

@@ -259,6 +259,9 @@ pub struct TextTypeDef {
     #[serde(rename = "mediaType")]
     pub media_type: String,
     pub owner: String,
+    /// Searched by `grep` (default); off for texts such as the OCR layer of a scan.
+    #[serde(default = "yes")]
+    pub grep: bool,
 }
 
 /// Which side of a reference an end belongs to.

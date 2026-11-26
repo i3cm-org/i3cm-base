@@ -220,6 +220,36 @@ pub struct AspectNode {
     #[serde(rename = "type")]
     pub type_name: Option<String>,
     pub id: Option<Uuid>,
+    /// Name in paths (FUSE, tools).
+    #[serde(default)]
+    pub name: String,
+    /// Bytes of the file; for a node: of its index.
+    pub size: Option<u64>,
+    #[serde(rename = "changedAt")]
+    pub changed_at: Option<String>,
+    pub ino: Option<u64>,
+}
+
+/// An issued token (the secret is shown once).
+#[derive(Debug, Clone, Deserialize)]
+pub struct IssuedToken {
+    pub id: Uuid,
+    pub token: String,
+    #[serde(rename = "expiresAt")]
+    pub expires_at: Option<String>,
+}
+
+/// A token as listed (without secret).
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TokenInfo {
+    pub id: Uuid,
+    pub account: Uuid,
+    pub label: Option<String>,
+    pub created_at: String,
+    pub expires_at: Option<String>,
+    pub revoked_at: Option<String>,
+    pub last_used: Option<String>,
 }
 
 #[derive(Clone)]
@@ -397,5 +427,44 @@ impl Client {
     pub async fn create_token(&self, account: Uuid) -> Result<String> {
         let v: Value = self.post("/tokens", &json!({"account": account})).await?;
         Ok(v["token"].as_str().unwrap_or_default().to_string())
+    }
+    /// Issue a token; `account: None` issues one for the caller. `ttl` in days.
+    pub async fn issue_token(&self, account: Option<Uuid>, label: Option<&str>, ttl: Option<i64>) -> Result<IssuedToken> {
+        self.post("/tokens", &json!({"account": account, "label": label, "ttl": ttl})).await
+    }
+    pub async fn tokens(&self) -> Result<Vec<TokenInfo>> {
+        self.get("/tokens").await
+    }
+    pub async fn revoke_token(&self, id: Uuid) -> Result<()> {
+        Self::check(self.req(reqwest::Method::DELETE, &format!("/tokens/{id}")).send().await?).await?;
+        Ok(())
+    }
+    /// Requests served so far by this server process.
+    pub async fn metrics(&self) -> Result<Value> {
+        self.get("/metrics").await
+    }
+    /// Index of a node as Markdown; `name` is the directory name relative links start from.
+    pub async fn aspect_index(&self, aspect: &str, node: &str, name: Option<&str>) -> Result<String> {
+        let mut q = vec![("node", node)];
+        if let Some(n) = name {
+            q.push(("name", n));
+        }
+        Ok(Self::check(self.req(reqwest::Method::GET, &format!("/aspects/{aspect}/index")).query(&q).send().await?).await?.text().await?)
+    }
+    /// One node with metadata as in a listing.
+    pub async fn aspect_entry(&self, aspect: &str, node: &str, name: Option<&str>) -> Result<AspectNode> {
+        let mut q = vec![("node", node)];
+        if let Some(n) = name {
+            q.push(("name", n));
+        }
+        self.get_q(&format!("/aspects/{aspect}/entry"), &q).await
+    }
+    /// A tool in shell form: `{"status", "records", "stdout", "stderr"}`.
+    pub async fn tool_exec(&self, cwd: &str, argv: &[&str]) -> Result<Value> {
+        self.post("/tools/exec", &json!({"cwd": cwd, "argv": argv})).await
+    }
+    /// A tool in typed form: `{"status", "records"}`.
+    pub async fn tool(&self, tool: &str, req: &Value) -> Result<Value> {
+        self.post(&format!("/tools/{tool}"), req).await
     }
 }
