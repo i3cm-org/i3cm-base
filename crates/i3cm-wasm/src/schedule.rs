@@ -44,7 +44,7 @@ impl Runtime {
                     continue;
                 }
                 let Some(carrier) = m.carriers.first() else { continue };
-                let Ok(account) = store.account_by_login(tenant, &carrier.name).await else { continue };
+                let Ok(account) = store.module_carrier(tenant, &m.name, &carrier.name).await else { continue };
                 let ctx = store.ctx(tenant, account).await?;
                 for sc in &m.schedules {
                     let secs = period_seconds(&sc.rrule)?;
@@ -84,10 +84,17 @@ impl Runtime {
                             Err(e) => {
                                 // the order (claim included) is rolled back; note the failure so it is not retried forever
                                 tracing::warn!(module = %m.name, op = %sc.op, error = %e.description, "scheduled run failed");
-                                let c = store.client().await?;
-                                let _ = c
-                                    .execute("UPDATE schedule_run SET done_at=now(), worker=$5, result=$6 WHERE tenant_id=$1 AND module=$2 AND op=$3 AND due=$4", &[&tenant, &m.name, &sc.op, &due, &worker, &e.error_id])
-                                    .await;
+                                // a few attempts; if the database stays away the run is retried on a later
+                                // pass (at least once, not exactly once, in that case)
+                                for _ in 0..3 {
+                                    let Ok(c) = store.client().await else { continue };
+                                    if c.execute("UPDATE schedule_run SET done_at=now(), worker=$5, result=$6 WHERE tenant_id=$1 AND module=$2 AND op=$3 AND due=$4", &[&tenant, &m.name, &sc.op, &due, &worker, &e.error_id])
+                                        .await
+                                        .is_ok()
+                                    {
+                                        break;
+                                    }
+                                }
                             }
                         }
                     }

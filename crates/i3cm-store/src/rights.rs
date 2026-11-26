@@ -58,6 +58,10 @@ impl Store {
     /// Rooms and rights paths under which `me` may perform `art` on type `t`.
     pub fn access(&self, ctx: &Ctx, art: Art, t: &str) -> Result<Access> {
         let mut a = Access::default();
+        // types of modules not active in the tenant do not exist for it (DEC-035)
+        if ctx.inactive.contains(i3cm_core::Model::module_of(t)) {
+            return Ok(a);
+        }
         let mut by_cond: BTreeMap<String, Vec<Uuid>> = BTreeMap::new();
         for r in ctx.rooms.rooms() {
             let path = match ctx.rooms.path(*r) {

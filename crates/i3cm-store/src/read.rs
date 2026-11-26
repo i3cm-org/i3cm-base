@@ -177,7 +177,8 @@ impl Store {
         // `me` may always read its own login parts (me can always be queried after login)
         let own = id == ctx.me();
         let path = ctx.rooms.path(room).unwrap_or_else(|_| vec![room]);
-        let set = types_of(c, ctx.tenant, id, at).await?;
+        let mut set = types_of(c, ctx.tenant, id, at).await?;
+        set.retain(|t, _| !ctx.inactive.contains(i3cm_core::Model::module_of(t)));
         let tables = self.model.table_types(&set.keys().cloned().collect());
         let mut parts = vec![];
         let mut readable: BTreeMap<String, Map<String, Value>> = BTreeMap::new();

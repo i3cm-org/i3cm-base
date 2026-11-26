@@ -119,10 +119,9 @@ impl Session {
 impl Drop for Session {
     fn drop(&mut self) {
         if let Some(c) = self.client.take() {
-            // never hand a connection with an open transaction back to the pool
-            tokio::spawn(async move {
-                let _ = c.batch_execute("ROLLBACK").await;
-            });
+            // never hand a connection with an open transaction back to the pool: detach it from
+            // the pool and close it, the server rolls the transaction back
+            drop(deadpool_postgres::Object::take(c));
         }
     }
 }

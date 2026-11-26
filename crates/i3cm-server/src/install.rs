@@ -122,24 +122,37 @@ pub async fn install(db_url: &str, base: &Path, dir: &Path, pkg_path: &Path, key
         &[&module, &version, &sha, &serde_json::to_value(&part)?],
     )
     .await?;
-    tx.commit().await?;
-    // files: written to temporary names first, then renamed
+    // files: all written to temporary names before the commit, renamed after it; a failure before
+    // the commit leaves neither database nor files changed
     std::fs::create_dir_all(dir.join("ui"))?;
-    let mut placed = vec![];
-    let mut put = |name: String, data: &[u8]| -> Result<()> {
-        let target = dir.join(&name);
+    let mut staged: Vec<(PathBuf, PathBuf, String)> = vec![];
+    let mut stage = |name: String, data: &[u8]| -> Result<()> {
         let tmp = dir.join(format!(".{}.tmp", name.replace('/', "_")));
         std::fs::write(&tmp, data)?;
-        std::fs::rename(&tmp, &target)?;
-        placed.push(name);
+        staged.push((tmp, dir.join(&name), name));
         Ok(())
     };
-    put(format!("{module}.json"), &serde_json::to_vec_pretty(&part)?)?;
-    if let Some(w) = files.get("module.wasm") {
-        put(format!("{module}.wasm"), w)?;
+    let staged_ok = (|| -> Result<()> {
+        stage(format!("{module}.json"), &serde_json::to_vec_pretty(&part)?)?;
+        if let Some(w) = files.get("module.wasm") {
+            stage(format!("{module}.wasm"), w)?;
+        }
+        for (name, data) in files.iter().filter(|(n, _)| n.starts_with("ui/")) {
+            stage(name.clone(), data)?;
+        }
+        Ok(())
+    })();
+    if let Err(e) = staged_ok {
+        for (tmp, _, _) in &staged {
+            let _ = std::fs::remove_file(tmp);
+        }
+        return Err(e);
     }
-    for (name, data) in files.iter().filter(|(n, _)| n.starts_with("ui/")) {
-        put(name.clone(), data)?;
+    tx.commit().await?;
+    let mut placed = vec![];
+    for (tmp, target, name) in staged {
+        std::fs::rename(&tmp, &target).with_context(|| format!("placing {name} failed after the database commit; install again"))?;
+        placed.push(name);
     }
     Ok(Installed { module, sha256: sha, tables: ddl.len(), files: placed })
 }

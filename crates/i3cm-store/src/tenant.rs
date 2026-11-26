@@ -378,6 +378,10 @@ impl Store {
                     .await?
                     .ok_or_else(|| BaseError::internal("carrier not created"))?;
                 let txn = sess.txn;
+                sess.client()
+                    .execute("INSERT INTO module_carrier (tenant_id, module, name, account) VALUES ($1,$2,$3,$4)", &[&tenant, &name, &cr.name, &id])
+                    .await
+                    .map_err(db)?;
                 for p in &cr.profiles {
                     sess.client()
                         .execute("INSERT INTO assignment (tenant_id, id, profile, carrier, valid_from) VALUES ($1,$2,$3,$4,$5)", &[&tenant, &Uuid::new_v4(), p, &id, &txn])
@@ -423,5 +427,18 @@ impl Store {
                 Err(e)
             }
         }
+    }
+}
+
+impl Store {
+    /// The account of a carrier owned by a module in a tenant (created on activation); only these
+    /// accounts can be impersonated (DEC-117).
+    pub async fn module_carrier(&self, tenant: Uuid, module: &str, carrier: &str) -> Result<Uuid> {
+        let c = self.client().await?;
+        c.query_opt("SELECT account FROM module_carrier WHERE tenant_id=$1 AND module=$2 AND name=$3", &[&tenant, &module, &carrier])
+            .await
+            .map_err(db)?
+            .map(|r| r.get(0))
+            .ok_or_else(|| BaseError::not_found("module.unknown_carrier", "the module has no such carrier in this tenant").with("module", module).with("carrier", carrier))
     }
 }
