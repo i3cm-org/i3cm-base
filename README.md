@@ -30,8 +30,9 @@ or accounts, and rights are inherited down the room tree.
 | `crates/base-tools` | The read-only Unix tools (`ls`, `cat`, `head`, `tail`, `wc`, `stat`, `grep`, `find`): parser, engine, output |
 | `crates/base-cli` | The program `base`: FUSE driver, the tools by their Unix names, `base-init` |
 | `crates/base-loadtest` | Load test with the accounting example |
-| `deploy/` | Dockerfile and compose file |
-| `docs/developer/` | Type notation, API reference, tools and file system |
+| `ui/` | Browser test app: static HTML with Fluent 2 Web Components, data only through the API |
+| `deploy/` | Dockerfile and compose files (server; server with UI) |
+| `docs/developer/` | Type notation, API reference, tools and file system, browser UI |
 
 ## Quick start
 

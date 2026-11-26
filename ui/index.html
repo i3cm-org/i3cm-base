@@ -1,0 +1,385 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>base-erp</title>
+<link rel="icon" href="data:,">
+<!-- Static artifact: form and hydration logic only. Every value comes from the API at runtime.
+     Configuration: config.json beside this file. Vendored libraries: vendor/VERSIONS.md. -->
+<style>
+  :root { color-scheme: light dark; }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; margin: 0; }
+  body {
+    font-family: var(--fontFamilyBase, system-ui, sans-serif);
+    font-size: var(--fontSizeBase300, 14px);
+    background: var(--colorNeutralBackground2, #f5f5f5);
+    color: var(--colorNeutralForeground1, #242424);
+  }
+  [hidden] { display: none !important; }
+  #loading, #login { height: 100%; display: grid; place-items: center; }
+  #login form {
+    width: min(440px, calc(100% - 32px)); display: grid; gap: 16px; padding: 24px;
+    background: var(--colorNeutralBackground1); border-radius: var(--borderRadiusXLarge, 8px);
+    box-shadow: var(--shadow16);
+  }
+  #login h1 { margin: 0; font-size: var(--fontSizeBase500); font-weight: var(--fontWeightSemibold); }
+  .error { color: var(--colorPaletteRedForeground1); }
+  #app { height: 100%; display: grid; grid-template-rows: 48px 1fr; }
+  header {
+    display: flex; align-items: center; gap: 12px; padding: 0 16px;
+    background: var(--colorBrandBackground); color: var(--colorNeutralForegroundOnBrand);
+  }
+  header fluent-button {
+    --colorNeutralForeground2: var(--colorNeutralForegroundOnBrand);
+    --colorNeutralForeground2Hover: var(--colorNeutralForegroundOnBrand);
+    --colorNeutralForeground2Pressed: var(--colorNeutralForegroundOnBrand);
+    --colorNeutralForeground2BrandHover: var(--colorNeutralForegroundOnBrand);
+    --colorNeutralForeground2BrandPressed: var(--colorNeutralForegroundOnBrand);
+    --colorTransparentBackgroundHover: var(--colorBrandBackgroundHover);
+    --colorTransparentBackgroundPressed: var(--colorBrandBackgroundPressed);
+  }
+  header .title { font-weight: var(--fontWeightSemibold); font-size: var(--fontSizeBase400); }
+  header .spacer { flex: 1; }
+  header .user { opacity: .9; }
+  main { display: grid; grid-template-columns: minmax(240px, 340px) 1fr; min-height: 0; }
+  nav {
+    overflow: auto; border-right: 1px solid var(--colorNeutralStroke2);
+    background: var(--colorNeutralBackground1); padding: 8px 4px;
+  }
+  .more { color: var(--colorBrandForeground1); font-style: italic; }
+  .count { color: var(--colorNeutralForeground3); margin-left: 6px; }
+  section#detail { overflow: auto; padding: 16px 24px; min-width: 0; }
+  #detail h2 { margin: 0 0 4px; font-size: var(--fontSizeBase500); font-weight: var(--fontWeightSemibold); }
+  #detail .meta { color: var(--colorNeutralForeground3); margin-bottom: 12px; word-break: break-all; }
+  .panel {
+    margin-top: 12px; padding: 16px; background: var(--colorNeutralBackground1);
+    border-radius: var(--borderRadiusLarge, 6px); box-shadow: var(--shadow2);
+  }
+  table { border-collapse: collapse; width: 100%; }
+  th, td { text-align: left; padding: 6px 10px; border-bottom: 1px solid var(--colorNeutralStroke2); vertical-align: top; }
+  th { font-weight: var(--fontWeightSemibold); color: var(--colorNeutralForeground2); }
+  td.key { width: 30%; color: var(--colorNeutralForeground2); }
+  .md :is(h1, h2, h3) { font-weight: var(--fontWeightSemibold); }
+  .md a, a.link { color: var(--colorBrandForeground1); cursor: pointer; }
+  pre { white-space: pre-wrap; word-break: break-word; font-family: var(--fontFamilyMonospace); margin: 0; }
+  .files li { margin: 6px 0; display: flex; gap: 8px; align-items: center; }
+  .preview { margin-top: 12px; }
+  .preview img { max-width: 100%; }
+  .preview iframe { width: 100%; height: 60vh; border: 1px solid var(--colorNeutralStroke2); background: #fff; }
+  .empty { color: var(--colorNeutralForeground3); }
+  @media (max-width: 720px) {
+    main { grid-template-columns: 1fr; grid-template-rows: 40% 60%; }
+    nav { border-right: 0; border-bottom: 1px solid var(--colorNeutralStroke2); }
+  }
+</style>
+</head>
+<body>
+<div id="loading"><fluent-spinner size="large"></fluent-spinner></div>
+
+<div id="login" hidden>
+  <form>
+    <h1 class="app-name">base-erp</h1>
+    <fluent-field label-position="above">
+      <label slot="label" for="token">Token</label>
+      <fluent-text-input slot="input" id="token" type="password" autocomplete="off"></fluent-text-input>
+      <fluent-text slot="message" size="200">Issued by <code>base-server create-token</code> or <code>POST /v1/tokens</code>; kept for this browser tab only.</fluent-text>
+    </fluent-field>
+    <div class="error" id="login-error"></div>
+    <fluent-button appearance="primary" type="submit">Sign in</fluent-button>
+  </form>
+</div>
+
+<div id="app" hidden>
+  <header>
+    <span class="title app-name">base-erp</span>
+    <span class="spacer"></span>
+    <span class="user" id="user"></span>
+    <fluent-button appearance="transparent" id="theme-toggle" title="Light or dark">Dark</fluent-button>
+    <fluent-button appearance="transparent" id="logout">Sign out</fluent-button>
+  </header>
+  <main>
+    <nav><fluent-tree id="tree" size="small"></fluent-tree></nav>
+    <section id="detail">
+      <p class="empty" id="hint">Select an entry in the tree.</p>
+      <div id="view" hidden>
+        <h2 id="title"></h2>
+        <div class="meta" id="meta"></div>
+        <fluent-tablist id="tabs"></fluent-tablist>
+        <div id="panels"></div>
+      </div>
+    </section>
+  </main>
+</div>
+
+<script type="module">
+import "./vendor/fluentui-web-components-3.2.1/web-components-all.min.js";
+import { setTheme } from "./vendor/fluentui-web-components-3.2.1/web-components-all.min.js";
+import { createLightTheme, createDarkTheme } from "./vendor/fluentui-tokens-1.0.0-alpha.24/lib/index.js";
+import { marked } from "./vendor/marked-18.2.0/marked.esm.js";
+import DOMPurify from "./vendor/dompurify-3.4.17/purify.es.mjs";
+
+const PAGE = 50;
+const $ = (s) => document.querySelector(s);
+const el = (tag, attrs = {}, ...kids) => {
+  const e = document.createElement(tag);
+  for (const [k, v] of Object.entries(attrs)) {
+    if (k.startsWith("on")) e.addEventListener(k.slice(2), v);
+    else if (v === true) e.setAttribute(k, "");
+    else if (v !== false && v != null) e.setAttribute(k, v);
+  }
+  for (const k of kids.flat()) if (k != null) e.append(k instanceof Node ? k : String(k));
+  return e;
+};
+
+// ---- configuration and theme --------------------------------------------------------------
+let config = { apiBase: "", appName: "base-erp", brandColor: "#0f6cbd" };
+try { config = { ...config, ...(await (await fetch("config.json", { cache: "no-cache" })).json()) }; } catch {}
+
+function hex(c) { return [1, 3, 5].map((i) => parseInt(c.slice(i, i + 2), 16)); }
+function mix(a, b, t) { return "#" + a.map((x, i) => Math.round(x + (b[i] - x) * t).toString(16).padStart(2, "0")).join(""); }
+/** Brand ramp 10 (darkest) .. 160 (lightest) around the configured colour at 80. */
+function brandRamp(color) {
+  const c = hex(color), ramp = {};
+  for (let k = 10; k <= 160; k += 10) {
+    const t = (k - 80) / 80;
+    ramp[k] = t < 0 ? mix(c, [0, 0, 0], -t * 0.8) : mix(c, [255, 255, 255], t * 0.9);
+  }
+  return ramp;
+}
+const brand = brandRamp(/^#[0-9a-f]{6}$/i.test(config.brandColor) ? config.brandColor : "#0f6cbd");
+const store = (k, v) => { try { v === undefined ? sessionStorage.removeItem(k) : sessionStorage.setItem(k, v); } catch {} };
+const load = (k) => { try { return sessionStorage.getItem(k); } catch { return null; } };
+let dark = load("dark") ? load("dark") === "1" : matchMedia("(prefers-color-scheme: dark)").matches;
+function applyTheme() {
+  setTheme(dark ? createDarkTheme(brand) : createLightTheme(brand));
+  document.documentElement.style.colorScheme = dark ? "dark" : "light";
+  $("#theme-toggle").textContent = dark ? "Light" : "Dark";
+}
+applyTheme();
+document.querySelectorAll(".app-name").forEach((e) => (e.textContent = config.appName));
+document.title = config.appName;
+
+// ---- API ---------------------------------------------------------------------------------
+let token = load("token");
+async function api(path, opts = {}) {
+  const r = await fetch(config.apiBase + path, { ...opts, headers: { Authorization: `Bearer ${token}`, "Accept-Language": navigator.language, ...(opts.headers || {}) } });
+  if (r.status === 401) { signOut(); throw new Error("not signed in"); }
+  if (!r.ok) {
+    let msg = `${r.status}`;
+    try { const e = await r.json(); msg = `${e.description || e.error_id} (${r.status})`; } catch {}
+    throw new Error(msg);
+  }
+  return r;
+}
+const q = (o) => new URLSearchParams(o).toString();
+const children = (a, node, offset) => api(`/v1/aspects/${encodeURIComponent(a)}/children?${q({ node, offset, limit: PAGE })}`).then((r) => r.json());
+const nodeDetail = (a, node) => api(`/v1/aspects/${encodeURIComponent(a)}/node?${q({ node })}`).then((r) => r.json());
+const nodeIndex = (a, node, name) => api(`/v1/aspects/${encodeURIComponent(a)}/index?${q(name ? { node, name } : { node })}`).then((r) => r.text());
+const fileOf = (a, node, name) => api(`/v1/aspects/${encodeURIComponent(a)}/file?${q({ node, name })}`);
+
+// ---- sign in ----------------------------------------------------------------------------
+function show(id) { for (const s of ["#loading", "#login", "#app"]) $(s).hidden = s !== id; }
+function signOut() { token = null; store("token"); show("#login"); }
+$("#login form").addEventListener("submit", async (ev) => {
+  ev.preventDefault();
+  token = $("#token").value.trim();
+  $("#login-error").textContent = "";
+  try { await start(); store("token", token); }
+  catch (e) { $("#login-error").textContent = e.message === "not signed in" ? "The token was not accepted." : e.message; }
+});
+$("#logout").addEventListener("click", signOut);
+$("#theme-toggle").addEventListener("click", () => { dark = !dark; store("dark", dark ? "1" : "0"); applyTheme(); });
+
+// ---- tree --------------------------------------------------------------------------------
+/** Entry data of every tree item, so a click or a link can find it again. */
+const info = new WeakMap();
+
+function treeItem(aspect, entry, parentName) {
+  // plain text as label: the tree only reacts to clicks whose target is the tree item itself
+  const item = el("fluent-tree-item", {}, entry.displayName, entry.count != null ? el("span", { slot: "aside", class: "count" }, entry.count) : null);
+  info.set(item, { aspect, entry, parentName });
+  if (!entry.file) {
+    item.append(el("fluent-tree-item", { slot: "item", class: "placeholder" }, "Loading…"));
+    item.addEventListener("toggle", (ev) => { if (ev.target === item && item.expanded) expand(item); });
+  }
+  return item;
+}
+
+async function expand(item, offset = 0) {
+  const i = info.get(item);
+  if (i.loaded && offset === 0) return;
+  i.loaded = true;
+  try {
+    const page = await children(i.aspect, i.entry.node, offset);
+    item.querySelectorAll(":scope > .placeholder, :scope > .more").forEach((x) => x.remove());
+    for (const c of page) item.append(Object.assign(treeItem(i.aspect, c, i.entry.name), { slot: "item" }));
+    if (page.length === PAGE) {
+      const more = el("fluent-tree-item", { slot: "item", class: "more" }, `Load more (${offset + PAGE} shown)…`);
+      more.addEventListener("click", (ev) => { ev.stopPropagation(); more.textContent = "Loading…"; expand(item, offset + PAGE); });
+      info.set(more, { more: true });
+      item.append(more);
+    }
+    if (offset === 0 && page.length === 0) {
+      item.querySelectorAll(":scope > .placeholder").forEach((x) => x.remove());
+      item.append(el("fluent-tree-item", { slot: "item", class: "placeholder empty" }, "(empty)"));
+    }
+  } catch (e) {
+    i.loaded = false;
+    item.querySelectorAll(":scope > .placeholder").forEach((x) => (x.textContent = `Error: ${e.message}`));
+  }
+}
+
+$("#tree").addEventListener("change", (ev) => {
+  const item = ev.target.closest?.("fluent-tree-item");
+  if (!item?.selected) return;
+  const i = info.get(item);
+  if (!i || i.more || !i.entry) return;
+  select(i.aspect, i.entry, i.parentName);
+});
+
+// ---- detail pane with tabs -----------------------------------------------------------------
+let tabSeq = 0;
+function tabs(list) {
+  const tl = $("#tabs"), panels = $("#panels");
+  tl.replaceChildren(); panels.replaceChildren();
+  list.forEach(([label, render]) => {
+    const id = `tab-${++tabSeq}`;
+    const panel = el("div", { class: "panel", id: `${id}-panel`, role: "tabpanel", "aria-labelledby": id, hidden: true });
+    panel._render = render;
+    tl.append(el("fluent-tab", { id }, label));
+    panels.append(panel);
+  });
+  const activate = async (id) => {
+    for (const p of panels.children) p.hidden = p.id !== `${id}-panel`;
+    const p = document.getElementById(`${id}-panel`);
+    if (p && p._render) { const r = p._render; p._render = null; p.append(el("fluent-spinner", { size: "tiny" })); try { const c = await r(); p.replaceChildren(c); } catch (e) { p.replaceChildren(el("div", { class: "error" }, e.message)); } }
+  };
+  tl.onchange = () => activate(tl.activeid);
+  activate(tl.firstElementChild?.id);
+  requestAnimationFrame(() => (tl.activeid = tl.firstElementChild?.id));
+}
+
+function table(columns, rows, cell = (r, c) => r[c]) {
+  if (!rows.length) return el("p", { class: "empty" }, "No entries.");
+  return el("table", {}, el("thead", {}, el("tr", {}, columns.map((c) => el("th", {}, c)))),
+    el("tbody", {}, rows.map((r) => el("tr", {}, columns.map((c) => el("td", {}, fmt(cell(r, c))))))));
+}
+/** A tab of the aspect: rows are objects (`node`), `cells` follow `columns`; a row opens its node. */
+function tabTable(aspect, t) {
+  if (!t.rows.length) return el("p", { class: "empty" }, "No entries.");
+  return el("table", {}, el("thead", {}, el("tr", {}, t.columns.map((c) => el("th", {}, c)))),
+    el("tbody", {}, t.rows.map((r) => el("tr", {}, r.cells.map((c, i) => el("td", {}, i === 0
+      ? el("a", { class: "link", onclick: () => select(aspect, { node: r.node, file: false, displayName: fmt(c) }) }, fmt(c))
+      : fmt(c)))))));
+}
+function fmt(v) {
+  if (v == null) return "";
+  if (Array.isArray(v)) return v.map(fmt).join(", ");
+  if (typeof v === "object") return v.amount != null && v.currency ? `${v.amount} ${v.currency}` : v.content ?? JSON.stringify(v);
+  return String(v);
+}
+
+let current = null;
+async function select(aspect, entry, parentName) {
+  current = { aspect, entry, parentName };
+  const h = `#${q({ a: aspect, n: entry.node, ...(entry.file ? { f: entry.name || entry.displayName } : {}) })}`;
+  if (location.hash !== h) history.replaceState(null, "", h);
+  $("#hint").hidden = true; $("#view").hidden = false;
+  $("#title").textContent = entry.displayName || aspect;
+  $("#meta").textContent = [entry.type, entry.id, entry.changedAt && new Date(entry.changedAt).toLocaleString(), entry.size != null && `${entry.size} bytes`].filter(Boolean).join(" · ");
+  if (entry.file) return tabs([["Preview", () => preview(aspect, entry.node, entry.name || entry.displayName)]]);
+  let detail;
+  try { detail = await nodeDetail(aspect, entry.node); } catch (e) { detail = { attributes: [], tabs: [], files: [], error: e.message }; }
+  if (current?.entry !== entry) return;
+  if (detail.node?.displayName) $("#title").textContent = detail.node.displayName;
+  tabs([
+    ["Details", async () => detail.error ? el("p", { class: entry.node ? "error" : "empty" }, entry.node ? detail.error : "The entry of a view has no attributes; expand it in the tree.")
+      : table(["Attribute", "Value"], detail.attributes, (r, c) => (c === "Attribute" ? r.label : r.values))],
+    ["Index", async () => indexView(aspect, entry, await nodeIndex(aspect, entry.node, entry.name))],
+    ["Files", async () => filesView(aspect, entry.node, detail.files || [])],
+    ...(detail.tabs || []).map((t) => [t.label, async () => tabTable(aspect, t)]),
+  ]);
+}
+
+function indexView(aspect, entry, md) {
+  let front = "";
+  const body = md.replace(/^---\n([\s\S]*?)\n---\n/, (_, f) => ((front = f), ""));
+  const html = marked.parse(body.replace(/\[\[([^\]|]+)\|([^\]]+)\]\]/g, (_, t, l) => `[${l}](#link:${encodeURIComponent(t)})`));
+  const box = el("div", { class: "md" });
+  box.innerHTML = DOMPurify.sanitize(html);
+  box.querySelectorAll('a[href^="#link:"]').forEach((a) => a.addEventListener("click", (ev) => {
+    ev.preventDefault(); follow(aspect, entry, decodeURIComponent(a.getAttribute("href").slice(6)));
+  }));
+  return el("div", {}, front ? el("details", {}, el("summary", {}, "Front matter"), el("pre", {}, front)) : null, box,
+    el("details", {}, el("summary", {}, "Markdown source"), el("pre", {}, md)));
+}
+
+/** Follow a link of an index: `/_id/<id>` or a path below the node's own directory. */
+async function follow(aspect, entry, target) {
+  const m = target.match(/^\/_id\/([0-9a-f-]{36})$/);
+  if (m) return select("_id", { node: `o:${m[1]}`, displayName: m[1], name: m[1], file: false });
+  const parts = target.split("/");
+  const own = entry.name || entry.displayName;
+  if (parts[0] === own) parts.shift();
+  let node = entry, name = own;
+  for (const p of parts) {
+    let found = null;
+    for (let off = 0; !found; off += PAGE) {
+      const page = await children(aspect, node.node, off);
+      found = page.find((c) => c.name === p || c.displayName === p);
+      if (page.length < PAGE) break;
+    }
+    if (!found) return alert(`Not found: ${target}`);
+    name = node.name; node = found;
+  }
+  select(aspect, node, name);
+}
+
+function filesView(aspect, node, files) {
+  if (!files.length) return el("p", { class: "empty" }, "This node has no files.");
+  const out = el("div", { class: "preview" });
+  return el("div", {}, el("ul", { class: "files" }, files.map((f) => el("li", {},
+    el("a", { class: "link", onclick: async () => out.replaceChildren(await preview(aspect, node, f)) }, f),
+    el("fluent-button", { size: "small", onclick: () => download(aspect, node, f) }, "Download")))), out);
+}
+
+async function preview(aspect, node, name) {
+  const r = await fileOf(aspect, node, name);
+  const type = r.headers.get("content-type") || "application/octet-stream";
+  const blob = await r.blob();
+  const wrap = el("div", {}, el("div", { class: "meta" }, `${name} · ${type} · ${blob.size} bytes `,
+    el("fluent-button", { size: "small", onclick: () => save(blob, name) }, "Download")));
+  if (type.startsWith("image/")) wrap.append(el("img", { src: URL.createObjectURL(blob), alt: name }));
+  else if (type.startsWith("text/html")) wrap.append(el("iframe", { sandbox: "", srcdoc: await blob.text() }));
+  else if (type.startsWith("text/markdown")) { const d = el("div", { class: "md" }); d.innerHTML = DOMPurify.sanitize(marked.parse(await blob.text())); wrap.append(d); }
+  else if (type.startsWith("text/") || type.includes("rfc822") || type.includes("json")) wrap.append(el("pre", {}, await blob.text()));
+  else if (type === "application/pdf") wrap.append(el("iframe", { src: URL.createObjectURL(blob) }));
+  else wrap.append(el("p", { class: "empty" }, "No preview for this type."));
+  return wrap;
+}
+async function download(aspect, node, name) { save(await (await fileOf(aspect, node, name)).blob(), name); }
+function save(blob, name) { const a = el("a", { href: URL.createObjectURL(blob), download: name }); document.body.append(a); a.click(); a.remove(); }
+
+// ---- start -------------------------------------------------------------------------------
+async function start() {
+  const me = await (await api("/v1/me")).json();
+  $("#user").textContent = me.displayName || me.types?.[0]?.displayName || "";
+  const aspects = await (await api("/v1/aspects")).json();
+  const tree = $("#tree");
+  tree.replaceChildren(...aspects.map((a) => treeItem(a.name, { node: "", file: false, displayName: a.displayName || a.name, name: a.displayName || a.name }, "")));
+  show("#app");
+  const h = new URLSearchParams(location.hash.slice(1));
+  if (h.get("a")) select(h.get("a"), { node: h.get("n") || "", file: !!h.get("f"), name: h.get("f") || undefined, displayName: h.get("f") || h.get("a") }, "");
+}
+window.addEventListener("hashchange", () => {
+  const h = new URLSearchParams(location.hash.slice(1));
+  if (h.get("a") && (h.get("a") !== current?.aspect || h.get("n") !== current?.entry.node))
+    select(h.get("a"), { node: h.get("n") || "", file: !!h.get("f"), name: h.get("f") || undefined, displayName: h.get("f") || h.get("a") }, "");
+});
+
+if (token) start().catch(() => show("#login")); else show("#login");
+</script>
+</body>
+</html>
