@@ -37,14 +37,25 @@ pub fn step(m: &Model, cur: &str, name: &str) -> Result<Step> {
             all.push((Step { reference: r.name.clone(), from_holder: false, to: r.holder.type_name.clone(), rights_relevant: r.rights_relevant }, r.target.type_name.clone()));
         }
     }
-    let related = |t: &str| t == ANY || cur == ANY || m.is_a(cur, t) || m.is_a(t, cur);
-    let close: Vec<&(Step, String)> = all.iter().filter(|(_, at)| related(at)).collect();
-    let pick: Vec<&(Step, String)> = if close.is_empty() { all.iter().collect() } else { close };
+    let pick: Vec<&(Step, String)> = all.iter().filter(|(_, at)| can_share(m, cur, at)).collect();
     match pick.len() {
         1 => Ok(pick[0].0.clone()),
         0 => Err(BaseError::invalid("path.unknown_step", "no reference end with this name").with("type", cur).with("name", name)),
         _ => Err(BaseError::invalid("path.ambiguous", "several reference ends with this name").with("type", cur).with("name", name)),
     }
+}
+
+/// Can one object carry both types? Yes if one is a subtype of the other, or one requires,
+/// brings or imprints on the other (or on one of its supertypes). Names are only resolved
+/// against such types, never against unrelated ones.
+fn can_share(m: &Model, a: &str, b: &str) -> bool {
+    if a == ANY || b == ANY || m.is_a(a, b) || m.is_a(b, a) {
+        return true;
+    }
+    let links = |x: &str, y: &str| {
+        m.ancestors(x).iter().any(|d| d.requires.types.iter().chain(&d.brings).chain(&d.imprints_on).any(|t| m.is_a(y, t) || m.is_a(t, y)))
+    };
+    links(a, b) || links(b, a)
 }
 
 /// `a.b.c` as names, or `None` if the expression is anything else.

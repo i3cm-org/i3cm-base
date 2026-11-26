@@ -843,6 +843,8 @@ fn rights_path_checker_limits() {
     assert_eq!(with("applicant.team.leader = %me", "-", "t:LeaveRequest").as_deref(), Some("profile.conditional_sign"));
     assert_eq!(with("applicant.team.leader = %me", "+", "*").as_deref(), Some("profile.conditional_any"));
     assert_eq!(with("nothere = %me", "+", "t:LeaveRequest").as_deref(), Some("path.unknown_step"));
+    // an end of an unrelated type is not resolved (review REP-019): Team.leader from a request
+    assert_eq!(with("leader = %me", "+", "t:LeaveRequest").as_deref(), Some("path.unknown_step"));
 }
 
 

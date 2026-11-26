@@ -52,7 +52,8 @@ file. Kernel caches hold entries for `--ttl` seconds (default 5).
 A file written in the mount is sent when it is closed (or flushed): the content or text behind
 it, or, for an object's index `<name>.md`, the changed values in its front matter. Each send is
 one order on the server, so rights and checks apply as always. A file copied into a folder
-whose view declares `dropType` creates an object. A rejected write fails with an I/O error,
+whose view declares `dropType` creates an object. A rejected write fails with an I/O error on
+`fsync` or `close` (many programs ignore errors on close; then only the log shows it),
 the server's message is appended to `/.i3cm-errors` at the root of the mount. Editors that
 save by writing a new file and renaming it are not supported; write in place (`>`, `cp`,
 `sed -i`, `tee`).
@@ -120,6 +121,9 @@ and `stderr` as the tool prints them. Option names of the typed form: `long`, `a
 `dirsOnly`, `scripts`, `inPlace`, `quiet`. `GET /v1/metrics` counts requests.
 
 ## Limits
+
+Two programs writing the same file at the same time share one buffer, as with a local file;
+the content sent is what the file holds when one of them closes it.
 
 A directory cannot be a hard link in Linux: directories of the same object
 in different places have different inodes; their files share them. Loops in a view (an object
