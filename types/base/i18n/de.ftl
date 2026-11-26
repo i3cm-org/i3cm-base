@@ -35,5 +35,6 @@ base--label-_id = Nach Kennung
 base--label-_type = Nach Typ
 
 ## Aspect recipients
+base-mailbox--label-_name = Mail-Ablage
 base-recipients--label-_name = Mails nach Empfänger
 base-recipients--base-Mail-name = { $sender } - { $subject }
