@@ -1,0 +1,38 @@
+# Builds the module code and packs a signed package on every tag v*; attaches it to the release.
+# Secrets: I3CM_SIGNING_KEY (ed25519 private key, PEM), I3CM_BASE_TOKEN (read access to the kernel
+# repository while it is private).
+name: release
+on:
+  push:
+    tags: ["v*"]
+permissions:
+  contents: write
+jobs:
+  package:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+        with:
+          repository: i3cm-org/i3cm-base
+          path: kernel
+          token: ${{ secrets.I3CM_BASE_TOKEN }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - run: npm ci --no-audit --no-fund
+        working-directory: kernel/tools/typecat
+      - run: rustup target add wasm32-wasip2
+      - run: cargo build --release --target wasm32-wasip2
+        working-directory: ops
+      - name: pack and sign
+        env:
+          I3CM_SIGNING_KEY: ${{ secrets.I3CM_SIGNING_KEY }}
+        run: |
+          node kernel/tools/typecat/pack.mjs kernel/types . \
+            --wasm ops/target/wasm32-wasip2/release/i3cm_example_module.wasm \
+            --version "${GITHUB_REF_NAME#v}" --out dist
+      - name: release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "$GITHUB_REF_NAME" dist/* --title "$GITHUB_REF_NAME" --notes "Signed module package"

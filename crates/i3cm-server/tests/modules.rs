@@ -237,3 +237,58 @@ fn the_scheduler_runs_a_due_operation_exactly_once_with_two_containers() {
         assert_eq!(e.notes().await.into_iter().filter(|n| n.starts_with("tick")).count(), 1, "same period: no second run");
     });
 }
+
+#[test]
+fn signed_packages_install_and_tampered_ones_are_refused() {
+    rt().block_on(async {
+        let (_, _) = example();
+        let root = root();
+        let work = std::env::temp_dir().join(format!("i3cm-pkg-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&work);
+        std::fs::create_dir_all(&work).unwrap();
+        let pack = root.join("tools/typecat/pack.mjs");
+        let out = Command::new("node").arg(&pack).arg("keygen").arg(&work).output().unwrap();
+        assert!(out.status.success());
+        let pubkey = String::from_utf8(out.stdout).unwrap().trim().to_string();
+        let wasm = root.join("examples/example-module/ops/target/wasm32-wasip2/release/i3cm_example_module.wasm");
+        let st = Command::new("node")
+            .arg(&pack)
+            .arg(root.join("types"))
+            .arg(root.join("examples/example-module"))
+            .args(["--wasm"])
+            .arg(&wasm)
+            .args(["--version", "0.6.0", "--out"])
+            .arg(work.join("dist"))
+            .args(["--key"])
+            .arg(work.join("signing.pem"))
+            .status()
+            .unwrap();
+        assert!(st.success());
+        let pkg = work.join("dist/example-0.6.0.tar.gz");
+        let mods = work.join("modules");
+        std::fs::create_dir_all(&mods).unwrap();
+        let base = i3cm_server::default_catalog();
+        // a wrong key is refused
+        let wrong = "00".repeat(32);
+        let e = i3cm_server::install::install(&db_url(), &base, &mods, &pkg, std::slice::from_ref(&wrong)).await.unwrap_err();
+        assert!(format!("{e:#}").contains("signature"), "{e:#}");
+        // the right key installs: module part, code, tables
+        let r = i3cm_server::install::install(&db_url(), &base, &mods, &pkg, std::slice::from_ref(&pubkey)).await.unwrap();
+        assert_eq!(r.module, "example");
+        assert!(mods.join("example.wasm").exists() && mods.join("example.json").exists());
+        let model = i3cm_server::install::load_model(&base, Some(&mods)).unwrap();
+        assert!(model.catalog.modules.iter().any(|m| m.name == "example" && !m.operations.is_empty()));
+        // a tampered package fails the signature check
+        let mut bytes = std::fs::read(&pkg).unwrap();
+        let n = bytes.len() / 2;
+        bytes[n] ^= 0xff;
+        let bad = work.join("dist/example-0.6.1.tar.gz");
+        std::fs::write(&bad, &bytes).unwrap();
+        std::fs::copy(work.join("dist/example-0.6.0.tar.gz.sig"), work.join("dist/example-0.6.1.tar.gz.sig")).unwrap();
+        let e = i3cm_server::install::install(&db_url(), &base, &mods, &bad, std::slice::from_ref(&pubkey)).await.unwrap_err();
+        assert!(format!("{e:#}").contains("signature"), "{e:#}");
+        // the signed package unpacks with all listed files
+        let files = i3cm_server::install::verify(&std::fs::read(&pkg).unwrap(), &std::fs::read_to_string(work.join("dist/example-0.6.0.tar.gz.sig")).unwrap(), std::slice::from_ref(&pubkey)).unwrap();
+        assert!(files.contains_key("module.wasm") && files.contains_key("module.json"));
+    });
+}

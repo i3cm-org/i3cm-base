@@ -1,5 +1,5 @@
 use anyhow::Result;
-use i3cm_server::{connect, default_catalog, runtime, serve, serve_with, spawn_scheduler, EmbeddedDb};
+use i3cm_server::{connect, connect_with, default_catalog, runtime, serve, serve_with, spawn_scheduler, EmbeddedDb};
 use clap::{Parser, Subcommand};
 use std::net::SocketAddr;
 use std::path::PathBuf;
@@ -43,12 +43,29 @@ enum Cmd {
         #[arg(long)]
         ttl: Option<i64>,
     },
+    /// Modules: install a signed package (operator)
+    Module {
+        #[command(subcommand)]
+        cmd: ModuleCmd,
+    },
     /// Development: embedded PostgreSQL in a data directory, tenant "dev", serve
     Dev {
         #[arg(long, default_value = ".pgdata")]
         data: PathBuf,
         #[arg(long, default_value = "127.0.0.1:8480")]
         listen: SocketAddr,
+    },
+}
+
+#[derive(Subcommand)]
+enum ModuleCmd {
+    /// Verify and install `<name>-<version>.tar.gz` (signature in `<file>.sig`) into --modules-dir;
+    /// in force after the next start
+    Install {
+        package: PathBuf,
+        /// Trusted ed25519 public keys (hex), comma-separated
+        #[arg(long, env = "I3CM_TRUSTED_KEYS", value_delimiter = ',')]
+        trusted: Vec<String>,
     },
 }
 
@@ -64,7 +81,7 @@ async fn main() -> Result<()> {
     let db = || cli.db.clone().ok_or_else(|| anyhow::anyhow!("--db or I3CM_DATABASE_URL required"));
     match cli.cmd {
         Cmd::Serve { listen, pool } => {
-            let store = connect(&db()?, &catalog, pool).await?;
+            let store = connect_with(&db()?, &catalog, cli.modules_dir.as_deref(), pool).await?;
             let rt = match &cli.modules_dir {
                 Some(d) => Some(runtime(&store, d)?),
                 None => None,
@@ -76,6 +93,14 @@ async fn main() -> Result<()> {
             let (addr, task) = serve_with(store, rt, listen).await?;
             tracing::info!(%addr, "listening");
             task.await?;
+        }
+        Cmd::Module { cmd: ModuleCmd::Install { package, trusted } } => {
+            let dir = cli.modules_dir.clone().ok_or_else(|| anyhow::anyhow!("--modules-dir or I3CM_MODULES_DIR required"))?;
+            if trusted.is_empty() {
+                anyhow::bail!("no trusted keys (--trusted or I3CM_TRUSTED_KEYS)");
+            }
+            let r = i3cm_server::install::install(&db()?, &catalog, &dir, &package, &trusted).await?;
+            println!("{}", serde_json::to_string_pretty(&r)?);
         }
         Cmd::InitTenant { name, admin } => {
             let store = connect(&db()?, &catalog, 4).await?;

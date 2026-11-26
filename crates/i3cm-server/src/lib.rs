@@ -1,6 +1,8 @@
 //! i3cm-server: wiring of catalog, store and API; optional embedded PostgreSQL for
 //! development, tests and load tests.
 
+pub mod install;
+
 use anyhow::{Context, Result};
 use i3cm_core::Model;
 use i3cm_store::Store;
@@ -62,7 +64,12 @@ impl EmbeddedDb {
 }
 
 pub async fn connect(url: &str, catalog: &Path, pool: usize) -> Result<Store> {
-    let model = load_catalog(catalog)?;
+    connect_with(url, catalog, None, pool).await
+}
+
+/// Connect with the base catalog plus the module parts installed in `modules_dir`.
+pub async fn connect_with(url: &str, catalog: &Path, modules_dir: Option<&Path>, pool: usize) -> Result<Store> {
+    let model = install::load_model(catalog, modules_dir)?;
     Store::connect(url, model, pool).await.map_err(|e| anyhow::anyhow!("{}: {} {:?}", e.error_id, e.description, e.params))
 }
 
