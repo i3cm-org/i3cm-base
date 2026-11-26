@@ -6,7 +6,7 @@ export const mailbox = aspect("mailbox", {
   nodes: {
     "base:Mail": {
       attributes: { sender: "sender", subject: "subject", received: "receivedAt", attachmentCount: "attachments.count()" },
-      subNodes: { attachments: { path: "attachments", folder: true } },
+      subNodes: { attachments: { path: "attachments", folder: true, dropType: "base:MailAttachment" } }, // files copied in become attachments
       files: { "mail.eml": "_content", "mail.md": "_texts.`mail.md`", "body.html": "_texts.`body.html`" },
       tabs: { attachments: { path: "attachments", columns: { file: "filename", added: "_createdAt" } } },
       functions: { reply: { url: "/modules/mail/reply" } },

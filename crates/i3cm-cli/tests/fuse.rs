@@ -164,8 +164,62 @@ fn the_driver_reproduces_the_api() {
         // an unknown option on the mount is an error, not a silent hand-over
         let out = env.run("grep", &["-P", "x", day.to_str().unwrap()], &[("PATH", &path)], None);
         assert_eq!(out.status.code(), Some(2));
-        // the mount is read-only
+        // a group directory takes no new files (only folders with dropType do)
         assert!(std::fs::write(day.join("x.txt"), b"x").is_err());
+    }));
+    umount(&mp, child);
+    if let Err(e) = result {
+        std::panic::resume_unwind(e);
+    }
+}
+
+
+/// Writing (SPEC-004): texts, the front matter of an index, new files in a folder with
+/// `dropType`, `sed -i` on the server; a rejected write leaves a message in `/.i3cm-errors`.
+#[test]
+#[ignore]
+fn writing_through_the_mount() {
+    let env = env(1, 2);
+    env.links();
+    env.init();
+    let (mp, child) = mount(&env, "mnt3", "1");
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let day = mp.join("base:mailbox/2026-11-20");
+        let mut mails: Vec<PathBuf> = std::fs::read_dir(&day).unwrap().map(|e| e.unwrap().path()).filter(|p| p.is_dir()).collect();
+        mails.sort();
+        let mail = mails[0].clone();
+        let name = mail.file_name().unwrap().to_string_lossy().into_owned();
+        let node = rt().block_on(env.admin.aspect_children("base:mailbox", &rt().block_on(env.admin.aspect_children("base:mailbox", "")).unwrap()[0].node)).unwrap();
+        let id = node.iter().find(|n| n.name == name).unwrap().id.unwrap();
+        // a text
+        std::fs::write(mail.join("mail.md"), b"# Neu\n").unwrap();
+        assert_eq!(rt().block_on(env.admin.get_text(id, "base:mail.md")).unwrap(), "# Neu\n");
+        assert_eq!(std::fs::read_to_string(mail.join("mail.md")).unwrap(), "# Neu\n");
+        // the front matter of the index
+        let idx = day.join(format!("{name}.md"));
+        let s = std::fs::read_to_string(&idx).unwrap();
+        let line = s.lines().find(|l| l.starts_with("subject: ")).unwrap().to_string();
+        std::fs::write(&idx, s.replace(&line, "subject: \"Geaendert\"")).unwrap();
+        let obj = rt().block_on(env.admin.get_object(id, None)).unwrap();
+        assert_eq!(obj.parts.iter().find(|p| p.type_name == "base:Mail").unwrap().attributes["subject"], serde_json::json!("Geaendert"));
+        // a rejected write: I/O error, message in /.i3cm-errors, nothing stored
+        let idx2 = std::fs::read_dir(&day).unwrap().map(|e| e.unwrap().path()).find(|p| p.extension().map(|e| e == "md").unwrap_or(false) && p.to_string_lossy().contains("Geaendert")).unwrap();
+        let s2 = std::fs::read_to_string(&idx2).unwrap();
+        let bad = s2.replacen("_id: ", "_id: \"x\"\n_old: ", 1);
+        assert!(std::fs::write(&idx2, bad).is_err());
+        let errors = std::fs::read_to_string(mp.join(".i3cm-errors")).unwrap();
+        assert!(errors.contains("reserved"), "{errors}");
+        // a new file in the attachments folder becomes an attachment
+        let mail = std::fs::read_dir(&day).unwrap().map(|e| e.unwrap().path()).find(|p| p.is_dir() && p.to_string_lossy().contains("Geaendert")).unwrap();
+        let folder = std::fs::read_dir(&mail).unwrap().map(|e| e.unwrap().path()).find(|p| p.is_dir()).unwrap();
+        std::fs::write(folder.join("neu.pdf"), b"%PDF neu").unwrap();
+        let ends = rt().block_on(env.admin.ends(id, "attachments", 100, 0)).unwrap();
+        assert_eq!(ends.len(), 3);
+        // sed -i on the mount runs on the server as one order
+        let path = format!("{}:/usr/bin:/bin", env.home.join("bin").display());
+        let out = env.run("sed", &["-i", "s/Neu/Neuer/", mail.join("mail.md").to_str().unwrap()], &[("PATH", &path)], None);
+        assert!(out.status.success(), "{out:?}");
+        assert_eq!(rt().block_on(env.admin.get_text(id, "base:mail.md")).unwrap(), "# Neuer\n");
     }));
     umount(&mp, child);
     if let Err(e) = result {

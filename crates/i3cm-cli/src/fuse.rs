@@ -525,7 +525,9 @@ impl fuser::Filesystem for Fs {
         let kind = self.st.lock().unwrap().inodes.get(&ino.0).map(|i| (i.dir, matches!(i.kind, Kind::Errors)));
         match kind {
             Some((false, true)) => reply.opened(FileHandle(0), FopenFlags::FOPEN_DIRECT_IO),
-            Some((false, false)) => reply.opened(FileHandle(0), FopenFlags::FOPEN_KEEP_CACHE),
+            // no kernel page cache across opens: after a write the next open reads fresh bytes (the
+            // driver's own cache still saves requests)
+            Some((false, false)) => reply.opened(FileHandle(0), FopenFlags::empty()),
             Some(_) => reply.error(Errno::EISDIR),
             None => reply.error(Errno::ENOENT),
         }
