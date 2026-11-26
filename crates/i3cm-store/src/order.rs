@@ -160,6 +160,26 @@ impl Exec<'_, '_> {
         if self.ctx.subject.may(art, t, path) { Ok(()) } else { Err(denied(art, t)) }
     }
 
+    /// Like `check`, for an existing object: rights paths count too (read, write, delete).
+    async fn allowed_on(&self, art: Art, t: &str, path: &[Uuid], id: Uuid) -> Result<bool> {
+        if self.ctx.subject.may(art, t, path) {
+            return Ok(true);
+        }
+        for cond in self.ctx.subject.conds(art, t, path) {
+            let rp = i3cm_core::paths::rights_path(self.m, t, &cond)?;
+            let sql = format!("SELECT EXISTS (SELECT 1 WHERE $2::uuid IN ({}))", crate::rights::path_ids_sql(&rp, self.m, 3));
+            let hit: bool = self.tx.query_one(&sql, &[&self.ctx.tenant, &id, &self.ctx.subject.carriers]).await.map_err(db)?.get(0);
+            if hit {
+                return Ok(true);
+            }
+        }
+        Ok(false)
+    }
+
+    async fn check_on(&self, art: Art, t: &str, path: &[Uuid], id: Uuid) -> Result<()> {
+        if self.allowed_on(art, t, path, id).await? { Ok(()) } else { Err(denied(art, t)) }
+    }
+
     /// Current room path of an existing, not deleted object.
     async fn live(&self, id: Uuid) -> Result<(Uuid, Vec<Uuid>)> {
         match state_of(self.tx, self.tenant(), id, None).await? {
@@ -401,7 +421,7 @@ impl Exec<'_, '_> {
                 let values = self.distribute(types, &tables)?;
                 for (t, changes) in &values {
                     if !self.new_objects.contains(&id) {
-                        self.check(Art::Write, t, &path)?;
+                        self.check_on(Art::Write, t, &path, id).await?;
                     }
                     self.version_type_row(id, t, changes, None).await?;
                 }
@@ -467,7 +487,7 @@ impl Exec<'_, '_> {
                     Some(true) => return Err(BaseError::invalid("type.implied", "implied types are detached with the type that implies them").with("type", type_name.clone())),
                     None => return Err(BaseError::invalid("type.not_attached", "type is not attached").with("type", type_name.clone())),
                 }
-                self.check(Art::Delete, type_name, &path)?;
+                self.check_on(Art::Delete, type_name, &path, id).await?;
                 let explicit: BTreeSet<String> = cur.iter().filter(|(t, imp)| !**imp && *t != type_name).map(|(t, _)| t.clone()).collect();
                 if explicit.is_empty() {
                     return Err(BaseError::invalid("type.last", "the last type cannot be detached; delete the object instead"));
@@ -529,7 +549,7 @@ impl Exec<'_, '_> {
                 if !self.m.set_is_a(tb.keys(), &def.target.type_name) {
                     return Err(BaseError::invalid("reference.wrong_type", "target lacks the required type").with("reference", reference.clone()).with("type", def.target.type_name.clone()));
                 }
-                self.check_link_rights(&def, a, &pa, &tb, &pb)?;
+                self.check_link_rights(&def, a, &pa, b, &tb, &pb).await?;
                 let rid = Uuid::new_v4();
                 self.tx
                     .execute(
@@ -567,7 +587,7 @@ impl Exec<'_, '_> {
                 let (a, b): (Uuid, Uuid) = (row.get(0), row.get(1));
                 let (_, pa) = self.live(a).await?;
                 let art = if def.holder.type_name == GROUP_MEMBERSHIP { Art::Grant } else { Art::Write };
-                self.check(art, &def.holder.type_name, &pa)?;
+                self.check_on(art, &def.holder.type_name, &pa, a).await?;
                 self.tx
                     .execute(&format!("UPDATE {tb} SET valid_to=$3 WHERE tenant_id=$1 AND id=$2 AND valid_to IS NULL"), &[&tenant, id, &self.txn])
                     .await
@@ -582,7 +602,7 @@ impl Exec<'_, '_> {
         Ok(())
     }
 
-    fn check_link_rights(&self, def: &RefDef, a: Uuid, pa: &[Uuid], tb: &BTreeMap<String, bool>, pb: &[Uuid]) -> Result<()> {
+    async fn check_link_rights(&self, def: &RefDef, a: Uuid, pa: &[Uuid], b: Uuid, tb: &BTreeMap<String, bool>, pb: &[Uuid]) -> Result<()> {
         // writing the reference: write right on the holding type part (create for new objects);
         // technical group memberships need the right to grant rights
         let holder = &def.holder.type_name;
@@ -593,16 +613,22 @@ impl Exec<'_, '_> {
         } else {
             Art::Write
         };
-        if !(self.ctx.subject.may(art, holder, pa) || (art == Art::Create && self.ctx.subject.may(Art::Write, holder, pa))) {
+        let holder_ok = match art {
+            Art::Write => self.allowed_on(Art::Write, holder, pa, a).await?,
+            Art::Create => self.ctx.subject.may(art, holder, pa) || self.ctx.subject.may(Art::Write, holder, pa),
+            _ => self.ctx.subject.may(art, holder, pa),
+        };
+        if !holder_ok {
             return Err(denied(art, holder));
         }
-        // referencing needs read access to the target
-        let readable = if def.target.type_name == ANY {
-            tb.keys().any(|t| self.ctx.subject.may(Art::Read, t, pb))
-        } else {
-            self.m.table_types(&tb.keys().cloned().collect()).iter().any(|t| self.m.is_a(t, &def.target.type_name) && self.ctx.subject.may(Art::Read, t, pb))
-                || tb.keys().any(|t| self.ctx.subject.may(Art::Read, t, pb))
-        };
+        // referencing needs read access to the target (rights paths count)
+        let mut readable = false;
+        for t in self.m.table_types(&tb.keys().cloned().collect()) {
+            if (def.target.type_name == ANY || tb.contains_key(&t) || self.m.is_a(&t, &def.target.type_name)) && self.allowed_on(Art::Read, &t, pb, b).await? {
+                readable = true;
+                break;
+            }
+        }
         if !readable {
             return Err(denied(Art::Read, &def.target.type_name));
         }

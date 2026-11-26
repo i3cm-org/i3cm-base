@@ -22,6 +22,8 @@ pub struct EffRight {
     pub types: Vec<String>,
     pub room: Uuid,
     pub profile: String,
+    /// Rights path condition (plus rights only); `None` for an unconditional right.
+    pub cond: Option<String>,
 }
 
 impl EffRight {
@@ -64,7 +66,7 @@ impl Subject {
             return Decision::Allowed { carrier: self.account, profile: "guardian".into(), room: path.first().copied().unwrap_or_default() };
         }
         for c in &self.carriers {
-            for r in self.rights.get(c).into_iter().flatten() {
+            for r in self.rights.get(c).into_iter().flatten().filter(|r| r.cond.is_none()) {
                 if r.sign == Sign::Block && path.contains(&r.room) && r.covers(art, type_name) {
                     return Decision::Blocked { carrier: *c, profile: r.profile.clone(), room: r.room };
                 }
@@ -77,7 +79,7 @@ impl Subject {
             };
             let mut value: Option<(bool, &EffRight)> = None;
             for room in path {
-                let here: Vec<&EffRight> = rights.iter().filter(|r| r.room == *room && r.sign != Sign::Block && r.covers(art, type_name)).collect();
+                let here: Vec<&EffRight> = rights.iter().filter(|r| r.room == *room && r.cond.is_none() && r.sign != Sign::Block && r.covers(art, type_name)).collect();
                 if let Some(minus) = here.iter().find(|r| r.sign == Sign::Minus) {
                     value = Some((false, minus));
                 } else if let Some(plus) = here.iter().find(|r| r.sign == Sign::Plus) {
@@ -94,6 +96,35 @@ impl Subject {
     pub fn may(&self, art: Art, type_name: &str, path: &[Uuid]) -> bool {
         self.decide(art, type_name, path).allowed()
     }
+
+    /// Rights path conditions under which `art` on `type_name` is allowed in a room with this
+    /// path although `may` says no: conditions of conditional plus rights in a room on the path,
+    /// for carriers not blocked there. Empty if `may` already allows (or nothing applies).
+    pub fn conds(&self, art: Art, type_name: &str, path: &[Uuid]) -> Vec<String> {
+        if self.may(art, type_name, path) {
+            return vec![];
+        }
+        let mut out: Vec<String> = vec![];
+        for c in &self.carriers {
+            let rights = match self.rights.get(c) {
+                Some(r) => r,
+                None => continue,
+            };
+            let blocked = rights.iter().any(|r| r.cond.is_none() && r.sign == Sign::Block && path.contains(&r.room) && r.covers(art, type_name));
+            if blocked {
+                continue;
+            }
+            for r in rights {
+                if let Some(cd) = &r.cond {
+                    if r.sign == Sign::Plus && path.contains(&r.room) && r.covers(art, type_name) && !out.contains(cd) {
+                        out.push(cd.clone());
+                    }
+                }
+            }
+        }
+        out.sort();
+        out
+    }
 }
 
 #[cfg(test)]
@@ -101,7 +132,7 @@ mod tests {
     use super::*;
 
     fn r(sign: Sign, arts: &[Art], types: &[&str], room: Uuid) -> EffRight {
-        EffRight { sign, arts: arts.to_vec(), types: types.iter().map(|s| s.to_string()).collect(), room, profile: "r".into() }
+        EffRight { sign, arts: arts.to_vec(), types: types.iter().map(|s| s.to_string()).collect(), room, profile: "r".into(), cond: None }
     }
 
     struct Fx {

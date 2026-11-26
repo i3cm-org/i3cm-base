@@ -140,6 +140,17 @@ pub fn check(m: &Model) -> Result<()> {
                 if !rooms.contains(&right.room) {
                     return Err(err("profile.unknown_room", "profile right names an unknown room").with("profile", r.name.clone()).with("room", right.room.clone()));
                 }
+                if let Some(w) = &right.when {
+                    if right.sign != crate::catalog::Sign::Plus {
+                        return Err(err("profile.conditional_sign", "only plus rights may carry a rights path").with("profile", r.name.clone()));
+                    }
+                    for t in &right.types {
+                        if t == crate::catalog::ANY {
+                            return Err(err("profile.conditional_any", "a rights path needs named types, not *").with("profile", r.name.clone()));
+                        }
+                        crate::paths::rights_path(m, t, w).map_err(|e| e.with("profile", r.name.clone()))?;
+                    }
+                }
             }
         }
         for lang in module.i18n.keys() {

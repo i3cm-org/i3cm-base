@@ -145,6 +145,19 @@ fn lex(src: &str) -> Result<Vec<Tok>> {
                     _ => out.push(Tok::Ident(s)),
                 }
             }
+            // environment variable (FHIRPath `%name`), e.g. `%me`
+            '%' if cs.get(i + 1).is_some_and(|c| c.is_ascii_alphabetic()) => {
+                let mut s = String::from("%");
+                i += 1;
+                while i < cs.len() && (cs[i].is_ascii_alphanumeric() || cs[i] == '_') {
+                    s.push(cs[i]);
+                    i += 1;
+                }
+                if s != "%me" {
+                    return Err(err(&format!("unknown environment variable {s}"), src));
+                }
+                out.push(Tok::Ident(s));
+            }
             other => return Err(err(&format!("unexpected character {other:?}"), src)),
         }
     }

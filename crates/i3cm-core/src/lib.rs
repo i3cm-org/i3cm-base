@@ -6,6 +6,7 @@ pub mod checker;
 pub mod error;
 pub mod fhirpath;
 pub mod i18n;
+pub mod paths;
 pub mod rights;
 pub mod values;
 

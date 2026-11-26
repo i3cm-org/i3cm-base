@@ -375,6 +375,8 @@ struct NodeQ {
     name: Option<String>,
     offset: Option<i64>,
     limit: Option<i64>,
+    /// Keyset paging: the last node id of the previous page.
+    after: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -389,7 +391,7 @@ async fn aspects(State(s): State<Store>, h: HeaderMap) -> R<Json<Value>> {
 
 async fn aspect_children(State(s): State<Store>, h: HeaderMap, Path(a): Path<String>, Query(q): Query<NodeQ>) -> R<Json<Value>> {
     let r = auth(&s, &h).await?;
-    Ok(Json(serde_json::to_value(s.aspect_children_paged(&r.ctx, &a, &q.node, &r.lang, i3cm_store::aspect::Page { offset: q.offset.unwrap_or(0).max(0), limit: q.limit }).await?).unwrap_or_default()))
+    Ok(Json(serde_json::to_value(s.aspect_children_paged(&r.ctx, &a, &q.node, &r.lang, i3cm_store::aspect::Page { offset: q.offset.unwrap_or(0).max(0), limit: q.limit, after: q.after.clone() }).await?).unwrap_or_default()))
 }
 
 async fn aspect_node(State(s): State<Store>, h: HeaderMap, Path(a): Path<String>, Query(q): Query<NodeQ>) -> R<Json<Value>> {
@@ -416,8 +418,8 @@ async fn aspect_tab(State(s): State<Store>, h: HeaderMap, Path(a): Path<String>,
     let r = auth(&s, &h).await?;
     let format = q.format.as_deref().unwrap_or("json");
     let page = match format {
-        "json" => i3cm_store::aspect::Page { offset: q.offset.unwrap_or(0).max(0), limit: Some(q.limit.unwrap_or(100)) },
-        "csv" | "xlsx" => i3cm_store::aspect::Page { offset: 0, limit: None },
+        "json" => i3cm_store::aspect::Page { offset: q.offset.unwrap_or(0).max(0), limit: Some(q.limit.unwrap_or(100)), after: None },
+        "csv" | "xlsx" => i3cm_store::aspect::Page { offset: 0, limit: None, after: None },
         _ => return Err(BaseError::invalid("tab.bad_format", "format is json, csv or xlsx").with("format", format).into()),
     };
     let t = s.aspect_tab(&r.ctx, &a, &q.node, &q.tab, q.sort.map(|c| (c, q.desc)), page, &r.lang).await?;

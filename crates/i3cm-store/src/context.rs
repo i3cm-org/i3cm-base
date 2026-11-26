@@ -94,7 +94,7 @@ impl Store {
                 guardians.insert(r.get::<_, String>(0));
             }
         }
-        for r in c.query("SELECT profile, sign, arts, types, room_id FROM profile_right WHERE tenant_id=$1 ORDER BY profile, idx", &[&tenant]).await.map_err(db)? {
+        for r in c.query("SELECT profile, sign, arts, types, room_id, cond FROM profile_right WHERE tenant_id=$1 ORDER BY profile, idx", &[&tenant]).await.map_err(db)? {
             let profile: String = r.get(0);
             let sign = match r.get::<_, String>(1).as_str() {
                 "+" => Sign::Plus,
@@ -102,7 +102,7 @@ impl Store {
                 _ => Sign::Block,
             };
             let arts: Vec<Art> = r.get::<_, Vec<String>>(2).iter().filter_map(|a| Art::parse(a)).collect();
-            profile_rights.entry(profile.clone()).or_default().push(EffRight { sign, arts, types: r.get(3), room: r.get(4), profile });
+            profile_rights.entry(profile.clone()).or_default().push(EffRight { sign, arts, types: r.get(3), room: r.get(4), profile, cond: r.get(5) });
         }
         let expand = |profile: &str| -> BTreeSet<String> {
             let mut set: BTreeSet<String> = [profile.to_string()].into();

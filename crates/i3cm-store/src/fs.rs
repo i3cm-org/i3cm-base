@@ -133,7 +133,9 @@ impl<'a> FsTree<'a> {
         let mut all = vec![];
         let mut offset = 0;
         loop {
-            let page = self.store.aspect_children_paged(self.ctx, aspect, node, &self.lang, Page { offset, limit: Some(PAGE) }).await.map_err(|e| e.description)?;
+            // keyset where the listing supports it (group levels), offset otherwise
+            let after = all.last().map(|c: &crate::aspect::NodeOut| c.node.clone());
+            let page = self.store.aspect_children_paged(self.ctx, aspect, node, &self.lang, Page { offset, limit: Some(PAGE), after }).await.map_err(|e| e.description)?;
             let n = page.len() as i64;
             all.extend(page);
             if n < PAGE {

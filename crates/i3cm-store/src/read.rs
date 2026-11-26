@@ -100,6 +100,8 @@ pub struct ListQuery {
     pub desc: bool,
     pub limit: Option<i64>,
     pub offset: Option<i64>,
+    /// Keyset paging: continue after this object (the last one of the previous page).
+    pub after: Option<Uuid>,
 }
 
 impl Store {
@@ -152,7 +154,7 @@ impl Store {
         let mut parts = vec![];
         let mut readable: BTreeMap<String, Map<String, Value>> = BTreeMap::new();
         for t in &tables {
-            if !(ctx.subject.may(Art::Read, t, &path) || (own && self.model.is_a(t, "base:Carrier"))) {
+            if !((own && self.model.is_a(t, "base:Carrier")) || self.may_obj(c, ctx, Art::Read, t, &path, id).await?) {
                 continue;
             }
             if let Some(attrs) = self.row_json(c, ctx.tenant, id, t, at).await? {
@@ -285,14 +287,6 @@ impl Store {
         Ok(out)
     }
 
-    fn readable_rooms(&self, ctx: &Ctx, t: &str) -> Vec<Uuid> {
-        ctx.rooms
-            .rooms()
-            .filter(|r| ctx.rooms.path(**r).map(|p| ctx.subject.may(Art::Read, t, &p)).unwrap_or(false))
-            .copied()
-            .collect()
-    }
-
     fn filter_param(&self, t: &str, attr: &str, raw: &str) -> Result<Param> {
         let def = self.model.require_type(t)?;
         let a = def
@@ -318,13 +312,19 @@ impl Store {
     /// one attribute of the type itself, ordered by that attribute.
     pub async fn list(&self, ctx: &Ctx, t: &str, q: &ListQuery, lang: &str) -> Result<Vec<Summary>> {
         let def = self.model.require_type(t)?;
-        let rooms = self.readable_rooms(ctx, t);
+        let access = self.access(ctx, Art::Read, t)?;
+        if access.is_empty() {
+            return Ok(vec![]);
+        }
         let tb = type_table(def);
-        let mut params: Vec<Param> = vec![Box::new(ctx.tenant), Box::new(rooms)];
+        let mut params: Vec<Param> = vec![Box::new(ctx.tenant)];
         let mut conds = vec![];
         let order_col = match &q.attr {
             Some(a) => {
                 let c = col(a);
+                if !def.attributes.iter().any(|x| &x.name == a) {
+                    return Err(BaseError::invalid("attribute.unknown", "the type itself does not define this attribute").with("attribute", a.clone()));
+                }
                 if let Some(eq) = &q.eq {
                     params.push(self.filter_param(t, a, eq)?);
                     conds.push(format!("x.{c} = ${}", params.len()));
@@ -337,30 +337,40 @@ impl Store {
                     params.push(self.filter_param(t, a, to)?);
                     conds.push(format!("x.{c} <= ${}", params.len()));
                 }
-                if q.eq.is_none() && q.from.is_none() && q.to.is_none() {
-                    self.filter_param(t, a, "x").ok(); // validates attribute existence lazily below
-                    if !def.attributes.iter().any(|x| &x.name == a) {
-                        return Err(BaseError::invalid("attribute.unknown", "the type itself does not define this attribute").with("attribute", a.clone()));
-                    }
-                }
-                format!("x.{c}")
+                c
             }
-            None => "x.valid_from".to_string(),
+            None => "valid_from".to_string(),
         };
-        let dir = if q.desc { "DESC" } else { "ASC" };
-        params.push(Box::new(q.limit.unwrap_or(100).clamp(1, 1000)));
-        let lim = params.len();
-        params.push(Box::new(q.offset.unwrap_or(0).max(0)));
-        let off = params.len();
-        let where_extra = if conds.is_empty() { String::new() } else { format!(" AND {}", conds.join(" AND ")) };
+        let (dir, cmp) = if q.desc { ("DESC", "<") } else { ("ASC", ">") };
+        if let Some(after) = q.after {
+            params.push(Box::new(after));
+            conds.push(format!(
+                "(x.{order_col}, x.object_id) {cmp} (SELECT y.{order_col}, y.object_id FROM {tb} y WHERE y.tenant_id=$1 AND y.object_id=${} AND y.valid_to IS NULL)",
+                params.len()
+            ));
+        }
+        let limit = q.limit.unwrap_or(100).clamp(1, 1000);
+        let offset = if q.after.is_some() { 0 } else { q.offset.unwrap_or(0).max(0) };
+        let where_extra: String = conds.iter().map(|c| format!(" AND {c}")).collect();
         let value_sel = match &q.attr {
             Some(a) => format!("to_jsonb(x.{})", col(a)),
             None => "NULL::jsonb".to_string(),
         };
-        let sql = format!(
-            "SELECT x.object_id, {value_sel} FROM {tb} x JOIN object_state s ON s.tenant_id=x.tenant_id AND s.object_id=x.object_id AND s.valid_to IS NULL AND s.deleted_at IS NULL AND s.room_id = ANY($2) \
-             WHERE x.tenant_id=$1 AND x.valid_to IS NULL AND x.deleted_at IS NULL{where_extra} ORDER BY {order_col} {dir}, x.object_id LIMIT ${lim} OFFSET ${off}"
-        );
+        // one branch per part of the access (rooms; each rights path), merged by UNION: no OR
+        // in a single query, so every branch is driven by its own index (REP-018)
+        let branches = self.rights_branches(&access, ctx, &mut params);
+        let branch = |cond: &str, lim: i64| {
+            format!(
+                "SELECT x.object_id, {value_sel} AS v, x.{order_col} AS k FROM {tb} x JOIN object_state s ON s.tenant_id=x.tenant_id AND s.object_id=x.object_id AND s.valid_to IS NULL AND s.deleted_at IS NULL \
+                 WHERE x.tenant_id=$1 AND x.valid_to IS NULL AND x.deleted_at IS NULL{where_extra} AND {cond} ORDER BY x.{order_col} {dir}, x.object_id {dir} LIMIT {lim}"
+            )
+        };
+        let sql = if branches.len() == 1 {
+            format!("SELECT object_id, v FROM ({}) u", branch(&branches[0], limit + offset)) + &format!(" ORDER BY k {dir}, object_id {dir} LIMIT {limit} OFFSET {offset}")
+        } else {
+            let parts: Vec<String> = branches.iter().map(|b| format!("({})", branch(b, limit + offset))).collect();
+            format!("SELECT object_id, v FROM ({}) u ORDER BY k {dir}, object_id {dir} LIMIT {limit} OFFSET {offset}", parts.join(" UNION "))
+        };
         let c = self.client().await?;
         let rows = c.query(&sql, &refs(&params)).await.map_err(db)?;
         let mut out = vec![];
@@ -390,8 +400,10 @@ impl Store {
             "year" | "month" | "day" => unit,
             _ => return Err(BaseError::invalid("group.unit", "unit must be year, month or day").with("unit", unit)),
         };
-        let mut params: Vec<Param> = vec![Box::new(ctx.tenant), Box::new(self.readable_rooms(ctx, t))];
-        let mut conds = vec![];
+        let access = self.access(ctx, Art::Read, t)?;
+        let mut params: Vec<Param> = vec![Box::new(ctx.tenant)];
+        let rights = self.rights_clause(&access, ctx, &mut params);
+        let mut conds = vec![rights];
         if let Some(f) = &q.from {
             params.push(self.filter_param(t, attr, f)?);
             conds.push(format!("x.{} >= ${}", col(attr), params.len()));
@@ -403,7 +415,7 @@ impl Store {
         let where_extra = if conds.is_empty() { String::new() } else { format!(" AND {}", conds.join(" AND ")) };
         let sql = format!(
             "SELECT to_char(date_trunc('{unit}', x.{c}), '{fmt}') AS k, count(*) FROM {tb} x \
-             JOIN object_state s ON s.tenant_id=x.tenant_id AND s.object_id=x.object_id AND s.valid_to IS NULL AND s.deleted_at IS NULL AND s.room_id = ANY($2) \
+             JOIN object_state s ON s.tenant_id=x.tenant_id AND s.object_id=x.object_id AND s.valid_to IS NULL AND s.deleted_at IS NULL \
              WHERE x.tenant_id=$1 AND x.valid_to IS NULL AND x.deleted_at IS NULL AND x.{c} IS NOT NULL{where_extra} GROUP BY 1 ORDER BY 1",
             c = col(attr),
             tb = type_table(def),
@@ -531,7 +543,7 @@ impl Store {
     pub async fn put_content(&self, ctx: &Ctx, id: Uuid, data: &[u8], media_type: &str, filename: Option<&str>) -> Result<i64> {
         let mut c = self.client().await?;
         let (t, path, _) = self.type_with(&**c, ctx, id, |t| self.model.type_def(t).map(|d| d.content.is_some()).unwrap_or(false)).await?;
-        if !ctx.subject.may(Art::Write, &t, &path) {
+        if !self.may_obj(&**c, ctx, Art::Write, &t, &path, id).await? {
             return Err(BaseError::not_found("rights.denied", "not allowed or not found").with("art", "write").with("type", t));
         }
         let sha = hex::encode(<sha2::Sha256 as sha2::Digest>::digest(data));
@@ -554,7 +566,7 @@ impl Store {
     pub async fn get_content(&self, ctx: &Ctx, id: Uuid) -> Result<(Vec<u8>, String, Option<String>)> {
         let c = self.client().await?;
         let (t, path, _) = self.type_with(&**c, ctx, id, |t| self.model.type_def(t).map(|d| d.content.is_some()).unwrap_or(false)).await?;
-        if !ctx.subject.may(Art::Read, &t, &path) {
+        if !self.may_obj(&**c, ctx, Art::Read, &t, &path, id).await? {
             return Err(BaseError::not_found("rights.denied", "not allowed or not found"));
         }
         let r = c
@@ -572,7 +584,7 @@ impl Store {
         let def = self.model.text_type(text_type).ok_or_else(|| BaseError::invalid("text.unknown_type", "unknown text type").with("textType", text_type))?.clone();
         let mut c = self.client().await?;
         let (t, path, _) = self.type_with(&**c, ctx, id, |t| t == def.owner).await?;
-        if !ctx.subject.may(Art::Write, &t, &path) {
+        if !self.may_obj(&**c, ctx, Art::Write, &t, &path, id).await? {
             return Err(BaseError::not_found("rights.denied", "not allowed or not found").with("art", "write").with("type", t));
         }
         let tx = c.transaction().await.map_err(db)?;
@@ -595,7 +607,7 @@ impl Store {
         let def = self.model.text_type(text_type).ok_or_else(|| BaseError::invalid("text.unknown_type", "unknown text type"))?.clone();
         let c = self.client().await?;
         let (t, path, _) = self.type_with(&**c, ctx, id, |t| t == def.owner).await?;
-        if !ctx.subject.may(Art::Read, &t, &path) {
+        if !self.may_obj(&**c, ctx, Art::Read, &t, &path, id).await? {
             return Err(BaseError::not_found("rights.denied", "not allowed or not found"));
         }
         let r = c

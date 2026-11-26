@@ -29,10 +29,12 @@ fn is_builtin(a: &str) -> bool {
 }
 
 /// Paging of a children listing (used by built-in views; module aspects group instead).
-#[derive(Debug, Clone, Copy, Default)]
+#[derive(Debug, Clone, Default)]
 pub struct Page {
     pub offset: i64,
     pub limit: Option<i64>,
+    /// Keyset paging: continue after this node id (the last one of the previous page).
+    pub after: Option<String>,
 }
 
 /// Last change of an object: time and account.
@@ -375,9 +377,12 @@ impl Store {
         if level > cols.len() {
             return Err(BaseError::invalid("aspect.bad_node", "too many group levels"));
         }
-        let rooms = self.readable_rooms_for(ctx, &a.entry.type_name);
+        let access = self.access(ctx, i3cm_core::Art::Read, &a.entry.type_name)?;
+        if access.is_empty() {
+            return Ok(vec![]);
+        }
         let limit = page.limit.unwrap_or(MAX_LIST).clamp(1, MAX_LIST);
-        let mut params: Vec<Param> = vec![Box::new(ctx.tenant), Box::new(rooms)];
+        let mut params: Vec<Param> = vec![Box::new(ctx.tenant)];
         let mut conds = String::new();
         for (i, k) in prefix.iter().enumerate() {
             let (c, ct, list, gk) = &cols[i];
@@ -390,19 +395,28 @@ impl Store {
             }
         }
         let from = format!(
-            "FROM {} x JOIN object_state s ON s.tenant_id=x.tenant_id AND s.object_id=x.object_id AND s.valid_to IS NULL AND s.deleted_at IS NULL AND s.room_id = ANY($2)",
+            "FROM {} x JOIN object_state s ON s.tenant_id=x.tenant_id AND s.object_id=x.object_id AND s.valid_to IS NULL AND s.deleted_at IS NULL",
             type_table(def)
         );
-        let wh = format!("WHERE x.tenant_id=$1 AND x.valid_to IS NULL AND x.deleted_at IS NULL{conds}");
+        let after = page.after.as_deref().map(parse_node).transpose()?;
+        let offset = if after.is_some() { 0 } else { page.offset.max(0) };
         let c = self.client().await?;
         if level < cols.len() {
+            // group keys: an aggregate over all readable objects, rights as one clause
+            let rights = self.rights_clause(&access, ctx, &mut params);
+            let wh = format!("WHERE x.tenant_id=$1 AND x.valid_to IS NULL AND x.deleted_at IS NULL{conds} AND {rights}");
+            let mut outer = String::from("k IS NOT NULL");
+            if let Some(NodeRef::Group(keys)) = &after {
+                params.push(Box::new(keys.last().cloned().unwrap_or_default()));
+                outer.push_str(&format!(" AND k > ${}", params.len()));
+            }
             let (cn, ct, list, gk) = &cols[level];
             let inner = if *list {
                 format!("SELECT DISTINCT x.object_id, {} AS k {from} CROSS JOIN LATERAL unnest({cn}) u {wh}", Self::key_sql("u", *ct, gk))
             } else {
                 format!("SELECT {} AS k {from} {wh}", Self::key_sql(cn, *ct, gk))
             };
-            let sql = format!("SELECT k, count(*) FROM ({inner}) q WHERE k IS NOT NULL GROUP BY k ORDER BY k LIMIT {limit} OFFSET {}", page.offset.max(0));
+            let sql = format!("SELECT k, count(*) FROM ({inner}) q WHERE {outer} GROUP BY k ORDER BY k LIMIT {limit} OFFSET {offset}");
             let rows = c.query(&sql, &refs(&params)).await.map_err(db)?;
             Ok(rows
                 .iter()
@@ -413,7 +427,16 @@ impl Store {
                 })
                 .collect())
         } else {
-            let sql = format!("SELECT x.object_id {from} {wh} ORDER BY x.object_id LIMIT {limit} OFFSET {}", page.offset.max(0));
+            // objects: one branch per part of the access, merged by UNION (no OR, REP-018)
+            let mut after_cond = String::new();
+            if let Some(NodeRef::Object(id)) = &after {
+                params.push(Box::new(*id));
+                after_cond = format!(" AND x.object_id > ${}", params.len());
+            }
+            let branches = self.rights_branches(&access, ctx, &mut params);
+            let wh = format!("WHERE x.tenant_id=$1 AND x.valid_to IS NULL AND x.deleted_at IS NULL{conds}{after_cond}");
+            let parts: Vec<String> = branches.iter().map(|b| format!("(SELECT x.object_id {from} {wh} AND {b} ORDER BY x.object_id LIMIT {})", limit + offset)).collect();
+            let sql = format!("SELECT object_id FROM ({}) u ORDER BY object_id LIMIT {limit} OFFSET {offset}", parts.join(" UNION "));
             let ids: Vec<Uuid> = c.query(&sql, &refs(&params)).await.map_err(db)?.iter().map(|r| r.get(0)).collect();
             drop(c);
             let mut out = vec![];
@@ -422,14 +445,6 @@ impl Store {
             }
             Ok(out)
         }
-    }
-
-    fn readable_rooms_for(&self, ctx: &Ctx, t: &str) -> Vec<Uuid> {
-        ctx.rooms
-            .rooms()
-            .filter(|r| ctx.rooms.path(**r).map(|p| ctx.subject.may(i3cm_core::Art::Read, t, &p)).unwrap_or(false))
-            .copied()
-            .collect()
     }
 
     async fn node_def<'b>(&self, nav: &StoreNav<'_>, a: &'b AspectDef, id: Uuid) -> Result<(Arc<ObjectView>, String, Option<&'b NodeDef>)> {
@@ -472,9 +487,15 @@ impl Store {
     /// Children of a node, one page; every entry carries name, size, change time and inode.
     pub async fn aspect_children_paged(&self, ctx: &Ctx, aspect: &str, node: &str, lang: &str, page: Page) -> Result<Vec<NodeOut>> {
         let nav = StoreNav::new(self, ctx);
+        let (offset, limit, after) = (page.offset, page.limit, page.after.clone());
         let (mut out, paged) = if is_builtin(aspect) { self.builtin_children(ctx, &nav, aspect, node, lang, page).await? } else { self.children_raw(ctx, &nav, aspect, node, lang, page).await? };
         if !paged {
-            out = out.into_iter().skip(page.offset.max(0) as usize).take(page.limit.unwrap_or(MAX_LIST).clamp(1, MAX_LIST) as usize).collect();
+            // short listings: keyset by position of the given node, else offset
+            let skip = match after.as_deref().and_then(|a| out.iter().position(|n| n.node == a)) {
+                Some(i) => i + 1,
+                None => offset.max(0) as usize,
+            };
+            out = out.into_iter().skip(skip).take(limit.unwrap_or(MAX_LIST).clamp(1, MAX_LIST) as usize).collect();
         }
         for n in out.iter_mut() {
             n.name = fs_name(&n.display_name);
@@ -728,17 +749,19 @@ impl Store {
 
     async fn count_of_type(&self, ctx: &Ctx, t: &str) -> Result<i64> {
         let def = self.model.require_type(t)?;
-        let rooms = self.readable_rooms_for(ctx, t);
-        if rooms.is_empty() {
+        let access = self.access(ctx, i3cm_core::Art::Read, t)?;
+        if access.is_empty() {
             return Ok(0);
         }
+        let mut params: Vec<Param> = vec![Box::new(ctx.tenant)];
+        let rights = self.rights_clause(&access, ctx, &mut params);
         let sql = format!(
-            "SELECT count(*) FROM {} x JOIN object_state s ON s.tenant_id=x.tenant_id AND s.object_id=x.object_id AND s.valid_to IS NULL AND s.deleted_at IS NULL AND s.room_id = ANY($2) \
-             WHERE x.tenant_id=$1 AND x.valid_to IS NULL AND x.deleted_at IS NULL",
+            "SELECT count(*) FROM {} x JOIN object_state s ON s.tenant_id=x.tenant_id AND s.object_id=x.object_id AND s.valid_to IS NULL AND s.deleted_at IS NULL \
+             WHERE x.tenant_id=$1 AND x.valid_to IS NULL AND x.deleted_at IS NULL AND {rights}",
             type_table(def)
         );
         let c = self.client().await?;
-        Ok(c.query_one(&sql, &[&ctx.tenant, &rooms]).await.map_err(db)?.get(0))
+        Ok(c.query_one(&sql, &refs(&params)).await.map_err(db)?.get(0))
     }
 
     async fn builtin_children(&self, ctx: &Ctx, nav: &StoreNav<'_>, aspect: &str, node: &str, lang: &str, page: Page) -> Result<(Vec<NodeOut>, bool)> {
@@ -897,7 +920,7 @@ impl Store {
         let mut all: Vec<NodeOut> = vec![];
         let mut offset = 0;
         loop {
-            let page = Page { offset, limit: Some(MAX_LIST) };
+            let page = Page { offset, limit: Some(MAX_LIST), after: all.last().map(|c| c.node.clone()) };
             let (mut out, paged) = if is_builtin(aspect) { self.builtin_children(ctx, nav, aspect, node, lang, page).await? } else { self.children_raw(ctx, nav, aspect, node, lang, page).await? };
             let n = out.len() as i64;
             all.append(&mut out);

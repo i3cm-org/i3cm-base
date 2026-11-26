@@ -105,8 +105,8 @@ impl Store {
                 };
                 let arts: Vec<String> = r.art.iter().map(|a| a.as_str().to_string()).collect();
                 tx.execute(
-                    "INSERT INTO profile_right (tenant_id, profile, idx, sign, arts, types, room_id) VALUES ($1,$2,$3,$4,$5,$6,$7)",
-                    &[&tenant, &profile.name, &(i as i32), &sign, &arts, &r.types, &room_of(&r.room)],
+                    "INSERT INTO profile_right (tenant_id, profile, idx, sign, arts, types, room_id, cond) VALUES ($1,$2,$3,$4,$5,$6,$7,$8)",
+                    &[&tenant, &profile.name, &(i as i32), &sign, &arts, &r.types, &room_of(&r.room), &r.when],
                 )
                 .await
                 .map_err(db)?;

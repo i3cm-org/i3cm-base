@@ -10,6 +10,7 @@ pub mod fs;
 pub mod context;
 pub mod order;
 pub mod read;
+pub mod rights;
 pub mod schema;
 pub mod sql;
 pub mod tenant;

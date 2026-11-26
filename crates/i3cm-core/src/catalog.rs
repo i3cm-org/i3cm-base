@@ -118,6 +118,10 @@ pub struct RightDef {
     pub types: Vec<String>,
     /// "root" or the name of a module room.
     pub room: String,
+    /// Rights path: the right applies only to objects for which this condition holds, e.g.
+    /// `applicant.team.leader = %me` (plus rights only; DEC-045, SPEC-004).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub when: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash)]

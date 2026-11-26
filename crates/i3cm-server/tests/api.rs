@@ -52,12 +52,31 @@ fn db_url() -> String {
 fn test_model() -> Model {
     let json = std::fs::read_to_string(i3cm_server::default_catalog()).expect("run typecat first: catalog.json missing");
     let mut c: Catalog = serde_json::from_str(&json).unwrap();
+    // rights paths: team leaders read and write the leave requests of their team members
+    let ty = |name: &str, attrs: serde_json::Value, requires: &[&str]| {
+        let (ns, local) = name.split_once(':').unwrap();
+        serde_json::from_value(json!({"name": name, "ns": ns, "local": local, "abstract": false, "extends": null, "attributes": attrs,
+            "requires": {"mode": "any", "types": requires}, "imprintsOn": [], "brings": [], "content": null, "textTypes": []})).unwrap()
+    };
+    let at = |n: &str, kind: &str| json!({"name": n, "vt": {"kind": kind}, "required": false, "list": false, "indexed": false, "unique": false});
+    c.types.push(ty("t:Team", json!([at("name", "string")]), &[]));
+    c.types.push(ty("t:Staff", json!([]), &["base:Person"]));
+    c.types.push(ty("t:LeaveRequest", json!([at("days", "int")]), &[]));
+    let rf = |name: &str, h: &str, he: &str, t: &str, te: &str| {
+        serde_json::from_value(json!({"name": name, "holder": {"type": h, "end": he, "min": 0, "max": 1}, "target": {"type": t, "end": te, "min": 0, "max": null},
+            "partOf": false, "ordered": false, "rightsRelevant": true})).unwrap()
+    };
+    c.references.push(rf("t:Staff.team", "t:Staff", "team", "t:Team", "members"));
+    c.references.push(rf("t:Team.leader", "t:Team", "leader", "base:Person", "leads"));
+    c.references.push(rf("t:LeaveRequest.applicant", "t:LeaveRequest", "applicant", "base:Person", "leaveRequests"));
     c.modules.push(
         serde_json::from_value(json!({
             "name": "t", "requires": ["base"], "rooms": ["tsub"], "i18n": {},
             "profiles": [
                 {"name": "t:no-person-sub", "rights": [{"sign": "-", "art": ["read"], "types": ["base:Person"], "room": "tsub"}]},
-                {"name": "t:block-person", "rights": [{"sign": "block", "art": ["read"], "types": ["base:Person"], "room": "root"}]}
+                {"name": "t:block-person", "rights": [{"sign": "block", "art": ["read"], "types": ["base:Person"], "room": "root"}]},
+                {"name": "t:lead-leave", "rights": [{"sign": "+", "art": ["write"], "types": ["t:LeaveRequest"], "room": "root", "when": "applicant.team.leader = %me"}]},
+                {"name": "t:read-persons", "rights": [{"sign": "+", "art": ["read"], "types": ["base:Person"], "room": "root"}]}
             ]
         }))
         .unwrap(),
@@ -753,4 +772,70 @@ async fn tab_paging_sorting_and_export() {
     assert!(ct.contains("spreadsheetml") && xlsx.starts_with(b"PK"));
     assert_eq!(env.admin.aspect_tab_export("base:mailbox", &node, "attachments", "pdf").await.unwrap_err().status(), Some(400));
     assert_eq!(env.admin.aspect_tab("base:mailbox", &node, "nope", &[]).await.unwrap_err().status(), Some(404));
+}
+
+
+#[tokio::test]
+async fn rights_path_team_leader_sees_team_requests() {
+    let env = env().await;
+    // two teams with leaders and one member each, one request per member
+    let mut o = Order::new();
+    for t in ["a", "b"] {
+        o.create(&format!("team-{t}"), None, json!({"t:Team": {"name": t}}));
+        o.create(&format!("m-{t}"), None, json!({"base:Person": {"firstName": "M", "lastName": t}, "t:Staff": {}}));
+        o.link("t:Staff.team", format!("m-{t}").as_str(), format!("team-{t}").as_str());
+        o.create(&format!("lr-{t}"), None, json!({"t:LeaveRequest": {"days": 3}}));
+        o.link("t:LeaveRequest.applicant", format!("lr-{t}").as_str(), format!("m-{t}").as_str());
+    }
+    let r = env.admin.order(&o).await.unwrap();
+    let (lead_a, ca) = env.person("lead-a", &[]).await;
+    let (_lead_b, cb) = env.person("lead-b", &[]).await;
+    for (p, team) in [(lead_a, r.created["team-a"])] {
+        let mut o = Order::new();
+        o.link("t:Team.leader", team, p);
+        env.admin.order(&o).await.unwrap();
+    }
+    let mut o = Order::new();
+    o.link("t:Team.leader", r.created["team-b"], _lead_b);
+    env.admin.order(&o).await.unwrap();
+    for p in [lead_a, _lead_b] {
+        env.admin.assign("t:lead-leave", p).await.unwrap();
+        env.admin.assign("t:read-persons", p).await.unwrap();
+    }
+    let q = i3cm_client::ListQuery::default();
+    let la: Vec<Uuid> = ca.list("t:LeaveRequest", &q).await.unwrap().iter().map(|s| s.id).collect();
+    let lb: Vec<Uuid> = cb.list("t:LeaveRequest", &q).await.unwrap().iter().map(|s| s.id).collect();
+    assert_eq!(la, vec![r.created["lr-a"]]);
+    assert_eq!(lb, vec![r.created["lr-b"]]);
+    // single access: own team yes, other team not found
+    assert!(ca.get_object(r.created["lr-a"], None).await.is_ok());
+    assert!(ca.get_object(r.created["lr-b"], None).await.is_err());
+    // write through the rights path
+    let mut o = Order::new();
+    o.update(r.created["lr-a"], json!({"t:LeaveRequest": {"days": 5}}));
+    assert!(ca.order(&o).await.is_ok());
+    let mut o = Order::new();
+    o.update(r.created["lr-b"], json!({"t:LeaveRequest": {"days": 5}}));
+    assert!(ca.order(&o).await.is_err());
+    // a person without the profile sees nothing
+    let (_x, cx) = env.person("nobody", &[]).await;
+    assert!(cx.list("t:LeaveRequest", &q).await.unwrap().is_empty());
+}
+
+#[test]
+fn rights_path_checker_limits() {
+    let json = std::fs::read_to_string(i3cm_server::default_catalog()).unwrap();
+    let base: Catalog = serde_json::from_str(&json).unwrap();
+    let with = |when: &str, sign: &str, types: &str| {
+        let mut m = test_model().catalog.clone();
+        let _ = &base;
+        m.modules.last_mut().unwrap().profiles.push(serde_json::from_value(json!({"name": "t:x", "rights": [{"sign": sign, "art": ["read"], "types": [types], "room": "root", "when": when}]})).unwrap());
+        Model::new(m).err().map(|e| e.error_id)
+    };
+    assert_eq!(with("applicant.team.leader = %me", "+", "t:LeaveRequest"), None);
+    assert_eq!(with("applicant.team.leader", "+", "t:LeaveRequest").as_deref(), Some("path.rights_form"));
+    assert_eq!(with("applicant.team.leader.leads.team = %me", "+", "t:LeaveRequest").as_deref(), Some("path.too_long"));
+    assert_eq!(with("applicant.team.leader = %me", "-", "t:LeaveRequest").as_deref(), Some("profile.conditional_sign"));
+    assert_eq!(with("applicant.team.leader = %me", "+", "*").as_deref(), Some("profile.conditional_any"));
+    assert_eq!(with("nothere = %me", "+", "t:LeaveRequest").as_deref(), Some("path.unknown_step"));
 }

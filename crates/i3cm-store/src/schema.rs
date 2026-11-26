@@ -47,6 +47,7 @@ ALTER TABLE token ADD COLUMN IF NOT EXISTS revoked_at timestamptz;
 ALTER TABLE token ADD COLUMN IF NOT EXISTS last_used timestamptz;
 CREATE UNIQUE INDEX IF NOT EXISTS token_id ON token (id);
 CREATE INDEX IF NOT EXISTS token_account ON token (tenant_id, account);
+ALTER TABLE profile_right ADD COLUMN IF NOT EXISTS cond text;
 CREATE TABLE IF NOT EXISTS module_room (tenant_id uuid NOT NULL, name text NOT NULL, room_id uuid NOT NULL, PRIMARY KEY (tenant_id, name));
 "#;
 
