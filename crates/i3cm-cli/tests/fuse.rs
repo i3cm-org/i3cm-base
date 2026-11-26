@@ -21,7 +21,7 @@ fn mount(env: &Env, name: &str, ttl: &str) -> (PathBuf, Child) {
         .unwrap();
     let key = format!(" {} ", mp.display());
     for _ in 0..100 {
-        if std::fs::read_to_string("/proc/self/mountinfo").unwrap().lines().any(|l| l.contains(&key) && l.contains("fuse.i3cm")) {
+        if std::fs::read_to_string("/proc/self/mountinfo").unwrap().lines().any(|l| l.contains(&key) && (l.contains(" - fuse.i3cm ") || l.contains(" - fuse i3cm "))) {
             return (mp, child);
         }
         std::thread::sleep(std::time::Duration::from_millis(100));

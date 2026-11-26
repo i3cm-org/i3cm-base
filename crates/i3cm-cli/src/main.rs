@@ -16,6 +16,7 @@ use std::path::{Path, PathBuf};
 use std::process::exit;
 
 const MOUNT_TYPE: &str = "fuse.i3cm";
+const MOUNT_SOURCE: &str = "i3cm";
 
 fn main() {
     let args: Vec<String> = std::env::args().collect();
@@ -173,8 +174,10 @@ fn mounts() -> Vec<String> {
     text.lines()
         .filter_map(|l| {
             let (left, right) = l.split_once(" - ")?;
-            let fstype = right.split(' ').next()?;
-            (fstype == MOUNT_TYPE).then(|| unescape(left.split(' ').nth(4).unwrap_or("")))
+            let mut r = right.split(' ');
+            let (fstype, source) = (r.next()?, r.next().unwrap_or(""));
+            // the kernel shows `fuse.i3cm`, or plain `fuse` with source `i3cm` when the subtype is dropped
+            (fstype == MOUNT_TYPE || (fstype == "fuse" && source == MOUNT_SOURCE)).then(|| unescape(left.split(' ').nth(4).unwrap_or("")))
         })
         .collect()
 }
