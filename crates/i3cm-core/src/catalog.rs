@@ -44,6 +44,9 @@ pub struct AspectEntry {
     pub type_name: String,
     #[serde(rename = "groupBy", default)]
     pub group_by: Vec<String>,
+    /// View filter (`entry.where`), see `paths::view_filter`.
+    #[serde(rename = "where", default, skip_serializing_if = "Option::is_none")]
+    pub filter: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]

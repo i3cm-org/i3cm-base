@@ -337,7 +337,7 @@ function aspectOf(name, def) {
       filesFirst: !("subNodes" in n) || !("files" in n) || Object.keys(n).indexOf("files") < Object.keys(n).indexOf("subNodes"),
     };
   }
-  return { name, entry: { type: def.entry.type, groupBy: def.entry.groupBy ?? [] }, nodes };
+  return { name, entry: { type: def.entry.type, groupBy: def.entry.groupBy ?? [], ...(def.entry.where ? { where: def.entry.where } : {}) }, nodes };
 }
 
 function valueType(tn, type, attr) {

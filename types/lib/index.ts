@@ -68,7 +68,8 @@ export const unique: FieldDeco = noopF;
 /* ---------- rooms and profiles ---------- */
 export type Sign = "+" | "-" | "block";
 export type Art = "read" | "write" | "create" | "place" | "remove" | "delete" | "grant";
-export interface RightDef { sign: Sign; art: Art[]; types: string[]; room: string }
+/** `when`: rights path, e.g. `"applicant.team.leader = %me"` (plus rights on named types only). */
+export interface RightDef { sign: Sign; art: Art[]; types: string[]; room: string; when?: string }
 export interface ProfileDef { name: string; guardian?: boolean; includes?: string[]; rights: RightDef[] }
 
 /* ---------- aspects (views) ---------- */
@@ -83,7 +84,8 @@ export interface NodeDef {
   functions?: Record<string, { url: string }>;
 }
 export interface AspectDef {
-  entry: { type: string; groupBy?: string[] };
+  /** `where`: view filter on own attributes, reference ends, now(), today(), %me (runs in SQL). */
+  entry: { type: string; groupBy?: string[]; where?: string };
   nodes: Record<string, NodeDef>;
 }
 /** A business aspect: traversal and display rules. The order of keys is the display order. */

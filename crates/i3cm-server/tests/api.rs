@@ -72,6 +72,8 @@ fn test_model() -> Model {
     c.modules.push(
         serde_json::from_value(json!({
             "name": "t", "requires": ["base"], "rooms": ["tsub"], "i18n": {},
+            "aspects": [{"name": "t:due-mine", "entry": {"type": "base:Task", "groupBy": [], "where": "due <= now() and status != 'done' and assignees = %me"},
+                "nodes": {"base:Task": {"attributes": [{"label": "subject", "path": "subject"}], "subNodes": [], "files": [], "tabs": [], "functions": [], "filesFirst": true}}}],
             "profiles": [
                 {"name": "t:no-person-sub", "rights": [{"sign": "-", "art": ["read"], "types": ["base:Person"], "room": "tsub"}]},
                 {"name": "t:block-person", "rights": [{"sign": "block", "art": ["read"], "types": ["base:Person"], "room": "root"}]},
@@ -838,4 +840,34 @@ fn rights_path_checker_limits() {
     assert_eq!(with("applicant.team.leader = %me", "-", "t:LeaveRequest").as_deref(), Some("profile.conditional_sign"));
     assert_eq!(with("applicant.team.leader = %me", "+", "*").as_deref(), Some("profile.conditional_any"));
     assert_eq!(with("nothere = %me", "+", "t:LeaveRequest").as_deref(), Some("path.unknown_step"));
+}
+
+
+#[tokio::test]
+async fn view_filter_due_and_mine() {
+    let env = env().await;
+    let (me, cme) = env.person("worker", &[]).await;
+    let team = env.group("team", None).await;
+    env.add_member(team, me).await;
+    let mut o = Order::new();
+    let tasks = [("past-mine", "2020-01-01T00:00:00Z", "open", true), ("future-mine", "2099-01-01T00:00:00Z", "open", true),
+                 ("past-done", "2020-01-01T00:00:00Z", "done", true), ("past-other", "2020-01-01T00:00:00Z", "open", false)];
+    for (k, due, st, mine) in tasks {
+        o.create(k, None, json!({"base:Task": {"subject": k, "due": due, "status": st}}));
+        if mine {
+            o.link("base:Task.assignees", k, me);
+        }
+    }
+    o.create("via-group", None, json!({"base:Task": {"subject": "via-group", "due": "2020-01-02T00:00:00Z", "status": "open"}}));
+    o.link("base:Task.assignees", "via-group", team);
+    env.admin.order(&o).await.unwrap();
+    env.admin.assign("base:reader", me).await.unwrap();
+    let kids = cme.aspect_children("t:due-mine", "").await.unwrap();
+    let mut names: Vec<String> = kids.iter().map(|n| n.display_name.clone()).collect();
+    names.sort();
+    assert_eq!(names, vec!["past-mine".to_string(), "via-group".to_string()]);
+    // bad filters are rejected when the catalog is loaded
+    let mut c = test_model().catalog.clone();
+    c.modules.last_mut().unwrap().aspects[0].entry.filter = Some("subject.length() > 3".into());
+    assert_eq!(Model::new(c).err().map(|e| e.error_id).as_deref(), Some("path.bad_filter"));
 }

@@ -204,6 +204,8 @@ pub struct ListQuery {
     pub limit: Option<i64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub offset: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub after: Option<Uuid>,
 }
 
 /// A node of an aspect tree.

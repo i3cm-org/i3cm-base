@@ -394,6 +394,10 @@ impl Store {
                 conds.push_str(&format!(" AND {} = ${n}", Self::key_sql(c, *ct, gk)));
             }
         }
+        if let Some(w) = &a.entry.filter {
+            let f = i3cm_core::paths::view_filter(&self.model, &a.entry.type_name, w)?;
+            conds.push_str(&format!(" AND {}", self.filter_sql(&f, &a.entry.type_name, ctx, &mut params)?));
+        }
         let from = format!(
             "FROM {} x JOIN object_state s ON s.tenant_id=x.tenant_id AND s.object_id=x.object_id AND s.valid_to IS NULL AND s.deleted_at IS NULL",
             type_table(def)

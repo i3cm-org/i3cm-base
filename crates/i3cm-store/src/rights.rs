@@ -130,3 +130,78 @@ impl Store {
         Ok(false)
     }
 }
+
+/* ---------------------------------------------------------- view filters in SQL */
+
+use crate::schema::col;
+use crate::sql::param;
+use i3cm_core::paths::{Filter, Operand};
+use i3cm_core::values::{to_val, Col};
+use i3cm_core::BaseError;
+
+impl Store {
+    /// SQL for a view filter on the entry object `x` of type `t`; `$1` is the tenant.
+    pub fn filter_sql(&self, f: &Filter, t: &str, ctx: &Ctx, params: &mut Vec<Param>) -> Result<String> {
+        let attr_def = |n: &str| self.model.ancestors(t).into_iter().flat_map(|d| d.attributes.iter()).find(|a| a.name == n).cloned();
+        Ok(match f {
+            Filter::And(a, b) => format!("({} AND {})", self.filter_sql(a, t, ctx, params)?, self.filter_sql(b, t, ctx, params)?),
+            Filter::Or(a, b) => format!("({} OR {})", self.filter_sql(a, t, ctx, params)?, self.filter_sql(b, t, ctx, params)?),
+            Filter::Not(a) => format!("NOT ({})", self.filter_sql(a, t, ctx, params)?),
+            Filter::RefMe(s) => {
+                params.push(Box::new(ctx.subject.carriers.clone()));
+                let (cur, next) = if s.from_holder { ("a_id", "b_id") } else { ("b_id", "a_id") };
+                let tb = ref_table(self.model.ref_def(&s.reference).expect("checked reference"));
+                format!("EXISTS (SELECT 1 FROM {tb} r WHERE r.tenant_id=x.tenant_id AND r.{cur}=x.object_id AND r.valid_to IS NULL AND r.{next} = ANY(${}))", params.len())
+            }
+            Filter::Exists(n, yes) => {
+                if let Some(a) = attr_def(n) {
+                    let owner = self.model.defining_type(t, &a.name).map(|d| d.name.clone()).unwrap_or_else(|| t.to_string());
+                    let col_sql = self.attr_col(t, &owner, n);
+                    format!("{col_sql} IS {}NULL", if *yes { "NOT " } else { "" })
+                } else {
+                    let s = i3cm_core::paths::step(&self.model, t, n)?;
+                    let (cur, _) = if s.from_holder { ("a_id", "b_id") } else { ("b_id", "a_id") };
+                    let tb = ref_table(self.model.ref_def(&s.reference).expect("checked reference"));
+                    format!("{}EXISTS (SELECT 1 FROM {tb} r WHERE r.tenant_id=x.tenant_id AND r.{cur}=x.object_id AND r.valid_to IS NULL)", if *yes { "" } else { "NOT " })
+                }
+            }
+            Filter::Cmp(a, op, b) => {
+                // the attribute side gives the type for literal parameters
+                let typed = [a, b].into_iter().find_map(|o| if let Operand::Attr(n) = o { attr_def(n) } else { None });
+                let side = |o: &Operand, params: &mut Vec<Param>| -> Result<String> {
+                    Ok(match o {
+                        Operand::Attr(n) => {
+                            let owner = self.model.defining_type(t, n).map(|d| d.name.clone()).unwrap_or_else(|| t.to_string());
+                            self.attr_col(t, &owner, n)
+                        }
+                        Operand::Now => "now()".into(),
+                        Operand::Today => "current_date".into(),
+                        Operand::Lit(v) => match &typed {
+                            Some(ad) => {
+                                let mut ad = ad.clone();
+                                ad.required = false;
+                                params.push(param(&to_val(&ad, v)?, Col::of(&ad.vt), false));
+                                format!("${}", params.len())
+                            }
+                            None => return Err(BaseError::invalid("path.bad_filter", "a comparison needs an attribute of the entry type")),
+                        },
+                    })
+                };
+                let l = side(a, params)?;
+                let r = side(b, params)?;
+                format!("({l} {} {r})", if *op == "!=" { "<>" } else { op })
+            }
+        })
+    }
+
+    /// Column of attribute `n` (defined on `owner`) for the entry object `x` of type `t`: the
+    /// entry table itself, or a subquery on the owner's table for inherited attributes.
+    fn attr_col(&self, t: &str, owner: &str, n: &str) -> String {
+        if owner == t {
+            format!("x.{}", col(n))
+        } else {
+            let tb = crate::schema::type_table(self.model.require_type(owner).expect("checked type"));
+            format!("(SELECT o.{} FROM {tb} o WHERE o.tenant_id=x.tenant_id AND o.object_id=x.object_id AND o.valid_to IS NULL)", col(n))
+        }
+    }
+}
