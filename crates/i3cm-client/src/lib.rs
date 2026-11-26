@@ -435,11 +435,11 @@ impl Client {
         Ok((r.bytes().await?.to_vec(), ct, cd))
     }
 
-    pub async fn roles(&self) -> Result<Vec<Value>> {
-        self.get("/roles").await
+    pub async fn profiles(&self) -> Result<Vec<Value>> {
+        self.get("/profiles").await
     }
-    pub async fn assign(&self, role: &str, carrier: Uuid) -> Result<Uuid> {
-        let v: Value = self.post("/assignments", &json!({"role": role, "carrier": carrier})).await?;
+    pub async fn assign(&self, profile: &str, carrier: Uuid) -> Result<Uuid> {
+        let v: Value = self.post("/assignments", &json!({"profile": profile, "carrier": carrier})).await?;
         Ok(serde_json::from_value(v["id"].clone()).unwrap_or_default())
     }
     pub async fn create_token(&self, account: Uuid) -> Result<String> {

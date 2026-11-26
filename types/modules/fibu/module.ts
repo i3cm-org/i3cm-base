@@ -1,8 +1,8 @@
-import type { RoleDef } from "../../lib";
+import type { ProfileDef } from "../../lib";
 
 export const module = { name: "fibu", requires: ["base"] };
 export const rooms: string[] = ["fibu"];
-export const roles: RoleDef[] = [
+export const profiles: ProfileDef[] = [
   { name: "accountant", rights: [
     { sign: "+", art: ["read"], types: ["fibu:LedgerAccount"], room: "fibu" },
     { sign: "+", art: ["write", "create"], types: ["fibu:JournalEntry", "fibu:JournalLine"], room: "fibu" },

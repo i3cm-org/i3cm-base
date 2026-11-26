@@ -65,11 +65,11 @@ export const indexed: FieldDeco = noopF;
 /** Attribute value is unique per tenant among current objects. */
 export const unique: FieldDeco = noopF;
 
-/* ---------- rooms and roles ---------- */
+/* ---------- rooms and profiles ---------- */
 export type Sign = "+" | "-" | "block";
 export type Art = "read" | "write" | "create" | "place" | "remove" | "delete" | "grant";
 export interface RightDef { sign: Sign; art: Art[]; types: string[]; room: string }
-export interface RoleDef { name: string; guardian?: boolean; includes?: string[]; rights: RightDef[] }
+export interface ProfileDef { name: string; guardian?: boolean; includes?: string[]; rights: RightDef[] }
 
 /* ---------- aspects (views) ---------- */
 /** Paths are FHIRPath expressions relative to the node object. */

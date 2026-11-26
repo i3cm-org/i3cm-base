@@ -606,35 +606,35 @@ impl Store {
         Ok((r.get(0), r.get(1)))
     }
 
-    /// Assign a role to a carrier (needs the right to grant rights).
-    pub async fn assign(&self, ctx: &Ctx, role: &str, carrier: Uuid) -> Result<Uuid> {
+    /// Assign a profile to a carrier (needs the right to grant rights).
+    pub async fn assign(&self, ctx: &Ctx, profile: &str, carrier: Uuid) -> Result<Uuid> {
         if !ctx.subject.may(Art::Grant, ANY, &[ctx.rooms.root]) && !ctx.subject.may(Art::Grant, GROUP_MEMBERSHIP, &[ctx.rooms.root]) {
             return Err(BaseError::not_found("rights.denied", "not allowed or not found").with("art", "grant"));
         }
         let mut c = self.client().await?;
-        let exists = c.query_opt("SELECT 1 FROM role WHERE tenant_id=$1 AND name=$2", &[&ctx.tenant, &role]).await.map_err(db)?.is_some();
+        let exists = c.query_opt("SELECT 1 FROM profile WHERE tenant_id=$1 AND name=$2", &[&ctx.tenant, &profile]).await.map_err(db)?.is_some();
         if !exists {
-            return Err(BaseError::invalid("role.unknown", "unknown role").with("role", role));
+            return Err(BaseError::invalid("profile.unknown", "unknown profile").with("profile", profile));
         }
         let set = types_of(&**c, ctx.tenant, carrier, None).await?;
         if !self.model.set_is_a(set.keys(), "base:Carrier") {
-            return Err(BaseError::invalid("assignment.not_a_carrier", "roles can only be assigned to groups and accounts"));
+            return Err(BaseError::invalid("assignment.not_a_carrier", "profiles can only be assigned to groups and accounts"));
         }
         let tx = c.transaction().await.map_err(db)?;
         let txn: i64 = tx.query_one("SELECT nextval('txn_seq')", &[]).await.map_err(db)?.get(0);
         tx.execute("INSERT INTO txn (tenant_id, id, account) VALUES ($1,$2,$3)", &[&ctx.tenant, &txn, &ctx.me()]).await.map_err(db)?;
         let id = Uuid::new_v4();
-        tx.execute("INSERT INTO assignment (tenant_id, id, role, carrier, valid_from) VALUES ($1,$2,$3,$4,$5)", &[&ctx.tenant, &id, &role, &carrier, &txn])
+        tx.execute("INSERT INTO assignment (tenant_id, id, profile, carrier, valid_from) VALUES ($1,$2,$3,$4,$5)", &[&ctx.tenant, &id, &profile, &carrier, &txn])
             .await
             .map_err(db)?;
         tx.commit().await.map_err(db)?;
         Ok(id)
     }
 
-    pub async fn roles(&self, ctx: &Ctx) -> Result<Vec<Value>> {
+    pub async fn profiles(&self, ctx: &Ctx) -> Result<Vec<Value>> {
         let c = self.client().await?;
         Ok(c.query(
-            "SELECT r.name, r.guardian, coalesce((SELECT array_agg(includes) FROM role_include i WHERE i.tenant_id=r.tenant_id AND i.role=r.name), '{}') FROM role r WHERE tenant_id=$1 ORDER BY 1",
+            "SELECT r.name, r.guardian, coalesce((SELECT array_agg(includes) FROM profile_include i WHERE i.tenant_id=r.tenant_id AND i.profile=r.name), '{}') FROM profile r WHERE tenant_id=$1 ORDER BY 1",
             &[&ctx.tenant],
         )
         .await

@@ -34,10 +34,10 @@ CREATE INDEX IF NOT EXISTS object_type_cur ON object_type (tenant_id, object_id)
 CREATE TABLE IF NOT EXISTS blob (sha256 text PRIMARY KEY, data bytea NOT NULL);
 CREATE TABLE IF NOT EXISTS content (tenant_id uuid NOT NULL, object_id uuid NOT NULL, sha256 text NOT NULL, media_type text NOT NULL, size bigint NOT NULL, filename text, valid_from bigint NOT NULL, valid_to bigint, PRIMARY KEY (tenant_id, object_id, valid_from));
 CREATE TABLE IF NOT EXISTS text_part (tenant_id uuid NOT NULL, object_id uuid NOT NULL, text_type text NOT NULL, content text NOT NULL, media_type text NOT NULL, valid_from bigint NOT NULL, valid_to bigint, PRIMARY KEY (tenant_id, object_id, text_type, valid_from));
-CREATE TABLE IF NOT EXISTS role (tenant_id uuid NOT NULL, name text NOT NULL, guardian boolean NOT NULL, PRIMARY KEY (tenant_id, name));
-CREATE TABLE IF NOT EXISTS role_right (tenant_id uuid NOT NULL, role text NOT NULL, idx int NOT NULL, sign text NOT NULL, arts text[] NOT NULL, types text[] NOT NULL, room_id uuid NOT NULL, PRIMARY KEY (tenant_id, role, idx));
-CREATE TABLE IF NOT EXISTS role_include (tenant_id uuid NOT NULL, role text NOT NULL, includes text NOT NULL, PRIMARY KEY (tenant_id, role, includes));
-CREATE TABLE IF NOT EXISTS assignment (tenant_id uuid NOT NULL, id uuid NOT NULL, role text NOT NULL, carrier uuid NOT NULL, valid_from bigint NOT NULL, valid_to bigint, PRIMARY KEY (tenant_id, id, valid_from));
+CREATE TABLE IF NOT EXISTS profile (tenant_id uuid NOT NULL, name text NOT NULL, guardian boolean NOT NULL, PRIMARY KEY (tenant_id, name));
+CREATE TABLE IF NOT EXISTS profile_right (tenant_id uuid NOT NULL, profile text NOT NULL, idx int NOT NULL, sign text NOT NULL, arts text[] NOT NULL, types text[] NOT NULL, room_id uuid NOT NULL, PRIMARY KEY (tenant_id, profile, idx));
+CREATE TABLE IF NOT EXISTS profile_include (tenant_id uuid NOT NULL, profile text NOT NULL, includes text NOT NULL, PRIMARY KEY (tenant_id, profile, includes));
+CREATE TABLE IF NOT EXISTS assignment (tenant_id uuid NOT NULL, id uuid NOT NULL, profile text NOT NULL, carrier uuid NOT NULL, valid_from bigint NOT NULL, valid_to bigint, PRIMARY KEY (tenant_id, id, valid_from));
 CREATE INDEX IF NOT EXISTS assignment_cur ON assignment (tenant_id, carrier) WHERE valid_to IS NULL;
 CREATE TABLE IF NOT EXISTS token (hash text PRIMARY KEY, tenant_id uuid NOT NULL, account uuid NOT NULL, created_at timestamptz NOT NULL DEFAULT now());
 ALTER TABLE token ADD COLUMN IF NOT EXISTS id uuid NOT NULL DEFAULT gen_random_uuid();

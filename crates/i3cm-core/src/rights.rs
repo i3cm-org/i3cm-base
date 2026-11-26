@@ -21,7 +21,7 @@ pub struct EffRight {
     pub arts: Vec<Art>,
     pub types: Vec<String>,
     pub room: Uuid,
-    pub role: String,
+    pub profile: String,
 }
 
 impl EffRight {
@@ -38,15 +38,15 @@ pub struct Subject {
     pub account: Uuid,
     /// The account itself and every group it belongs to, directly or via subgroups.
     pub carriers: Vec<Uuid>,
-    /// Rights per carrier, roles already expanded with their includes.
+    /// Rights per carrier, profiles already expanded with their includes.
     pub rights: HashMap<Uuid, Vec<EffRight>>,
     pub guardian: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Decision {
-    Allowed { carrier: Uuid, role: String, room: Uuid },
-    Blocked { carrier: Uuid, role: String, room: Uuid },
+    Allowed { carrier: Uuid, profile: String, room: Uuid },
+    Blocked { carrier: Uuid, profile: String, room: Uuid },
     Denied,
 }
 
@@ -61,12 +61,12 @@ impl Subject {
     /// room path (root first) is `path`. Use `*` as type for place/remove/delete of whole objects.
     pub fn decide(&self, art: Art, type_name: &str, path: &[Uuid]) -> Decision {
         if self.guardian {
-            return Decision::Allowed { carrier: self.account, role: "guardian".into(), room: path.first().copied().unwrap_or_default() };
+            return Decision::Allowed { carrier: self.account, profile: "guardian".into(), room: path.first().copied().unwrap_or_default() };
         }
         for c in &self.carriers {
             for r in self.rights.get(c).into_iter().flatten() {
                 if r.sign == Sign::Block && path.contains(&r.room) && r.covers(art, type_name) {
-                    return Decision::Blocked { carrier: *c, role: r.role.clone(), room: r.room };
+                    return Decision::Blocked { carrier: *c, profile: r.profile.clone(), room: r.room };
                 }
             }
         }
@@ -85,7 +85,7 @@ impl Subject {
                 }
             }
             if let Some((true, r)) = value {
-                return Decision::Allowed { carrier: *c, role: r.role.clone(), room: r.room };
+                return Decision::Allowed { carrier: *c, profile: r.profile.clone(), room: r.room };
             }
         }
         Decision::Denied
@@ -101,7 +101,7 @@ mod tests {
     use super::*;
 
     fn r(sign: Sign, arts: &[Art], types: &[&str], room: Uuid) -> EffRight {
-        EffRight { sign, arts: arts.to_vec(), types: types.iter().map(|s| s.to_string()).collect(), room, role: "r".into() }
+        EffRight { sign, arts: arts.to_vec(), types: types.iter().map(|s| s.to_string()).collect(), room, profile: "r".into() }
     }
 
     struct Fx {

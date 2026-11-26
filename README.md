@@ -2,7 +2,7 @@
 
 The base of i3cm, a system for function portals (interoperable, integrated infrastructure and
 content management): typed objects that carry several types at once, versioned
-storage, rooms and roles for rights, and a REST API. Modules contribute types, rooms, roles
+storage, rooms and profiles for rights, and a REST API. Modules contribute types, rooms, profiles
 and display texts. This is milestone 0.4: the core without user interface, views (aspects), and the data as a
 read-only file system with Unix tools for agents.
 
@@ -14,7 +14,7 @@ Types are related by inheritance and by **rules** (a type *requires* another, *b
 along, or *imprints* itself on another). Objects are connected by **references** with two
 named ends and cardinalities; "part of" references make parts follow their whole. Every change
 creates a new version; only the changed type parts are rewritten. Every object lives in one
-**room**; **roles** (collections of rights with sign `+`, `-` or `block`) are assigned to groups
+**room**; **profiles** (collections of rights with sign `+`, `-` or `block`) are assigned to groups
 or accounts, and rights are inherited down the room tree.
 
 ## Layout

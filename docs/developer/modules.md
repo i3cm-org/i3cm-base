@@ -8,7 +8,7 @@ type compiler `typecat` reads it next to the kernel's own types and produces one
 ```
 <repo>/
   i3cm/
-    module.ts          name, required modules, rooms, roles
+    module.ts          name, required modules, rooms, profiles
     types/*.ts         type classes (see types.md)
     aspects/*.ts       aspects (views)
     i18n/de.ftl        display texts, one file per language
@@ -32,10 +32,10 @@ import { Person } from "@i3cm/base";                                 // types of
 
 ```ts
 // i3cm/module.ts
-import type { RoleDef } from "@i3cm/lib";
+import type { ProfileDef } from "@i3cm/lib";
 export const module = { name: "demo", requires: ["base"] };
 export const rooms: string[] = ["demo"];
-export const roles: RoleDef[] = [];
+export const profiles: ProfileDef[] = [];
 ```
 
 Every name in `requires` must be a module that is part of the same build (the kernel's `base` or

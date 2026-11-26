@@ -23,7 +23,7 @@ pub struct Module {
     pub name: String,
     pub requires: Vec<String>,
     pub rooms: Vec<String>,
-    pub roles: Vec<RoleDef>,
+    pub profiles: Vec<ProfileDef>,
     pub i18n: BTreeMap<String, String>,
     #[serde(default)]
     pub aspects: Vec<AspectDef>,
@@ -102,7 +102,7 @@ pub struct FunctionDef {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct RoleDef {
+pub struct ProfileDef {
     pub name: String,
     #[serde(default)]
     pub guardian: bool,
@@ -435,8 +435,8 @@ impl Model {
         self.children.get(name).map(|v| v.as_slice()).unwrap_or(&[])
     }
 
-    pub fn roles(&self) -> impl Iterator<Item = &RoleDef> {
-        self.catalog.modules.iter().flat_map(|m| m.roles.iter())
+    pub fn profiles(&self) -> impl Iterator<Item = &ProfileDef> {
+        self.catalog.modules.iter().flat_map(|m| m.profiles.iter())
     }
 
     pub fn aspect(&self, name: &str) -> Option<&AspectDef> {

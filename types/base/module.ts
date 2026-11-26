@@ -1,8 +1,8 @@
-import type { RoleDef } from "../lib";
+import type { ProfileDef } from "../lib";
 
 export const module = { name: "base", requires: [] as string[] };
 export const rooms: string[] = [];
-export const roles: RoleDef[] = [
+export const profiles: ProfileDef[] = [
   { name: "admin", guardian: true, rights: [
     { sign: "+", art: ["read", "write", "create", "place", "remove", "delete", "grant"], types: ["*"], room: "root" } ] },
   { name: "reader", rights: [ { sign: "+", art: ["read"], types: ["*"], room: "root" } ] },

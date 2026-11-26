@@ -26,7 +26,7 @@ enum Cmd {
         #[arg(long, default_value_t = 32)]
         pool: usize,
     },
-    /// Create a tenant with root room, roles and an admin login; prints the admin token (valid one day)
+    /// Create a tenant with root room, profiles and an admin login; prints the admin token (valid one day)
     InitTenant {
         name: String,
         #[arg(long, default_value = "admin")]

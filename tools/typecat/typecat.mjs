@@ -143,7 +143,7 @@ export function buildCatalog(typesDir, opts = {}) {
   const uiDirs = new Map(); // module name -> ui directory
   for (const dir of moduleDirs) {
     const files = program.getSourceFiles().filter((sf) => !sf.isDeclarationFile && ownerOf(path.dirname(sf.fileName)) === dir);
-    const mod = { name: null, requires: [], rooms: [], roles: [], i18n: {}, aspects: [] };
+    const mod = { name: null, requires: [], rooms: [], profiles: [], i18n: {}, aspects: [] };
     const ownTypes = [], ownRefs = [];
     for (const sf of files) {
       if (path.basename(sf.fileName) === "module.ts") {
@@ -153,7 +153,7 @@ export function buildCatalog(typesDir, opts = {}) {
             const v = d.initializer ? literalJson(d.initializer) : null;
             if (d.name.getText() === "module") { mod.name = v.name; mod.requires = v.requires ?? []; }
             if (d.name.getText() === "rooms") mod.rooms = v;
-            if (d.name.getText() === "roles") mod.roles = v;
+            if (d.name.getText() === "profiles") mod.profiles = v;
           }
         }
         continue;
@@ -255,7 +255,7 @@ export function buildCatalog(typesDir, opts = {}) {
         mod.i18n[path.basename(f, ".ftl")] = fs.readFileSync(path.join(i18nDir, f), "utf8");
     }
     if (fs.existsSync(path.join(dir, "ui"))) uiDirs.set(mod.name, path.join(dir, "ui"));
-    mod.roles = mod.roles.map((r) => ({ ...r, name: `${mod.name}:${r.name}`, includes: r.includes ?? [], guardian: !!r.guardian }));
+    mod.profiles = mod.profiles.map((r) => ({ ...r, name: `${mod.name}:${r.name}`, includes: r.includes ?? [], guardian: !!r.guardian }));
     mod.aspects = mod.aspects.map((a) => ({ ...a, name: `${mod.name}:${a.name}` }));
     modules.push(mod);
   }

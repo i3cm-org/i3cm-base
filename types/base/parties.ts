@@ -12,7 +12,7 @@ export class Company {
   @indexed name!: string;
 }
 
-/** Rights carrier: something that can hold roles. */
+/** Rights carrier: something that can hold profiles. */
 @ns("base") @abstractType
 export abstract class Carrier {}
 

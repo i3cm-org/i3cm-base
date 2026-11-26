@@ -48,8 +48,8 @@ back as `integrity.violated` with a list of violations.
 | `GET /v1/rooms/{id}/children`, `/objects`, `/path` | room tree |
 | `GET /v1/types/{type}/objects` | list by one attribute: `attr`, `eq` or `from`/`to`, `desc`, `limit`, `offset` |
 | `GET /v1/types/{type}/groups` | counts per `unit` (year, month, day) of a date attribute `attr` |
-| `GET /v1/catalog`, `GET /v1/roles` | catalog and roles |
-| `POST /v1/assignments` | `{"role": "fibu:accountant", "carrier": "<group or account>"}` |
+| `GET /v1/catalog`, `GET /v1/profiles` | catalog and profiles |
+| `POST /v1/assignments` | `{"profile": "fibu:accountant", "carrier": "<group or account>"}` |
 | `POST /v1/tokens` | `{"account": "<id>", "label": "...", "ttl": 90}` issues a token; see Tokens |
 | `GET /v1/tokens`, `DELETE /v1/tokens/{id}` | list (without secrets), revoke |
 | `GET /v1/metrics` | requests served by this server process |

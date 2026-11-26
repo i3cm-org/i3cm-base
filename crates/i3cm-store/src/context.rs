@@ -75,37 +75,37 @@ impl Store {
         );
         let carriers: Vec<Uuid> = c.query(&sql, &[&tenant, &account]).await.map_err(db)?.iter().map(|r| r.get(0)).collect();
 
-        // roles assigned to any carrier, expanded with includes
+        // profiles assigned to any carrier, expanded with includes
         let rows = c
-            .query("SELECT carrier, role FROM assignment WHERE tenant_id=$1 AND valid_to IS NULL AND carrier = ANY($2)", &[&tenant, &carriers])
+            .query("SELECT carrier, profile FROM assignment WHERE tenant_id=$1 AND valid_to IS NULL AND carrier = ANY($2)", &[&tenant, &carriers])
             .await
             .map_err(db)?;
         let includes: Vec<(String, String)> = c
-            .query("SELECT role, includes FROM role_include WHERE tenant_id=$1", &[&tenant])
+            .query("SELECT profile, includes FROM profile_include WHERE tenant_id=$1", &[&tenant])
             .await
             .map_err(db)?
             .iter()
             .map(|r| (r.get(0), r.get(1)))
             .collect();
-        let mut role_rights: HashMap<String, Vec<EffRight>> = HashMap::new();
+        let mut profile_rights: HashMap<String, Vec<EffRight>> = HashMap::new();
         let mut guardians = BTreeSet::new();
-        for r in c.query("SELECT name, guardian FROM role WHERE tenant_id=$1", &[&tenant]).await.map_err(db)? {
+        for r in c.query("SELECT name, guardian FROM profile WHERE tenant_id=$1", &[&tenant]).await.map_err(db)? {
             if r.get::<_, bool>(1) {
                 guardians.insert(r.get::<_, String>(0));
             }
         }
-        for r in c.query("SELECT role, sign, arts, types, room_id FROM role_right WHERE tenant_id=$1 ORDER BY role, idx", &[&tenant]).await.map_err(db)? {
-            let role: String = r.get(0);
+        for r in c.query("SELECT profile, sign, arts, types, room_id FROM profile_right WHERE tenant_id=$1 ORDER BY profile, idx", &[&tenant]).await.map_err(db)? {
+            let profile: String = r.get(0);
             let sign = match r.get::<_, String>(1).as_str() {
                 "+" => Sign::Plus,
                 "-" => Sign::Minus,
                 _ => Sign::Block,
             };
             let arts: Vec<Art> = r.get::<_, Vec<String>>(2).iter().filter_map(|a| Art::parse(a)).collect();
-            role_rights.entry(role.clone()).or_default().push(EffRight { sign, arts, types: r.get(3), room: r.get(4), role });
+            profile_rights.entry(profile.clone()).or_default().push(EffRight { sign, arts, types: r.get(3), room: r.get(4), profile });
         }
-        let expand = |role: &str| -> BTreeSet<String> {
-            let mut set: BTreeSet<String> = [role.to_string()].into();
+        let expand = |profile: &str| -> BTreeSet<String> {
+            let mut set: BTreeSet<String> = [profile.to_string()].into();
             loop {
                 let more: Vec<String> = includes.iter().filter(|(r, i)| set.contains(r) && !set.contains(i)).map(|(_, i)| i.clone()).collect();
                 if more.is_empty() {
@@ -117,12 +117,12 @@ impl Store {
         let mut subject = Subject { account, carriers: carriers.clone(), ..Default::default() };
         for r in rows {
             let carrier: Uuid = r.get(0);
-            let role: String = r.get(1);
-            for x in expand(&role) {
+            let profile: String = r.get(1);
+            for x in expand(&profile) {
                 if guardians.contains(&x) {
                     subject.guardian = true;
                 }
-                if let Some(rs) = role_rights.get(&x) {
+                if let Some(rs) = profile_rights.get(&x) {
                     subject.rights.entry(carrier).or_default().extend(rs.iter().cloned());
                 }
             }

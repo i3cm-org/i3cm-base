@@ -120,25 +120,25 @@ pub fn check(m: &Model) -> Result<()> {
         }
     }
 
-    // roles
-    let mut role_names = BTreeSet::new();
+    // profiles
+    let mut profile_names = BTreeSet::new();
     let mut rooms: BTreeSet<String> = ["root".to_string()].into();
     for module in &c.modules {
         rooms.extend(module.rooms.iter().cloned());
     }
     for module in &c.modules {
-        for r in &module.roles {
-            if !role_names.insert(r.name.clone()) {
-                return Err(err("role.duplicate", "role defined twice").with("role", r.name.clone()));
+        for r in &module.profiles {
+            if !profile_names.insert(r.name.clone()) {
+                return Err(err("profile.duplicate", "profile defined twice").with("profile", r.name.clone()));
             }
             for right in &r.rights {
                 for t in &right.types {
                     if !known(t) {
-                        return Err(err("role.unknown_type", "role right names an unknown type").with("role", r.name.clone()).with("type", t.clone()));
+                        return Err(err("profile.unknown_type", "profile right names an unknown type").with("profile", r.name.clone()).with("type", t.clone()));
                     }
                 }
                 if !rooms.contains(&right.room) {
-                    return Err(err("role.unknown_room", "role right names an unknown room").with("role", r.name.clone()).with("room", right.room.clone()));
+                    return Err(err("profile.unknown_room", "profile right names an unknown room").with("profile", r.name.clone()).with("room", right.room.clone()));
                 }
             }
         }
@@ -146,10 +146,10 @@ pub fn check(m: &Model) -> Result<()> {
             crate::i18n::parse_check(&module.name, lang, &module.i18n[lang])?;
         }
     }
-    for r in m.roles() {
+    for r in m.profiles() {
         for inc in &r.includes {
-            if !role_names.contains(inc) {
-                return Err(err("role.unknown_include", "included role is unknown").with("role", r.name.clone()).with("include", inc.clone()));
+            if !profile_names.contains(inc) {
+                return Err(err("profile.unknown_include", "included profile is unknown").with("profile", r.name.clone()).with("include", inc.clone()));
             }
         }
     }
@@ -157,11 +157,11 @@ pub fn check(m: &Model) -> Result<()> {
         check_aspect(m, a)?;
     }
     // include cycles
-    let incl: HashMap<String, Vec<String>> = m.roles().map(|r| (r.name.clone(), r.includes.clone())).collect();
+    let incl: HashMap<String, Vec<String>> = m.profiles().map(|r| (r.name.clone(), r.includes.clone())).collect();
     let mut done = BTreeSet::new();
-    for r in m.roles() {
+    for r in m.profiles() {
         if let Some(cycle) = dfs(&r.name, &incl, &mut Vec::new(), &mut done) {
-            return Err(err("role.include_cycle", "role includes form a cycle").with("cycle", cycle.join(" -> ")));
+            return Err(err("profile.include_cycle", "profile includes form a cycle").with("cycle", cycle.join(" -> ")));
         }
     }
     Ok(())

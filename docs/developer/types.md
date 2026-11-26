@@ -1,7 +1,7 @@
 # Type notation
 
 Types are TypeScript classes in `types/<module>/`. `typecat` reads them statically; nothing is
-executed. A module directory contains `module.ts` (name, required modules, rooms, roles) and
+executed. A module directory contains `module.ts` (name, required modules, rooms, profiles) and
 `i18n/<lang>.ftl` (Fluent display texts).
 
 ```ts
@@ -49,17 +49,17 @@ export class JournalLine {
 `i18n/<lang>.ftl` holds `<ns>-<Type>-name` and `<ns>-<Type>-description`; variables are the
 attributes of the type and its supertypes. The API picks the language from `Accept-Language`.
 
-## Roles
+## Profiles
 
 ```ts
-export const roles: RoleDef[] = [
+export const profiles: ProfileDef[] = [
   { name: "accountant", rights: [
     { sign: "+", art: ["write", "create"], types: ["fibu:JournalEntry", "fibu:JournalLine"], room: "fibu" } ] },
 ];
 ```
 
 `art`: read, write (includes read), create, place, remove, delete, grant. `types`: type names
-or `*`. `room`: `root` or a room of the module. `includes` lists roles that a role contains.
+or `*`. `room`: `root` or a room of the module. `includes` lists profiles that a profile contains.
 
 ## Aspects (views)
 

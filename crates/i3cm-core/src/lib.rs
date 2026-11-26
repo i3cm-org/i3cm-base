@@ -20,7 +20,7 @@ mod tests {
     fn catalog() -> serde_json::Value {
         json!({
           "format": 1,
-          "modules": [{"name": "m", "requires": [], "rooms": [], "roles": [], "i18n": {"en": "m-A-name = A { $x }\n"}}],
+          "modules": [{"name": "m", "requires": [], "rooms": [], "profiles": [], "i18n": {"en": "m-A-name = A { $x }\n"}}],
           "types": [
             {"name":"m:A","ns":"m","local":"A","abstract":false,"extends":null,"attributes":[{"name":"x","vt":{"kind":"string"},"required":true,"list":false,"indexed":false,"unique":false}],
              "requires":{"mode":"any","types":[]},"imprintsOn":[],"brings":["m:B"],"content":null,"textTypes":[]},

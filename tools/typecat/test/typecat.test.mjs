@@ -20,7 +20,7 @@ function tmpTypes(files) {
   }
   return dir;
 }
-const mod = (n) => `export const module = { name: "${n}", requires: [] as string[] };\nexport const rooms: string[] = [];\nexport const roles = [];\n`;
+const mod = (n) => `export const module = { name: "${n}", requires: [] as string[] };\nexport const rooms: string[] = [];\nexport const profiles = [];\n`;
 
 test("builds the catalog of the shipped types", () => {
   const cat = buildCatalog(typesDir);
@@ -133,7 +133,7 @@ test("reads a module repo given from outside, with @i3cm aliases", () => {
   assert.deepEqual(demo.requires, ["base"]);
   assert.ok(demo.i18n.en.includes("demo-Thing-name"));
   assert.equal(demo.aspects[0].name, "demo:things");
-  assert.equal(demo.roles[0].name, "demo:clerk");
+  assert.equal(demo.profiles[0].name, "demo:clerk");
   // the i3cm directory itself works as well
   assert.ok(buildCatalog(typesDir, { modules: [path.join(demoRepo, "i3cm")] }).types.some((t) => t.name === "demo:Thing"));
 });
@@ -148,7 +148,7 @@ test("copies the ui templates of module repos", () => {
 test("rejects a module that requires a module not in the build", () => {
   const repo = fs.mkdtempSync(path.join(os.tmpdir(), "typecat-mod-"));
   fs.mkdirSync(path.join(repo, "i3cm/types"), { recursive: true });
-  fs.writeFileSync(path.join(repo, "i3cm/module.ts"), `export const module = { name: "late", requires: ["base", "missing"] };\nexport const rooms: string[] = [];\nexport const roles = [];\n`);
+  fs.writeFileSync(path.join(repo, "i3cm/module.ts"), `export const module = { name: "late", requires: ["base", "missing"] };\nexport const rooms: string[] = [];\nexport const profiles = [];\n`);
   fs.writeFileSync(path.join(repo, "i3cm/types/a.ts"), `import { ns } from "@i3cm/lib";\n@ns("late") export class A { x!: string; }\n`);
   assert.throws(() => buildCatalog(typesDir, { modules: [repo] }), (e) => e.id === "typecat.unknown_module" && e.params.requires === "missing");
 });

@@ -35,8 +35,8 @@ fn attrs(v: Value) -> Map<String, Value> {
 }
 
 impl Store {
-    /// Create a tenant: root room, module rooms, roles from the catalog, group "admins" with the
-    /// guardian role and an admin person with login and token.
+    /// Create a tenant: root room, module rooms, profiles from the catalog, group "admins" with the
+    /// guardian profile and an admin person with login and token.
     pub async fn init_tenant(&self, name: &str, admin_login: &str) -> Result<TenantInit> {
         let tenant = Uuid::new_v4();
         let root = Uuid::new_v4();
@@ -95,9 +95,9 @@ impl Store {
                 tx.execute("INSERT INTO module_room (tenant_id, name, room_id) VALUES ($1,$2,$3)", &[&tenant, r, &room_of(r)]).await.map_err(db)?;
             }
         }
-        for role in self.model.roles() {
-            tx.execute("INSERT INTO role (tenant_id, name, guardian) VALUES ($1,$2,$3)", &[&tenant, &role.name, &role.guardian]).await.map_err(db)?;
-            for (i, r) in role.rights.iter().enumerate() {
+        for profile in self.model.profiles() {
+            tx.execute("INSERT INTO profile (tenant_id, name, guardian) VALUES ($1,$2,$3)", &[&tenant, &profile.name, &profile.guardian]).await.map_err(db)?;
+            for (i, r) in profile.rights.iter().enumerate() {
                 let sign = match r.sign {
                     Sign::Plus => "+",
                     Sign::Minus => "-",
@@ -105,21 +105,21 @@ impl Store {
                 };
                 let arts: Vec<String> = r.art.iter().map(|a| a.as_str().to_string()).collect();
                 tx.execute(
-                    "INSERT INTO role_right (tenant_id, role, idx, sign, arts, types, room_id) VALUES ($1,$2,$3,$4,$5,$6,$7)",
-                    &[&tenant, &role.name, &(i as i32), &sign, &arts, &r.types, &room_of(&r.room)],
+                    "INSERT INTO profile_right (tenant_id, profile, idx, sign, arts, types, room_id) VALUES ($1,$2,$3,$4,$5,$6,$7)",
+                    &[&tenant, &profile.name, &(i as i32), &sign, &arts, &r.types, &room_of(&r.room)],
                 )
                 .await
                 .map_err(db)?;
             }
-            for inc in &role.includes {
-                tx.execute("INSERT INTO role_include (tenant_id, role, includes) VALUES ($1,$2,$3)", &[&tenant, &role.name, inc]).await.map_err(db)?;
+            for inc in &profile.includes {
+                tx.execute("INSERT INTO profile_include (tenant_id, profile, includes) VALUES ($1,$2,$3)", &[&tenant, &profile.name, inc]).await.map_err(db)?;
             }
         }
         let txn: i64 = tx.query_one("SELECT nextval('txn_seq')", &[]).await.map_err(db)?.get(0);
         tx.execute("INSERT INTO txn (tenant_id, id) VALUES ($1,$2)", &[&tenant, &txn]).await.map_err(db)?;
         let admins = created["admins"];
         tx.execute(
-            "INSERT INTO assignment (tenant_id, id, role, carrier, valid_from) VALUES ($1,$2,'base:admin',$3,$4)",
+            "INSERT INTO assignment (tenant_id, id, profile, carrier, valid_from) VALUES ($1,$2,'base:admin',$3,$4)",
             &[&tenant, &Uuid::new_v4(), &admins, &txn],
         )
         .await

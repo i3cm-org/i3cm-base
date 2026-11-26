@@ -48,14 +48,14 @@ fn db_url() -> String {
         .clone()
 }
 
-/// The shipped catalog plus a test module with a sub room and minus/block roles.
+/// The shipped catalog plus a test module with a sub room and minus/block profiles.
 fn test_model() -> Model {
     let json = std::fs::read_to_string(i3cm_server::default_catalog()).expect("run typecat first: catalog.json missing");
     let mut c: Catalog = serde_json::from_str(&json).unwrap();
     c.modules.push(
         serde_json::from_value(json!({
             "name": "t", "requires": ["base"], "rooms": ["tsub"], "i18n": {},
-            "roles": [
+            "profiles": [
                 {"name": "t:no-person-sub", "rights": [{"sign": "-", "art": ["read"], "types": ["base:Person"], "room": "tsub"}]},
                 {"name": "t:block-person", "rights": [{"sign": "block", "art": ["read"], "types": ["base:Person"], "room": "root"}]}
             ]
@@ -160,7 +160,7 @@ async fn person_with_account_is_me() {
     assert!(me.has_type("base:PersonAccount"));
     assert_eq!(me.display_name("base:PersonAccount"), Some("Login lea"));
     assert!(me.display_name("base:Person").is_none(), "person data needs a right");
-    // without a role Lea sees nothing else
+    // without a profile Lea sees nothing else
     assert_eq!(lea.get_object(env.init.admin_account, None).await.unwrap_err().status(), Some(404));
 }
 

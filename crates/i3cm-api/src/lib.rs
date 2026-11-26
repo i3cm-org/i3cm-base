@@ -120,7 +120,7 @@ struct LinkBody {
 
 #[derive(Deserialize)]
 struct AssignBody {
-    role: String,
+    profile: String,
     carrier: Uuid,
 }
 
@@ -175,7 +175,7 @@ pub fn router(store: Store) -> Router {
         .route("/v1/rooms/{id}/path", get(room_path))
         .route("/v1/types/{t}/objects", get(list))
         .route("/v1/types/{t}/groups", get(groups))
-        .route("/v1/roles", get(roles))
+        .route("/v1/profiles", get(profiles))
         .route("/v1/assignments", post(assign))
         .route("/v1/tokens", post(token).get(tokens))
         .route("/v1/tokens/{id}", delete(revoke))
@@ -340,14 +340,14 @@ async fn groups(State(s): State<Store>, h: HeaderMap, Path(t): Path<String>, Que
     Ok(Json(Value::Array(s.group_counts(&r.ctx, &t, &q.attr, &q.unit, &lq).await?)))
 }
 
-async fn roles(State(s): State<Store>, h: HeaderMap) -> R<Json<Value>> {
+async fn profiles(State(s): State<Store>, h: HeaderMap) -> R<Json<Value>> {
     let r = auth(&s, &h).await?;
-    Ok(Json(Value::Array(s.roles(&r.ctx).await?)))
+    Ok(Json(Value::Array(s.profiles(&r.ctx).await?)))
 }
 
 async fn assign(State(s): State<Store>, h: HeaderMap, Json(b): Json<AssignBody>) -> R<Json<Value>> {
     let r = auth(&s, &h).await?;
-    let id = s.assign(&r.ctx, &b.role, b.carrier).await?;
+    let id = s.assign(&r.ctx, &b.profile, b.carrier).await?;
     Ok(Json(json!({"id": id})))
 }
 
