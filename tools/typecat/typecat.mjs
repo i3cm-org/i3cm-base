@@ -1,6 +1,9 @@
 #!/usr/bin/env node
 // typecat: reads i3cm type definitions (TypeScript) and writes catalog.json.
-// Usage: typecat <typesDir> [--out catalog.json]
+// Usage: typecat <typesDir> [--module <repo>]... [--out catalog.json] [--ui-out <dir>]
+//   --module (repeatable) or I3CM_MODULES (colon-separated): module repos outside the kernel, laid out
+//   as <repo>/i3cm/module.ts, i3cm/types/, i3cm/aspects/, i3cm/i18n/, i3cm/ui/. Their sources import
+//   the kernel through "@i3cm/lib" and "@i3cm/base".
 import ts from "typescript";
 import fs from "node:fs";
 import path from "node:path";
@@ -57,17 +60,44 @@ function literalJson(node) {
   throw new CatError("typecat.literal_expected", "literal value expected", { text: node.getText() });
 }
 
-export function buildCatalog(typesDir) {
+// A module root given from outside: the repo (with i3cm/module.ts) or the i3cm directory itself.
+export function moduleRoot(p) {
+  const abs = path.resolve(p);
+  for (const d of [path.join(abs, "i3cm"), abs]) if (fs.existsSync(path.join(d, "module.ts"))) return d;
+  throw new CatError("typecat.module_root", "no i3cm/module.ts in module repo", { path: abs });
+}
+
+function tsFilesUnder(dir) {
+  const out = [];
+  for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
+    if (e.name === "node_modules" || e.name.startsWith(".")) continue;
+    const f = path.join(dir, e.name);
+    if (e.isDirectory()) out.push(...tsFilesUnder(f));
+    else if (e.name.endsWith(".ts") && !e.name.endsWith(".d.ts")) out.push(f);
+  }
+  return out;
+}
+
+export function modulesFromEnv() {
+  return (process.env.I3CM_MODULES ?? "").split(":").filter(Boolean);
+}
+
+export function buildCatalog(typesDir, opts = {}) {
   typesDir = path.resolve(typesDir);
+  const extRoots = [...new Set((opts.modules ?? []).map(moduleRoot))];
   const cfgPath = path.join(typesDir, "tsconfig.json");
   const cfg = ts.readConfigFile(cfgPath, ts.sys.readFile);
   if (cfg.error) throw new CatError("typecat.tsconfig", ts.flattenDiagnosticMessageText(cfg.error.messageText, "\n"));
   const parsed = ts.parseJsonConfigFileContent(cfg.config, ts.sys, typesDir);
-  const program = ts.createProgram(parsed.fileNames, parsed.options);
+  // Stable import aliases for module sources: the type library and the types of the base.
+  const paths = { ...(parsed.options.paths ?? {}), "@i3cm/lib": [path.join(typesDir, "lib/index.ts")] };
+  if (fs.existsSync(path.join(typesDir, "base/index.ts"))) paths["@i3cm/base"] = [path.join(typesDir, "base/index.ts")];
+  const files = [...parsed.fileNames, ...extRoots.flatMap(tsFilesUnder)];
+  const program = ts.createProgram(files, { ...parsed.options, paths });
   const diags = ts.getPreEmitDiagnostics(program);
   if (diags.length) {
     const msgs = diags.map((d) => {
-      const where = d.file ? `${path.relative(typesDir, d.file.fileName)}:${d.file.getLineAndCharacterOfPosition(d.start).line + 1}` : "";
+      const where = d.file ? `${d.file.fileName}:${d.file.getLineAndCharacterOfPosition(d.start).line + 1}` : "";
       return `${where} ${ts.flattenDiagnosticMessageText(d.messageText, "\n")}`;
     });
     throw new CatError("typecat.compile_error", "TypeScript reported errors", { errors: msgs });
@@ -103,8 +133,16 @@ export function buildCatalog(typesDir) {
   const modules = [];
   const moduleOf = new Map(); // type or reference name -> module name
 
+  // A source file belongs to the nearest enclosing module directory (files may sit in subdirectories,
+  // as in a module repo's i3cm/types/ and i3cm/aspects/).
+  const ownerOf = (f) => {
+    let best = null;
+    for (const d of moduleDirs) if ((f === d || f.startsWith(d + path.sep)) && (!best || d.length > best.length)) best = d;
+    return best;
+  };
+  const uiDirs = new Map(); // module name -> ui directory
   for (const dir of moduleDirs) {
-    const files = program.getSourceFiles().filter((sf) => !sf.isDeclarationFile && path.dirname(sf.fileName) === dir);
+    const files = program.getSourceFiles().filter((sf) => !sf.isDeclarationFile && ownerOf(path.dirname(sf.fileName)) === dir);
     const mod = { name: null, requires: [], rooms: [], roles: [], i18n: {}, aspects: [] };
     const ownTypes = [], ownRefs = [];
     for (const sf of files) {
@@ -216,15 +254,40 @@ export function buildCatalog(typesDir) {
       for (const f of fs.readdirSync(i18nDir).filter((f) => f.endsWith(".ftl")).sort())
         mod.i18n[path.basename(f, ".ftl")] = fs.readFileSync(path.join(i18nDir, f), "utf8");
     }
+    if (fs.existsSync(path.join(dir, "ui"))) uiDirs.set(mod.name, path.join(dir, "ui"));
     mod.roles = mod.roles.map((r) => ({ ...r, name: `${mod.name}:${r.name}`, includes: r.includes ?? [], guardian: !!r.guardian }));
     mod.aspects = mod.aspects.map((a) => ({ ...a, name: `${mod.name}:${a.name}` }));
     modules.push(mod);
   }
+  const known = new Map();
+  for (const m of modules) {
+    if (known.has(m.name)) throw new CatError("typecat.duplicate_module", "module name given twice", { module: m.name });
+    known.set(m.name, m);
+  }
+  for (const m of modules)
+    for (const r of m.requires)
+      if (!known.has(r))
+        throw new CatError("typecat.unknown_module", "module requires a module that is not part of the build", { module: m.name, requires: r });
   checkNames(types, references, moduleOf);
   types.sort((a, b) => a.name.localeCompare(b.name));
   references.sort((a, b) => a.name.localeCompare(b.name));
   modules.sort((a, b) => a.name.localeCompare(b.name));
-  return { format: FORMAT, modules, types, references, textTypes };
+  const catalog = { format: FORMAT, modules, types, references, textTypes };
+  Object.defineProperty(catalog, "uiDirs", { value: uiDirs, enumerable: false });
+  return catalog;
+}
+
+// Copy the UI template files of all modules (i3cm/ui/*.html) into the frame's modules directory.
+export function copyUi(catalog, outDir) {
+  fs.mkdirSync(outDir, { recursive: true });
+  const copied = [];
+  for (const [, dir] of catalog.uiDirs ?? []) {
+    for (const f of fs.readdirSync(dir).filter((f) => f.endsWith(".html")).sort()) {
+      fs.copyFileSync(path.join(dir, f), path.join(outDir, f));
+      copied.push(f);
+    }
+  }
+  return copied;
 }
 
 // Names at a type: attributes, own reference ends and opposite ends of references pointing to it,
@@ -315,14 +378,23 @@ function valueType(tn, type, attr) {
 // CLI
 if (import.meta.url === `file://${process.argv[1]}` || process.argv[1]?.endsWith("typecat.mjs")) {
   const args = process.argv.slice(2);
-  const outIdx = args.indexOf("--out");
-  const out = outIdx >= 0 ? args[outIdx + 1] : null;
-  const dir = args.find((a, i) => !a.startsWith("--") && i !== outIdx + 1) ?? "types";
+  let out = null, uiOut = null, dir = null;
+  const modules = modulesFromEnv();
+  for (let i = 0; i < args.length; i++) {
+    const a = args[i];
+    if (a === "--out") out = args[++i];
+    else if (a === "--ui-out") uiOut = args[++i];
+    else if (a === "--module") modules.push(args[++i]);
+    else if (a.startsWith("--")) { console.error(`typecat: unknown option ${a}`); process.exit(2); }
+    else dir = a;
+  }
+  dir ??= "types";
   try {
-    const cat = buildCatalog(dir);
+    const cat = buildCatalog(dir, { modules });
     const json = JSON.stringify(cat, null, 2) + "\n";
     if (out) fs.writeFileSync(out, json); else process.stdout.write(json);
-    if (out) console.error(`typecat: ${cat.types.length} types, ${cat.references.length} references -> ${out}`);
+    if (out) console.error(`typecat: ${cat.modules.length} modules, ${cat.types.length} types, ${cat.references.length} references -> ${out}`);
+    if (uiOut) console.error(`typecat: ui templates ${copyUi(cat, uiOut).join(", ") || "(none)"} -> ${uiOut}`);
   } catch (e) {
     if (e instanceof CatError) {
       console.error(JSON.stringify({ error_id: e.id, description: e.message, params: e.params }, null, 2));

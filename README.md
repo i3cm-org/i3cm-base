@@ -33,7 +33,7 @@ or accounts, and rights are inherited down the room tree.
 | `crates/i3cm-loadtest` | Load test with the accounting example |
 | `ui/` | Browser test app: static HTML with Fluent 2 Web Components, data only through the API |
 | `deploy/` | Dockerfile and compose files (server; server with UI) |
-| `docs/developer/` | Type notation, API reference, tools and file system, browser UI |
+| `docs/developer/` | Type notation, API reference, tools and file system, browser UI, module repos ([modules.md](docs/developer/modules.md)) |
 
 ## Quick start
 

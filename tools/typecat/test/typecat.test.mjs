@@ -4,7 +4,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { buildCatalog } from "../typecat.mjs";
+import { buildCatalog, copyUi } from "../typecat.mjs";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const typesDir = path.resolve(here, "../../../types");
@@ -118,4 +118,48 @@ test("text types are searched by grep unless named in @noGrep", () => {
   assert.throws(() => buildCatalog(hidden), (e) => e.id === "typecat.bad_text");
   const unknown = tmpTypes({ "modules/x/module.ts": mod("x"), "modules/x/types.ts": `import { ns, texts, noGrep } from "../../lib";\n@ns("x") @noGrep("b") @texts("a:text/plain")\nexport class A { t!: string; }\n` });
   assert.throws(() => buildCatalog(unknown), (e) => e.id === "typecat.unknown_text");
+});
+
+// Module repos outside the kernel (DEC-136): i3cm/module.ts with types/, aspects/, i18n/, ui/ below it.
+const demoRepo = path.join(here, "fixtures/demo-module");
+
+test("reads a module repo given from outside, with @i3cm aliases", () => {
+  const cat = buildCatalog(typesDir, { modules: [demoRepo] });
+  const thing = cat.types.find((t) => t.name === "demo:Thing");
+  assert.ok(thing, "demo:Thing");
+  const owner = cat.references.find((r) => r.name === "demo:Thing.owner");
+  assert.equal(owner.target.type, "base:Person");
+  const demo = cat.modules.find((m) => m.name === "demo");
+  assert.deepEqual(demo.requires, ["base"]);
+  assert.ok(demo.i18n.en.includes("demo-Thing-name"));
+  assert.equal(demo.aspects[0].name, "demo:things");
+  assert.equal(demo.roles[0].name, "demo:clerk");
+  // the i3cm directory itself works as well
+  assert.ok(buildCatalog(typesDir, { modules: [path.join(demoRepo, "i3cm")] }).types.some((t) => t.name === "demo:Thing"));
+});
+
+test("copies the ui templates of module repos", () => {
+  const cat = buildCatalog(typesDir, { modules: [demoRepo] });
+  const out = fs.mkdtempSync(path.join(os.tmpdir(), "typecat-ui-"));
+  assert.deepEqual(copyUi(cat, out), ["demo.html"]);
+  assert.ok(fs.readFileSync(path.join(out, "demo.html"), "utf8").includes("demo:Thing"));
+});
+
+test("rejects a module that requires a module not in the build", () => {
+  const repo = fs.mkdtempSync(path.join(os.tmpdir(), "typecat-mod-"));
+  fs.mkdirSync(path.join(repo, "i3cm/types"), { recursive: true });
+  fs.writeFileSync(path.join(repo, "i3cm/module.ts"), `export const module = { name: "late", requires: ["base", "missing"] };\nexport const rooms: string[] = [];\nexport const roles = [];\n`);
+  fs.writeFileSync(path.join(repo, "i3cm/types/a.ts"), `import { ns } from "@i3cm/lib";\n@ns("late") export class A { x!: string; }\n`);
+  assert.throws(() => buildCatalog(typesDir, { modules: [repo] }), (e) => e.id === "typecat.unknown_module" && e.params.requires === "missing");
+});
+
+test("rejects a module repo without i3cm/module.ts and a module given twice", () => {
+  const empty = fs.mkdtempSync(path.join(os.tmpdir(), "typecat-empty-"));
+  assert.throws(() => buildCatalog(typesDir, { modules: [empty] }), (e) => e.id === "typecat.module_root");
+  const copy = fs.mkdtempSync(path.join(os.tmpdir(), "typecat-copy-"));
+  fs.mkdirSync(path.join(copy, "i3cm"));
+  fs.copyFileSync(path.join(demoRepo, "i3cm/module.ts"), path.join(copy, "i3cm/module.ts"));
+  assert.throws(() => buildCatalog(typesDir, { modules: [demoRepo, copy] }), (e) => e.id === "typecat.duplicate_module");
+  // the same repo given twice counts once
+  assert.equal(buildCatalog(typesDir, { modules: [demoRepo, demoRepo] }).modules.filter((m) => m.name === "demo").length, 1);
 });

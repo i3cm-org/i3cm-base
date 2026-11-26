@@ -6,7 +6,19 @@
     "experimentalDecorators": true,
     "strict": true,
     "noEmit": true,
-    "skipLibCheck": true
+    "skipLibCheck": true,
+    "paths": {
+      "@i3cm/lib": [
+        "./lib/index.ts"
+      ],
+      "@i3cm/base": [
+        "./base/index.ts"
+      ]
+    }
   },
-  "include": ["lib/**/*.ts", "base/**/*.ts", "modules/**/*.ts"]
+  "include": [
+    "lib/**/*.ts",
+    "base/**/*.ts",
+    "modules/**/*.ts"
+  ]
 }
