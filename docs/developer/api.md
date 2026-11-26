@@ -48,7 +48,7 @@ back as `integrity.violated` with a list of violations.
 | `GET /v1/groups/{id}/members` | members, `?transitive=true` |
 | `GET /v1/rooms` | module rooms by name and `root` |
 | `GET /v1/rooms/{id}/children`, `/objects`, `/path` | room tree |
-| `GET /v1/types/{type}/objects` | list by one attribute: `attr`, `eq` or `from`/`to`, `desc`, `limit`; paging by key with `after=<last id>` (or `offset` for short lists) |
+| `GET /v1/types/{type}/objects` | list by one attribute: `attr`, `eq` or `from`/`to`, `desc`, `limit` (without `attr` ordered by object id); paging by key with `after=<last id>` (or `offset` for short lists) |
 | `GET /v1/types/{type}/groups` | counts per `unit` (year, month, day) of a date attribute `attr` |
 | `GET /v1/catalog`, `GET /v1/profiles` | catalog and profiles |
 | `POST /v1/assignments` | `{"profile": "fibu:accountant", "carrier": "<group or account>"}` |
