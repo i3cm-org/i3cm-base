@@ -10,10 +10,12 @@ fn init_stores_the_token_privately_and_tools_use_it() {
     env.links();
     env.init();
     let f = env.config_file();
-    assert_eq!(std::fs::metadata(&f).unwrap().permissions().mode() & 0o777, 0o600);
+    let tf = f.with_file_name("token");
+    assert_eq!(std::fs::metadata(&tf).unwrap().permissions().mode() & 0o777, 0o600);
     assert_eq!(std::fs::metadata(f.parent().unwrap()).unwrap().permissions().mode() & 0o777, 0o700);
+    assert_eq!(std::fs::read_to_string(&tf).unwrap().trim(), env.token);
     let cfg = std::fs::read_to_string(&f).unwrap();
-    assert!(cfg.contains(&env.token) && cfg.contains("lang = \"de-DE\""), "{cfg}");
+    assert!(!cfg.contains(&env.token) && cfg.contains("lang = \"de-DE\"") && cfg.contains("server = "), "the token is not in config.toml: {cfg}");
 
     let out = env.run("base-ls", &["/base:mailbox"], &[], None);
     assert_eq!(text(&out), "2026-11-20\n2026-11-20.md\n");
@@ -25,6 +27,15 @@ fn init_stores_the_token_privately_and_tools_use_it() {
     // a binary file comes back byte for byte
     let pdf = env.run("base-cat", &["/base:mailbox/2026-11-20/s1@example.org - Betreff 0-1/Anhänge/file1.pdf/file1.pdf"], &[], None);
     assert_eq!(pdf.stdout, b"%PDF 0-1-1");
+
+    // the environment ranks above the token file and says that it covers it
+    let other = env.home.join("other-token");
+    std::fs::write(&other, "bt_wrong\n").unwrap();
+    let out = env.run("base-ls", &["/"], &[("BASE_TOKEN_FILE", other.to_str().unwrap())], None);
+    assert!(!out.status.success(), "the wrong token from the environment wins");
+    assert!(String::from_utf8_lossy(&out.stderr).contains("token from BASE_TOKEN_FILE covers"), "{out:?}");
+    let out = env.run("base-ls", &["/"], &[], None);
+    assert!(out.status.success() && out.stderr.is_empty(), "{out:?}");
 
     // a wrong token is rejected by base-init and nothing is written
     let out = env.run("base-init", &["--server", &env.url, "--tenant", "t"], &[("XDG_CONFIG_HOME", env.home.join("other").to_str().unwrap())], Some("bt_wrong\n"));

@@ -12,12 +12,15 @@ base-init --server https://erp.example.org --tenant acme < token.txt
 base-mount ~/erp &                                # optional: needs /dev/fuse
 ```
 
-`base-init` checks the token (`GET /v1/me`) and writes `$XDG_CONFIG_HOME/base-erp/config.toml`
-(default `~/.config/base-erp/`, directory 0700, file 0600) with server, tenant, token and the
-language of display names (from `LANG` or `--lang`). The token is read from stdin or
-`--token-file`, never from the command line. `BASE_SERVER`, `BASE_TENANT` and
-`BASE_TOKEN_FILE` override the file. A token for an agent comes from `POST /v1/tokens` (see
-the API reference).
+`base-init` checks the token (`GET /v1/me`) and writes two files to
+`$XDG_CONFIG_HOME/base-erp/` (default `~/.config/base-erp/`, directory 0700): `config.toml`
+with server, tenant and the language of display names (from `LANG` or `--lang`), and `token`
+(0600) with the token alone. The token is read from stdin or `--token-file`, never from the
+command line. A token for an agent comes from `POST /v1/tokens` (see the API reference).
+
+Sources have a fixed rank: the environment (`BASE_SERVER`, `BASE_TENANT`, `BASE_TOKEN_FILE`)
+first, then the files. The higher source wins; when it covers a value of a lower one, the
+program says so on stderr (`base: token from BASE_TOKEN_FILE covers the one in …/token`).
 
 ## Layout
 

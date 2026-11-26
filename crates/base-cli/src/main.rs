@@ -111,7 +111,7 @@ fn init(args: &[String]) -> i32 {
     match config::save(&cfg) {
         Ok(p) => {
             let who = me["types"][0]["displayName"].as_str().unwrap_or("?");
-            println!("base-init: {} (tenant {}) as {who}; stored in {}", cfg.server, cfg.tenant, p.display());
+            println!("base-init: {} (tenant {}) as {who}; stored in {} and {}", cfg.server, cfg.tenant, p.display(), config::token_path().display());
             0
         }
         Err(e) => fail("base-init", &e),

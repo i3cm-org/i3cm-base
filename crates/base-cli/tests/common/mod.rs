@@ -29,9 +29,13 @@ pub fn rt() -> &'static tokio::runtime::Runtime {
     RT.get_or_init(|| tokio::runtime::Builder::new_multi_thread().enable_all().build().unwrap())
 }
 
+/// `BASE_TEST_DATABASE_URL` points to an existing PostgreSQL; otherwise one runs embedded.
 fn db_url() -> String {
     DB_URL
         .get_or_init(|| {
+            if let Ok(url) = std::env::var("BASE_TEST_DATABASE_URL") {
+                return url;
+            }
             rt().block_on(async {
                 let db = EmbeddedDb::start(None).await.expect("embedded postgres");
                 let url = db.database("base_cli_test").await.unwrap();
