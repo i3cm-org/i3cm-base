@@ -3,8 +3,8 @@
 The base of i3cm, a system for function portals (interoperable, integrated infrastructure and
 content management): typed objects that carry several types at once, versioned
 storage, rooms and profiles for rights, and a REST API. Modules contribute types, rooms, profiles
-and display texts. This is milestone 0.4: the core without user interface, views (aspects), and the data as a
-read-only file system with Unix tools for agents.
+and display texts. This is milestone 0.5: the core with views (aspects), rights paths, a UI test app, and the data as a
+file system (reading and writing) with Unix tools for agents, and a self-description for agents at `/guide/agents`.
 
 ## Concepts in one paragraph
 
@@ -28,7 +28,7 @@ or accounts, and rights are inherited down the room tree.
 | `crates/i3cm-api` | REST API (axum) |
 | `crates/i3cm-server` | Server binary, embedded PostgreSQL for development and tests |
 | `crates/i3cm-client` | Rust client |
-| `crates/i3cm-tools` | The read-only Unix tools (`ls`, `cat`, `head`, `tail`, `wc`, `stat`, `grep`, `find`): parser, engine, output |
+| `crates/i3cm-tools` | The Unix tools (`ls`, `cat`, `head`, `tail`, `wc`, `stat`, `grep`, `find`, `tree`, `sed`): parser, engine, output |
 | `crates/i3cm-cli` | The program `i3cm`: FUSE driver, the tools by their Unix names, `i3cm-init` |
 | `crates/i3cm-loadtest` | Load test with the accounting example |
 | `ui/` | Browser test app: static HTML with Fluent 2 Web Components, data only through the API |

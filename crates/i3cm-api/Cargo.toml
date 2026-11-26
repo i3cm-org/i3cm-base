@@ -7,9 +7,9 @@ repository.workspace = true
 
 [dependencies]
 axum = "0.8.9"
-i3cm-core = { version = "0.4.0", path = "../i3cm-core" }
-i3cm-store = { version = "0.4.0", path = "../i3cm-store" }
-i3cm-tools = { version = "0.4.0", path = "../i3cm-tools" }
+i3cm-core = { version = "0.5.0", path = "../i3cm-core" }
+i3cm-store = { version = "0.5.0", path = "../i3cm-store" }
+i3cm-tools = { version = "0.5.0", path = "../i3cm-tools" }
 base64 = "0.22.1"
 hex = "0.4.3"
 serde = { version = "1.0.229", features = ["derive"] }
