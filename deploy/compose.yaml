@@ -1,11 +1,11 @@
 # docker compose -f deploy/compose.yaml up --build
-# then: docker compose -f deploy/compose.yaml exec server base-server init-tenant demo
+# then: docker compose -f deploy/compose.yaml exec server i3cm-server init-tenant demo
 services:
   db:
     image: postgres:17
     environment:
-      POSTGRES_PASSWORD: base
-      POSTGRES_DB: base
+      POSTGRES_PASSWORD: i3cm
+      POSTGRES_DB: i3cm
     volumes: [pgdata:/var/lib/postgresql/data]
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U postgres"]
@@ -14,7 +14,7 @@ services:
   server:
     build: { context: .., dockerfile: deploy/Dockerfile }
     environment:
-      BASE_DATABASE_URL: postgresql://postgres:base@db:5432/base
+      I3CM_DATABASE_URL: postgresql://postgres:i3cm@db:5432/i3cm
     ports: ["8480:8480"]
     depends_on:
       db: { condition: service_healthy }

@@ -64,8 +64,8 @@ plain table styled with the theme tokens.
 to the server, so UI and API share one origin:
 
 ```sh
-docker compose -f deploy/compose.ui.yaml -p base-erp-ui up --build -d
-docker compose -f deploy/compose.ui.yaml -p base-erp-ui exec server base-server init-tenant demo
+docker compose -f deploy/compose.ui.yaml -p i3cm-ui up --build -d
+docker compose -f deploy/compose.ui.yaml -p i3cm-ui exec server i3cm-server init-tenant demo
 python3 deploy/ui/seed-demo.py http://localhost:8090 <token>   # optional demo data
 ```
 

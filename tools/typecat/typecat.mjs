@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// typecat: reads base-erp type definitions (TypeScript) and writes catalog.json.
+// typecat: reads i3cm type definitions (TypeScript) and writes catalog.json.
 // Usage: typecat <typesDir> [--out catalog.json]
 import ts from "typescript";
 import fs from "node:fs";

@@ -202,138 +202,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "base-api"
-version = "0.4.0"
-dependencies = [
- "axum",
- "base-core",
- "base-store",
- "base-tools",
- "base64 0.22.1",
- "hex",
- "rust_xlsxwriter",
- "serde",
- "serde_json",
- "sha2",
- "tokio",
- "tracing",
- "uuid",
-]
-
-[[package]]
-name = "base-cli"
-version = "0.4.0"
-dependencies = [
- "base-client",
- "base-server",
- "base-store",
- "base-tools",
- "base64 0.22.1",
- "fuser",
- "libc",
- "reqwest",
- "serde",
- "serde_json",
- "tokio",
- "toml",
- "uuid",
-]
-
-[[package]]
-name = "base-client"
-version = "0.4.0"
-dependencies = [
- "reqwest",
- "serde",
- "serde_json",
- "thiserror",
- "uuid",
-]
-
-[[package]]
-name = "base-core"
-version = "0.4.0"
-dependencies = [
- "chrono",
- "fluent-bundle",
- "rust_decimal",
- "serde",
- "serde_json",
- "thiserror",
- "unic-langid",
- "uuid",
-]
-
-[[package]]
-name = "base-loadtest"
-version = "0.4.0"
-dependencies = [
- "anyhow",
- "base-client",
- "base-server",
- "chrono",
- "clap",
- "futures",
- "rand 0.10.4",
- "serde_json",
- "tokio",
- "uuid",
-]
-
-[[package]]
-name = "base-server"
-version = "0.4.0"
-dependencies = [
- "anyhow",
- "axum",
- "base-api",
- "base-client",
- "base-core",
- "base-store",
- "chrono",
- "clap",
- "postgresql_embedded",
- "serde_json",
- "tokio",
- "tracing",
- "tracing-subscriber",
- "uuid",
-]
-
-[[package]]
-name = "base-store"
-version = "0.4.0"
-dependencies = [
- "base-core",
- "base-tools",
- "chrono",
- "deadpool-postgres",
- "hex",
- "rust_decimal",
- "serde",
- "serde_json",
- "sha2",
- "thiserror",
- "tokio",
- "tokio-postgres",
- "tracing",
- "uuid",
-]
-
-[[package]]
-name = "base-tools"
-version = "0.4.0"
-dependencies = [
- "base64 0.22.1",
- "chrono",
- "regex",
- "serde",
- "serde_json",
- "sha2",
- "tokio",
-]
-
-[[package]]
 name = "base64"
 version = "0.22.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1210,6 +1078,138 @@ dependencies = [
  "tokio",
  "tower-service",
  "tracing",
+]
+
+[[package]]
+name = "i3cm-api"
+version = "0.4.0"
+dependencies = [
+ "axum",
+ "base64 0.22.1",
+ "hex",
+ "i3cm-core",
+ "i3cm-store",
+ "i3cm-tools",
+ "rust_xlsxwriter",
+ "serde",
+ "serde_json",
+ "sha2",
+ "tokio",
+ "tracing",
+ "uuid",
+]
+
+[[package]]
+name = "i3cm-cli"
+version = "0.4.0"
+dependencies = [
+ "base64 0.22.1",
+ "fuser",
+ "i3cm-client",
+ "i3cm-server",
+ "i3cm-store",
+ "i3cm-tools",
+ "libc",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "tokio",
+ "toml",
+ "uuid",
+]
+
+[[package]]
+name = "i3cm-client"
+version = "0.4.0"
+dependencies = [
+ "reqwest",
+ "serde",
+ "serde_json",
+ "thiserror",
+ "uuid",
+]
+
+[[package]]
+name = "i3cm-core"
+version = "0.4.0"
+dependencies = [
+ "chrono",
+ "fluent-bundle",
+ "rust_decimal",
+ "serde",
+ "serde_json",
+ "thiserror",
+ "unic-langid",
+ "uuid",
+]
+
+[[package]]
+name = "i3cm-loadtest"
+version = "0.4.0"
+dependencies = [
+ "anyhow",
+ "chrono",
+ "clap",
+ "futures",
+ "i3cm-client",
+ "i3cm-server",
+ "rand 0.10.4",
+ "serde_json",
+ "tokio",
+ "uuid",
+]
+
+[[package]]
+name = "i3cm-server"
+version = "0.4.0"
+dependencies = [
+ "anyhow",
+ "axum",
+ "chrono",
+ "clap",
+ "i3cm-api",
+ "i3cm-client",
+ "i3cm-core",
+ "i3cm-store",
+ "postgresql_embedded",
+ "serde_json",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+ "uuid",
+]
+
+[[package]]
+name = "i3cm-store"
+version = "0.4.0"
+dependencies = [
+ "chrono",
+ "deadpool-postgres",
+ "hex",
+ "i3cm-core",
+ "i3cm-tools",
+ "rust_decimal",
+ "serde",
+ "serde_json",
+ "sha2",
+ "thiserror",
+ "tokio",
+ "tokio-postgres",
+ "tracing",
+ "uuid",
+]
+
+[[package]]
+name = "i3cm-tools"
+version = "0.4.0"
+dependencies = [
+ "base64 0.22.1",
+ "chrono",
+ "regex",
+ "serde",
+ "serde_json",
+ "sha2",
+ "tokio",
 ]
 
 [[package]]

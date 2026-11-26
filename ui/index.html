@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>base-erp</title>
+<title>i3cm</title>
 <link rel="icon" href="data:,">
 <!-- Static artifact: form and hydration logic only. Every value comes from the API at runtime.
      Configuration: config.json beside this file. Vendored libraries: vendor/VERSIONS.md. -->
@@ -112,11 +112,11 @@
 
 <div id="login" hidden>
   <form>
-    <h1 class="app-name">base-erp</h1>
+    <h1 class="app-name">i3cm</h1>
     <fluent-field label-position="above">
       <label slot="label" for="token">Token</label>
       <fluent-text-input slot="input" id="token" type="password" autocomplete="off"></fluent-text-input>
-      <fluent-text slot="message" size="200">Issued by <code>base-server create-token</code> or <code>POST /v1/tokens</code>; kept for this browser tab only.</fluent-text>
+      <fluent-text slot="message" size="200">Issued by <code>i3cm-server create-token</code> or <code>POST /v1/tokens</code>; kept for this browser tab only.</fluent-text>
     </fluent-field>
     <div class="error" id="login-error"></div>
     <fluent-button appearance="primary" type="submit">Sign in</fluent-button>
@@ -125,7 +125,7 @@
 
 <div id="app" hidden>
   <header>
-    <span class="title app-name">base-erp</span>
+    <span class="title app-name">i3cm</span>
     <span class="spacer"></span>
     <span class="user" id="user"></span>
     <fluent-button appearance="transparent" id="theme-toggle" title="Light or dark">Dark</fluent-button>
@@ -170,7 +170,7 @@ const el = (tag, attrs = {}, ...kids) => {
 };
 
 // ---- configuration and theme --------------------------------------------------------------
-let config = { apiBase: "", appName: "base-erp", brandColor: "#0f6cbd" };
+let config = { apiBase: "", appName: "i3cm", brandColor: "#0f6cbd" };
 try { config = { ...config, ...(await (await fetch("config.json", { cache: "no-cache" })).json()) }; } catch {}
 
 function hex(c) { return [1, 3, 5].map((i) => parseInt(c.slice(i, i + 2), 16)); }

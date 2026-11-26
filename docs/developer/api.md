@@ -97,7 +97,7 @@ Built-in views need no definition and are listed before the module aspects:
 A token belongs to an account; the server stores only its hash. Without `account`, a caller
 issues a token for itself; it needs no right and never expires later than the token of the
 request. A token for another account needs the right to grant rights. `ttl` is in days
-(default 90, at most 365). Tokens created on the command line (`base-server init-tenant`,
+(default 90, at most 365). Tokens created on the command line (`i3cm-server init-tenant`,
 `create-token`) do not expire. `GET /v1/tokens` lists the caller's tokens, or all tokens of the
 tenant with the right to grant rights (`?account=` filters); `DELETE /v1/tokens/{id}` revokes a
 token at once.

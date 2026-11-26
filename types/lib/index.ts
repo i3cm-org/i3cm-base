@@ -1,4 +1,4 @@
-// Type definition library for base-erp.
+// Type definition library for i3cm.
 // These declarations exist only for the TypeScript compiler; `typecat` reads them
 // statically and produces catalog.json. Decorators are never executed.
 

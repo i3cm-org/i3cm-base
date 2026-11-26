@@ -1,9 +1,9 @@
 {
-  "name": "base-erp-typecat",
+  "name": "i3cm-typecat",
   "version": "0.2.0",
   "private": true,
   "type": "module",
-  "description": "Reads base-erp type definitions written in TypeScript and produces catalog.json",
+  "description": "Reads i3cm type definitions written in TypeScript and produces catalog.json",
   "license": "Apache-2.0",
   "bin": { "typecat": "typecat.mjs" },
   "scripts": { "test": "node --test test/*.test.mjs" },

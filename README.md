@@ -1,6 +1,7 @@
-# base-erp
+# i3cm-base
 
-A base for function portals: typed objects that carry several types at once, versioned
+The base of i3cm, a system for function portals (interoperable, integrated infrastructure and
+content management): typed objects that carry several types at once, versioned
 storage, rooms and roles for rights, and a REST API. Modules contribute types, rooms, roles
 and display texts. This is milestone 0.4: the core without user interface, views (aspects), and the data as a
 read-only file system with Unix tools for agents.
@@ -22,14 +23,14 @@ or accounts, and rights are inherited down the room tree.
 |---|---|
 | `types/` | Type definitions in TypeScript (`base` and the example module `fibu`), Fluent texts |
 | `tools/typecat/` | Reads `types/` with the TypeScript compiler API and writes `catalog.json` |
-| `crates/base-core` | Catalog model, type checker, value types, rights evaluation, display names |
-| `crates/base-store` | PostgreSQL storage: schema from the catalog, orders, versions, reads |
-| `crates/base-api` | REST API (axum) |
-| `crates/base-server` | Server binary, embedded PostgreSQL for development and tests |
-| `crates/base-client` | Rust client |
-| `crates/base-tools` | The read-only Unix tools (`ls`, `cat`, `head`, `tail`, `wc`, `stat`, `grep`, `find`): parser, engine, output |
-| `crates/base-cli` | The program `base`: FUSE driver, the tools by their Unix names, `base-init` |
-| `crates/base-loadtest` | Load test with the accounting example |
+| `crates/i3cm-core` | Catalog model, type checker, value types, rights evaluation, display names |
+| `crates/i3cm-store` | PostgreSQL storage: schema from the catalog, orders, versions, reads |
+| `crates/i3cm-api` | REST API (axum) |
+| `crates/i3cm-server` | Server binary, embedded PostgreSQL for development and tests |
+| `crates/i3cm-client` | Rust client |
+| `crates/i3cm-tools` | The read-only Unix tools (`ls`, `cat`, `head`, `tail`, `wc`, `stat`, `grep`, `find`): parser, engine, output |
+| `crates/i3cm-cli` | The program `i3cm`: FUSE driver, the tools by their Unix names, `i3cm-init` |
+| `crates/i3cm-loadtest` | Load test with the accounting example |
 | `ui/` | Browser test app: static HTML with Fluent 2 Web Components, data only through the API |
 | `deploy/` | Dockerfile and compose files (server; server with UI) |
 | `docs/developer/` | Type notation, API reference, tools and file system, browser UI |
@@ -42,12 +43,12 @@ development and tests.
 ```sh
 make catalog          # types/ -> catalog.json
 make test             # typecat tests, unit tests, integration tests against PostgreSQL
-cargo run -p base-server -- dev     # embedded PostgreSQL, tenant "dev", prints an admin token
+cargo run -p i3cm-server -- dev     # embedded PostgreSQL, tenant "dev", prints an admin token
 make loadtest         # 1000 accounts, 45 accountants, 100,000 journal entries, navigation
 ```
 
 Production-like: `docker compose -f deploy/compose.yaml up --build`, then
-`base-server init-tenant <name>` inside the server container.
+`i3cm-server init-tenant <name>` inside the server container.
 
 ## License
 

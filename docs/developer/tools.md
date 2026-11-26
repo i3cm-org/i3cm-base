@@ -1,26 +1,26 @@
 # Tools and file system
 
-Agents work with the data as with files: one program, `base`, is the read-only FUSE driver
+Agents work with the data as with files: one program, `i3cm`, is the read-only FUSE driver
 and the Unix tools at the same time. What it does depends on the name it is called by.
 
 ## Setup
 
 ```sh
-base links ~/.local/base-bin                      # links: grep, ls, …, base-grep, …, base-init, base-mount
-export PATH="$HOME/.local/base-bin:$PATH"         # first in PATH, in addition to the system tools
-base-init --server https://erp.example.org --tenant acme < token.txt
-base-mount ~/erp &                                # optional: needs /dev/fuse
+i3cm links ~/.local/i3cm-bin                      # links: grep, ls, …, i3cm-grep, …, i3cm-init, i3cm-mount
+export PATH="$HOME/.local/i3cm-bin:$PATH"         # first in PATH, in addition to the system tools
+i3cm-init --server https://erp.example.org --tenant acme < token.txt
+i3cm-mount ~/erp &                                # optional: needs /dev/fuse
 ```
 
-`base-init` checks the token (`GET /v1/me`) and writes two files to
-`$XDG_CONFIG_HOME/base-erp/` (default `~/.config/base-erp/`, directory 0700): `config.toml`
+`i3cm-init` checks the token (`GET /v1/me`) and writes two files to
+`$XDG_CONFIG_HOME/i3cm/` (default `~/.config/i3cm/`, directory 0700): `config.toml`
 with server, tenant and the language of display names (from `LANG` or `--lang`), and `token`
 (0600) with the token alone. The token is read from stdin or `--token-file`, never from the
 command line. A token for an agent comes from `POST /v1/tokens` (see the API reference).
 
-Sources have a fixed rank: the environment (`BASE_SERVER`, `BASE_TENANT`, `BASE_TOKEN_FILE`)
+Sources have a fixed rank: the environment (`I3CM_SERVER`, `I3CM_TENANT`, `I3CM_TOKEN_FILE`)
 first, then the files. The higher source wins; when it covers a value of a lower one, the
-program says so on stderr (`base: token from BASE_TOKEN_FILE covers the one in …/token`).
+program says so on stderr (`base: token from I3CM_TOKEN_FILE covers the one in …/token`).
 
 ## Layout
 
@@ -46,15 +46,15 @@ file. Kernel caches hold entries for `--ttl` seconds (default 5).
 ## Tools
 
 `ls`, `cat`, `head`, `tail`, `wc`, `stat`, `grep`, `find`. Called by their plain names (links
-first in `PATH`), they check whether the paths lie in a base-erp mount (file system type
-`fuse.base-erp`):
+first in `PATH`), they check whether the paths lie in a i3cm mount (file system type
+`fuse.i3cm`):
 
 * yes: the tool calls the server directly, one request per call, and prints like GNU;
 * no: it hands over to the next program of that name in `PATH`;
 * both mixed: error.
 
-As `base-<tool>` (or `base <tool>`) they work without a mount on tree paths such as
-`/base:mailbox/2026-11-24`, relative to `BASE_PWD` (default `/`), for example in containers
+As `i3cm-<tool>` (or `i3cm <tool>`) they work without a mount on tree paths such as
+`/base:mailbox/2026-11-24`, relative to `I3CM_PWD` (default `/`), for example in containers
 without FUSE.
 
 Options (anything else is an error that lists these, never a silent fallback):

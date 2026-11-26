@@ -11,7 +11,7 @@ test: catalog test-typecat
 	cargo test --workspace
 
 loadtest: catalog
-	cargo run --release -p base-loadtest -- --embedded
+	cargo run --release -p i3cm-loadtest -- --embedded
 
 dev: catalog
-	cargo run -p base-server -- dev
+	cargo run -p i3cm-server -- dev

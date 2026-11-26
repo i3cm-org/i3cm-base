@@ -1,0 +1,29 @@
+[package]
+name = "i3cm-cli"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "The i3cm program: FUSE driver (read-only), the Unix tools on the data, i3cm-init"
+
+[[bin]]
+name = "i3cm"
+path = "src/main.rs"
+
+[dependencies]
+i3cm-tools = { version = "0.4.0", path = "../i3cm-tools" }
+base64 = "0.22.1"
+fuser = { version = "0.19.0", default-features = false }
+libc = "0.2.191"
+reqwest = { version = "0.13.5", default-features = false, features = ["json", "rustls", "query", "blocking"] }
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.154"
+toml = "1.2.3"
+
+[dev-dependencies]
+i3cm-client = { path = "../i3cm-client" }
+i3cm-server = { path = "../i3cm-server" }
+i3cm-store = { path = "../i3cm-store" }
+serde_json = "1.0.154"
+tokio = { version = "1.54.1", features = ["full"] }
+uuid = { version = "1.29.3", features = ["v4", "serde"] }
