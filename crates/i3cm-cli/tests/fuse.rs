@@ -206,7 +206,14 @@ fn writing_through_the_mount() {
         let idx2 = std::fs::read_dir(&day).unwrap().map(|e| e.unwrap().path()).find(|p| p.extension().map(|e| e == "md").unwrap_or(false) && p.to_string_lossy().contains("Geaendert")).unwrap();
         let s2 = std::fs::read_to_string(&idx2).unwrap();
         let bad = s2.replacen("_id: ", "_id: \"x\"\n_old: ", 1);
-        assert!(std::fs::write(&idx2, bad).is_err());
+        // the error comes with fsync or close (std::fs::write ignores errors on close)
+        let res = (|| -> std::io::Result<()> {
+            use std::io::Write;
+            let mut f = std::fs::OpenOptions::new().write(true).truncate(true).open(&idx2)?;
+            f.write_all(bad.as_bytes())?;
+            f.sync_all()
+        })();
+        assert!(res.is_err(), "{res:?}");
         let errors = std::fs::read_to_string(mp.join(".i3cm-errors")).unwrap();
         assert!(errors.contains("reserved"), "{errors}");
         // a new file in the attachments folder becomes an attachment

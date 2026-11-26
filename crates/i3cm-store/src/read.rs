@@ -114,6 +114,34 @@ impl Store {
         }
     }
 
+    /// Current attributes of type part `t` for several objects in one query.
+    async fn rows_json<C: GenericClient>(&self, c: &C, tenant: Uuid, ids: &[Uuid], t: &str) -> Result<std::collections::HashMap<Uuid, Map<String, Value>>> {
+        let def = self.model.require_type(t)?;
+        if ids.is_empty() {
+            return Ok(Default::default());
+        }
+        let cols: Vec<String> = def.attributes.iter().map(|a| match Col::of(&a.vt) {
+            Col::Num if !a.list => format!("{}::text AS {}", col(&a.name), col(&a.name)),
+            _ => col(&a.name),
+        }).collect();
+        let sel = if cols.is_empty() { "1 AS _".to_string() } else { cols.join(",") };
+        let sql = format!(
+            "SELECT object_id, to_jsonb(x) - 'object_id' FROM (SELECT object_id, {sel} FROM {} WHERE tenant_id=$1 AND object_id = ANY($2) AND deleted_at IS NULL AND valid_to IS NULL) x",
+            type_table(def)
+        );
+        let rows = c.query(&sql, &[&tenant, &ids]).await.map_err(db)?;
+        Ok(rows
+            .into_iter()
+            .map(|r| {
+                let mut v: Value = r.get(1);
+                let mut m = v.as_object_mut().map(std::mem::take).unwrap_or_default();
+                m.remove("_");
+                m.retain(|_, v| !v.is_null());
+                (r.get(0), m)
+            })
+            .collect())
+    }
+
     async fn row_json<C: GenericClient>(&self, c: &C, tenant: Uuid, id: Uuid, t: &str, at: Option<i64>) -> Result<Option<Map<String, Value>>> {
         let def = self.model.require_type(t)?;
         let cols: Vec<String> = def.attributes.iter().map(|a| match Col::of(&a.vt) {
@@ -339,15 +367,20 @@ impl Store {
                 }
                 c
             }
-            None => "valid_from".to_string(),
+            // default order: the object id (stable, and the room index serves keyset paging)
+            None => "object_id".to_string(),
         };
         let (dir, cmp) = if q.desc { ("DESC", "<") } else { ("ASC", ">") };
         if let Some(after) = q.after {
             params.push(Box::new(after));
-            conds.push(format!(
-                "(x.{order_col}, x.object_id) {cmp} (SELECT y.{order_col}, y.object_id FROM {tb} y WHERE y.tenant_id=$1 AND y.object_id=${} AND y.valid_to IS NULL)",
-                params.len()
-            ));
+            if order_col == "object_id" {
+                conds.push(format!("x.object_id {cmp} ${}", params.len()));
+            } else {
+                conds.push(format!(
+                    "(x.{order_col}, x.object_id) {cmp} (SELECT y.{order_col}, y.object_id FROM {tb} y WHERE y.tenant_id=$1 AND y.object_id=${} AND y.valid_to IS NULL)",
+                    params.len()
+                ));
+            }
         }
         let limit = q.limit.unwrap_or(100).clamp(1, 1000);
         let offset = if q.after.is_some() { 0 } else { q.offset.unwrap_or(0).max(0) };
@@ -373,11 +406,14 @@ impl Store {
         };
         let c = self.client().await?;
         let rows = c.query(&sql, &refs(&params)).await.map_err(db)?;
+        let ids: Vec<Uuid> = rows.iter().map(|r| r.get(0)).collect();
+        // the attributes of the whole page in one query (display names)
+        let mut attrs_of = self.rows_json(&**c, ctx.tenant, &ids, t).await?;
         let mut out = vec![];
         for r in rows {
             let id: Uuid = r.get(0);
             let value: Option<Value> = r.get(1);
-            let mut attrs = self.row_json(&**c, ctx.tenant, id, t, None).await?.unwrap_or_default();
+            let mut attrs = attrs_of.remove(&id).unwrap_or_default();
             self.fill_missing(t, &mut attrs);
             let (n, _) = self.i18n.names(lang, t, &attrs);
             out.push(Summary { id, display_name: n, types: vec![t.to_string()], link: None, value });

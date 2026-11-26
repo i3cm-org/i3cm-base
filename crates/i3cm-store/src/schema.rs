@@ -29,6 +29,7 @@ CREATE TABLE IF NOT EXISTS object (tenant_id uuid NOT NULL, id uuid NOT NULL, cr
 CREATE TABLE IF NOT EXISTS object_state (tenant_id uuid NOT NULL, object_id uuid NOT NULL, room_id uuid NOT NULL, deleted_at timestamptz, valid_from bigint NOT NULL, valid_to bigint, PRIMARY KEY (tenant_id, object_id, valid_from));
 CREATE UNIQUE INDEX IF NOT EXISTS object_state_cur ON object_state (tenant_id, object_id) WHERE valid_to IS NULL;
 CREATE INDEX IF NOT EXISTS object_state_room ON object_state (tenant_id, room_id) WHERE valid_to IS NULL AND deleted_at IS NULL;
+CREATE INDEX IF NOT EXISTS object_state_room_id ON object_state (tenant_id, room_id, object_id) WHERE valid_to IS NULL AND deleted_at IS NULL;
 CREATE TABLE IF NOT EXISTS object_type (tenant_id uuid NOT NULL, object_id uuid NOT NULL, type_name text NOT NULL, implied boolean NOT NULL, deleted_at timestamptz, valid_from bigint NOT NULL, valid_to bigint, PRIMARY KEY (tenant_id, object_id, type_name, valid_from));
 CREATE INDEX IF NOT EXISTS object_type_cur ON object_type (tenant_id, object_id) WHERE valid_to IS NULL;
 CREATE TABLE IF NOT EXISTS blob (sha256 text PRIMARY KEY, data bytea NOT NULL);
@@ -65,6 +66,8 @@ pub fn catalog_ddl(m: &Model) -> Vec<String> {
             "CREATE TABLE IF NOT EXISTS {tb} (tenant_id uuid NOT NULL, object_id uuid NOT NULL, valid_from bigint NOT NULL, valid_to bigint, deleted_at timestamptz, PRIMARY KEY (tenant_id, object_id, valid_from))"
         ));
         out.push(format!("CREATE UNIQUE INDEX IF NOT EXISTS {tb}_cur ON {tb} (tenant_id, object_id) WHERE valid_to IS NULL"));
+        // default order of lists (and keyset paging over it)
+        out.push(format!("CREATE INDEX IF NOT EXISTS {tb}_order ON {tb} (tenant_id, valid_from, object_id) WHERE valid_to IS NULL AND deleted_at IS NULL"));
         for a in &t.attributes {
             let sql = Col::of(&a.vt).sql(a.list);
             out.push(format!("ALTER TABLE {tb} ADD COLUMN IF NOT EXISTS {} {sql}", col(&a.name)));
