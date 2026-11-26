@@ -163,3 +163,17 @@ test("rejects a module repo without i3cm/module.ts and a module given twice", ()
   // the same repo given twice counts once
   assert.equal(buildCatalog(typesDir, { modules: [demoRepo, demoRepo] }).modules.filter((m) => m.name === "demo").length, 1);
 });
+
+test("passes rights paths, view filters and dropType through to the catalog", () => {
+  const dir = tmpTypes({
+    "modules/x/module.ts": `import type { ProfileDef } from "../../lib";\nexport const module = { name: "x", requires: [] as string[] };\nexport const rooms: string[] = [];\nexport const profiles: ProfileDef[] = [{ name: "lead", rights: [{ sign: "+", art: ["write"], types: ["x:Req"], room: "root", when: "owner = %me" }] }];\n`,
+    "modules/x/types.ts": `import { ns, hasContent, Ref } from "../../lib";\n@ns("x") export class Person { name!: string; }\n@ns("x") @hasContent() export class Doc { title!: string; req!: Ref<Req, "docs">; }\n@ns("x") export class Req { title!: string; owner?: Ref<Person, "reqs">; }\n`,
+    "modules/x/aspects.ts": `import { aspect } from "../../lib";\nexport const reqs = aspect("reqs", { entry: { type: "x:Req", where: "owner = %me" }, nodes: { "x:Req": { subNodes: { docs: { path: "docs", folder: true, dropType: "x:Doc" } } } } });\n`,
+  });
+  const cat = buildCatalog(dir);
+  const m = cat.modules.find((x) => x.name === "x");
+  assert.equal(m.profiles[0].rights[0].when, "owner = %me");
+  const a = m.aspects.find((x) => x.name === "x:reqs");
+  assert.equal(a.entry.where, "owner = %me");
+  assert.equal(a.nodes["x:Req"].subNodes[0].dropType, "x:Doc");
+});

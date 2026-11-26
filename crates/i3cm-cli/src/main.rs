@@ -7,6 +7,9 @@
 //!   to `I3CM_PWD` (default `/`).
 //! * `i3cm-init`: store server, tenant and token. `i3cm-mount`: mount read-only (FUSE).
 //! * `i3cm links <dir>`: create the links for all names in `<dir>`.
+//! * `i3cm-cd <path>`: remember the working path of the `i3cm-*` tools for this shell session.
+//! * `sort`, `uniq`, `cut`: run here as usual; files in a mount are fetched in one request.
+//! * `i3cm config`: every setting with its source. `i3cm --version`: version and revision.
 
 use i3cm_cli::{api, config, fuse};
 use i3cm_tools::{join, parse, render, Call, Tool, TOOLS};
@@ -17,6 +20,8 @@ use std::process::exit;
 
 const MOUNT_TYPE: &str = "fuse.i3cm";
 const MOUNT_SOURCE: &str = "i3cm";
+/// Programs that run here on fetched data (not on the server).
+const LOCAL: &[&str] = &["sort", "uniq", "cut"];
 
 fn main() {
     let args: Vec<String> = std::env::args().collect();
@@ -24,6 +29,8 @@ fn main() {
     let code = match name.as_str() {
         "i3cm-init" => init(&args[1..]),
         "i3cm-mount" => mount(&args[1..]),
+        "i3cm-cd" => cd(&args[1..]),
+        n if LOCAL.contains(&n) || n.strip_prefix("i3cm-").is_some_and(|x| LOCAL.contains(&x)) => local_tool(n, &args),
         n if n.starts_with("i3cm-") && Tool::from_name(n).is_some() => tree_tool(n, &args),
         n if Tool::from_name(n).is_some() => mounted_tool(n, &args),
         _ => base(&args[1..]),
@@ -48,7 +55,14 @@ fn base(args: &[String]) -> i32 {
         Some("init") => init(&args[1..]),
         Some("mount") => mount(&args[1..]),
         Some("--version") => {
-            println!("i3cm {}", env!("CARGO_PKG_VERSION"));
+            println!("i3cm {} ({})", env!("CARGO_PKG_VERSION"), env!("I3CM_REV"));
+            0
+        }
+        Some("cd") => cd(&args[1..]),
+        Some("config") => {
+            for (k, v, src) in config::describe() {
+                println!("{k:<7} {v:<40} {src}");
+            }
             0
         }
         Some(t) if Tool::from_name(t).is_some() => {
@@ -69,7 +83,11 @@ fn links(dir: &str) -> i32 {
     if let Err(e) = std::fs::create_dir_all(dir) {
         return fail("i3cm", &format!("{dir}: {e}"));
     }
-    let names = TOOLS.iter().flat_map(|t| [t.to_string(), format!("i3cm-{t}")]).chain(["i3cm".to_string(), "i3cm-init".to_string(), "i3cm-mount".to_string()]);
+    let names = TOOLS
+        .iter()
+        .chain(LOCAL.iter())
+        .flat_map(|t| [t.to_string(), format!("i3cm-{t}")])
+        .chain(["i3cm".to_string(), "i3cm-init".to_string(), "i3cm-mount".to_string(), "i3cm-cd".to_string()]);
     for n in names {
         let p = Path::new(dir).join(&n);
         match std::fs::symlink_metadata(&p) {
@@ -158,8 +176,123 @@ fn tree_tool(name: &str, args: &[String]) -> i32 {
         Ok(c) => c,
         Err(e) => return fail_tool(&e),
     };
-    call.req.cwd = std::env::var("I3CM_PWD").ok().filter(|s| !s.is_empty()).unwrap_or_else(|| "/".into());
+    call.req.cwd = config::pwd();
     run_remote(name, &call)
+}
+
+/// `i3cm-cd <path>`: check that it is a directory of the tree and remember it.
+fn cd(args: &[String]) -> i32 {
+    let target = join(&config::pwd(), args.first().map(|s| s.as_str()).unwrap_or("/"));
+    let call = Call { tool: Tool::Stat, req: i3cm_tools::Request { cwd: "/".into(), paths: vec![target.clone()], display: vec![], options: Default::default() } };
+    let cfg = match config::load() {
+        Ok(c) => c,
+        Err(e) => return fail("i3cm-cd", &e),
+    };
+    match api::Api::new(&cfg).tool(&call) {
+        Ok(res) => match res.records.first() {
+            Some(i3cm_tools::Rec::Stat { entry, .. }) if entry.dir => match config::write_pwd(&target) {
+                Ok(()) => {
+                    println!("{target}");
+                    0
+                }
+                Err(e) => fail("i3cm-cd", &e),
+            },
+            Some(i3cm_tools::Rec::Stat { .. }) => fail("i3cm-cd", &format!("{target}: Not a directory")),
+            _ => fail("i3cm-cd", &format!("{target}: No such file or directory")),
+        },
+        Err(e) => fail("i3cm-cd", &e),
+    }
+}
+
+/// Options of the local programs that take a value (to tell them from file operands).
+fn takes_value(prog: &str, opt: &str) -> bool {
+    let short: &[&str] = match prog {
+        "sort" => &["-k", "-t", "-o", "-S", "-T"],
+        "cut" => &["-d", "-f", "-c", "-b"],
+        "uniq" => &["-f", "-s", "-w"],
+        _ => &[],
+    };
+    short.contains(&opt)
+}
+
+/// `sort`, `uniq`, `cut`: files in a mount (or tree paths for `i3cm-*`) are fetched in one
+/// request and given to the program of that name on standard input.
+fn local_tool(name: &str, args: &[String]) -> i32 {
+    let prog = name.strip_prefix("i3cm-").unwrap_or(name).to_string();
+    let tree_mode = name.starts_with("i3cm-");
+    let ms = if tree_mode { vec![] } else { mounts() };
+    let cwd = std::env::current_dir().map(|p| p.to_string_lossy().into_owned()).unwrap_or_else(|_| "/".into());
+    let (mut opts, mut files) = (vec![], vec![]);
+    let mut i = 1;
+    let mut done = false;
+    while i < args.len() {
+        let a = &args[i];
+        i += 1;
+        if !done && a == "--" {
+            done = true;
+            continue;
+        }
+        if !done && a.starts_with('-') && a != "-" {
+            opts.push(a.clone());
+            if takes_value(&prog, a) && i < args.len() {
+                opts.push(args[i].clone());
+                i += 1;
+            }
+            continue;
+        }
+        files.push(a.clone());
+    }
+    let tree_paths: Vec<Option<String>> = files.iter().map(|f| if tree_mode { Some(join(&config::pwd(), f)) } else { in_mount(&ms, &join(&cwd, f)).map(|x| x.1) }).collect();
+    if files.is_empty() || tree_paths.iter().all(|x| x.is_none()) {
+        if tree_mode {
+            return fail(name, "missing file operand");
+        }
+        return handoff(&prog, args);
+    }
+    if tree_paths.iter().any(|x| x.is_none()) {
+        return fail(name, "paths inside and outside a i3cm mount cannot be mixed");
+    }
+    let cfg = match config::load() {
+        Ok(c) => c,
+        Err(e) => return fail(name, &e),
+    };
+    let call = Call { tool: Tool::Cat, req: i3cm_tools::Request { cwd: "/".into(), paths: tree_paths.into_iter().flatten().collect(), display: files.clone(), options: Default::default() } };
+    let res = match api::Api::new(&cfg).tool(&call) {
+        Ok(r) => r,
+        Err(e) => return fail(name, &e),
+    };
+    let mut input = vec![];
+    for r in &res.records {
+        match r {
+            i3cm_tools::Rec::Data { data, .. } => input.extend_from_slice(data),
+            i3cm_tools::Rec::Error { message } => eprintln!("{message}"),
+            _ => {}
+        }
+    }
+    if res.status != 0 {
+        return res.status;
+    }
+    // the next program of that name in PATH, fed on stdin
+    let me = std::env::current_exe().ok().and_then(|p| std::fs::canonicalize(p).ok());
+    for dir in std::env::var("PATH").unwrap_or_default().split(':').filter(|d| !d.is_empty()) {
+        let cand = Path::new(dir).join(&prog);
+        if !cand.is_file() || std::fs::canonicalize(&cand).ok() == me {
+            continue;
+        }
+        let mut child = match std::process::Command::new(&cand).args(&opts).stdin(std::process::Stdio::piped()).spawn() {
+            Ok(c) => c,
+            Err(e) => return fail(name, &format!("{}: {e}", cand.display())),
+        };
+        let mut stdin = child.stdin.take().expect("stdin");
+        let writer = std::thread::spawn(move || {
+            let _ = stdin.write_all(&input);
+        });
+        let status = child.wait().map(|s| s.code().unwrap_or(1)).unwrap_or(1);
+        let _ = writer.join();
+        return status;
+    }
+    eprintln!("{name}: no '{prog}' in PATH");
+    127
 }
 
 fn fail_tool(e: &i3cm_tools::ToolError) -> i32 {

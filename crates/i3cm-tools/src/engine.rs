@@ -34,6 +34,10 @@ pub trait Tree: Send + Sync {
     fn candidates<'a>(&'a self, _literal: &'a str, _icase: bool) -> Fut<'a, Option<HashSet<String>>> {
         Box::pin(async { None })
     }
+    /// Write files back as one order (sed -i); returns the transaction.
+    fn write<'a>(&'a self, _files: &'a [(Node, Vec<u8>)]) -> Fut<'a, Result<i64, String>> {
+        Box::pin(async { Err("writing is not supported here".to_string()) })
+    }
 }
 
 struct Run<'a> {
@@ -70,6 +74,8 @@ pub fn run<'a>(tree: &'a dyn Tree, call: &'a Call) -> Fut<'a, Response> {
             Tool::Stat => r.stat().await,
             Tool::Grep => r.grep().await,
             Tool::Find => r.find().await,
+            Tool::Tree => r.tree().await,
+            Tool::Sed => r.sed().await,
         }
         Response { status: r.status, records: r.out }
     })
@@ -334,8 +340,19 @@ impl<'a> Run<'a> {
             lines.pop();
         }
         let mut count = 0u64;
+        let (after, before) = (o.after_context.unwrap_or(0) as usize, o.before_context.unwrap_or(0) as usize);
+        let context = after > 0 || before > 0;
+        // last line printed (match or context), for `--` between groups
+        let mut last_out: Option<usize> = None;
+        let mut pending_after = 0usize;
         for (i, l) in lines.iter().enumerate() {
-            if re.is_match(l) == o.invert {
+            let hit = re.is_match(l) != o.invert;
+            if !hit {
+                if context && pending_after > 0 && !binary && !o.files_with_matches && !o.count {
+                    pending_after -= 1;
+                    self.out.push(Rec::Context { path: with_name.then(|| disp.to_string()), line: o.line_number.then_some(i as u64 + 1), text: String::from_utf8_lossy(l).into_owned() });
+                    last_out = Some(i);
+                }
                 continue;
             }
             count += 1;
@@ -345,6 +362,21 @@ impl<'a> Run<'a> {
             if binary {
                 self.out.push(Rec::Binary { path: disp.to_string() });
                 break;
+            }
+            if context {
+                let from = i.saturating_sub(before).max(last_out.map(|x| x + 1).unwrap_or(0));
+                if let Some(lo) = last_out
+                    && from > lo + 1 {
+                        self.out.push(Rec::Separator);
+                    }
+                if last_out.is_none() && self.out.iter().any(|r| matches!(r, Rec::Match { .. } | Rec::Context { .. })) {
+                    self.out.push(Rec::Separator);
+                }
+                for (j, cl) in lines.iter().enumerate().take(i).skip(from) {
+                    self.out.push(Rec::Context { path: with_name.then(|| disp.to_string()), line: o.line_number.then_some(j as u64 + 1), text: String::from_utf8_lossy(cl).into_owned() });
+                }
+                pending_after = after;
+                last_out = Some(i);
             }
             self.out.push(Rec::Match { path: with_name.then(|| disp.to_string()), line: o.line_number.then_some(i as u64 + 1), text: String::from_utf8_lossy(l).into_owned() });
         }
@@ -356,6 +388,97 @@ impl<'a> Run<'a> {
             self.out.push(Rec::Count { path: with_name.then(|| disp.to_string()), count });
         }
         count > 0
+    }
+
+    // ---- tree ----
+
+    async fn tree(&mut self) {
+        let ops = self.operands(true, 2).await;
+        let (mut dirs, mut files) = (0u64, 0u64);
+        for (d, n) in ops {
+            self.out.push(Rec::TreeLine { prefix: String::new(), name: d.clone(), dir: n.entry.dir });
+            if n.entry.dir {
+                self.tree_dir(&n, &d, String::new(), 1, &mut dirs, &mut files, &mut vec![]).await;
+            }
+        }
+        self.out.push(Rec::TreeSummary { dirs, files });
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn tree_dir<'b>(&'b mut self, n: &'b Node, disp: &'b str, prefix: String, depth: u32, dirs: &'b mut u64, files: &'b mut u64, anc: &'b mut Vec<String>) -> Fut<'b, ()>
+    where
+        'a: 'b,
+    {
+        Box::pin(async move {
+            let o = self.call.req.options.clone();
+            if o.level.is_some_and(|l| depth > l) {
+                return;
+            }
+            let Some(list) = self.list(n, disp).await else { return };
+            let mut list: Vec<Node> = list.into_iter().filter(|c| (o.all || !c.entry.name.starts_with('.')) && (!o.dirs_only || c.entry.dir)).collect();
+            list.sort_by(|a, b| a.entry.name.cmp(&b.entry.name));
+            if let Some(k) = &n.key {
+                anc.push(k.clone());
+            }
+            let count = list.len();
+            for (i, c) in list.iter().enumerate() {
+                let last = i + 1 == count;
+                self.out.push(Rec::TreeLine { prefix: format!("{prefix}{}", if last { "└── " } else { "├── " }), name: c.entry.name.clone(), dir: c.entry.dir });
+                if c.entry.dir {
+                    *dirs += 1;
+                    if c.key.as_ref().map(|k| anc.contains(k)).unwrap_or(false) {
+                        continue;
+                    }
+                    let cd = child_display(disp, &c.entry.name);
+                    self.tree_dir(c, &cd, format!("{prefix}{}", if last { "    " } else { "│   " }), depth + 1, dirs, files, anc).await;
+                } else {
+                    *files += 1;
+                }
+            }
+            if n.key.is_some() {
+                anc.pop();
+            }
+        })
+    }
+
+    // ---- sed (GNU sed --sandbox on the server; -i writes back as one order) ----
+
+    async fn sed(&mut self) {
+        let o = self.call.req.options.clone();
+        let ops = self.operands(false, 2).await;
+        let mut results: Vec<(String, Node, Vec<u8>)> = vec![];
+        for (d, n) in ops {
+            if n.entry.dir {
+                self.err(format!("couldn't edit {d}: not a regular file"), 4);
+                continue;
+            }
+            let Some(data) = self.read(&n, &d).await else { continue };
+            match run_sed(&o.scripts, o.quiet, o.extended, &data) {
+                Ok(out) => results.push((d, n, out)),
+                Err(e) => {
+                    self.err(e, 1);
+                    return;
+                }
+            }
+        }
+        if self.status != 0 {
+            return;
+        }
+        if o.in_place {
+            let changed: Vec<(Node, Vec<u8>)> = results.iter().map(|(_, n, d)| (n.clone(), d.clone())).collect();
+            let paths: Vec<String> = results.iter().map(|(d, _, _)| d.clone()).collect();
+            if changed.is_empty() {
+                return;
+            }
+            match self.tree.write(&changed).await {
+                Ok(txn) => self.out.push(Rec::Written { paths, txn }),
+                Err(e) => self.err(format!("nothing written: {e}"), 4),
+            }
+        } else {
+            for (_, _, d) in results {
+                self.out.push(Rec::Data { header: None, data: d });
+            }
+        }
     }
 
     // ---- find ----
@@ -652,7 +775,7 @@ mod tests {
         assert_eq!(sh(&t, "/m", "find . -name mail.md -exec grep -l Rechnung {} +").await.0, "./a/mail.md\n");
         // `;` runs the tool per file: grep then prints no file names
         assert_eq!(sh(&t, "/m", "find . -name mail.md -exec grep -i rechnung {} ;").await.0, "Rechnung 42\nrechnung\n");
-        assert_eq!(sh(&t, "/m", "find . -exec sed x {} ;").await.2, 1);
+        assert_eq!(sh(&t, "/m", "find . -exec awk x {} ;").await.2, 1);
     }
 
     #[tokio::test]
@@ -661,5 +784,88 @@ mod tests {
         let call = Call { tool: Tool::Grep, req: Request { cwd: "/".into(), paths: vec!["m".into()], display: vec!["/mnt/m".into()], options: Options { recursive: true, patterns: vec!["zwei".into()], ..Default::default() } } };
         let (out, _) = render(&run(&t, &call).await);
         assert_eq!(String::from_utf8(out).unwrap(), "/mnt/m/top.md:zwei\n");
+    }
+}
+
+
+/// Run GNU sed in sandbox mode (no `e`, `r`, `w` commands, DEC-112) on `data`.
+fn run_sed(scripts: &[String], quiet: bool, extended: bool, data: &[u8]) -> Result<Vec<u8>, String> {
+    use std::io::Write;
+    use std::process::{Command, Stdio};
+    let mut cmd = Command::new("sed");
+    cmd.arg("--sandbox");
+    if quiet {
+        cmd.arg("-n");
+    }
+    if extended {
+        cmd.arg("-E");
+    }
+    for s in scripts {
+        cmd.arg("-e").arg(s);
+    }
+    let mut child = cmd.stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().map_err(|e| format!("sed not available on the server: {e}"))?;
+    let mut stdin = child.stdin.take().expect("stdin");
+    let input = data.to_vec();
+    let writer = std::thread::spawn(move || {
+        let _ = stdin.write_all(&input);
+    });
+    let out = child.wait_with_output().map_err(|e| e.to_string())?;
+    let _ = writer.join();
+    if !out.status.success() {
+        return Err(String::from_utf8_lossy(&out.stderr).trim().trim_start_matches("sed: ").to_string());
+    }
+    Ok(out.stdout)
+}
+
+#[cfg(test)]
+mod new_tool_tests {
+    use super::*;
+
+    struct One;
+    impl Tree for One {
+        fn lookup<'a>(&'a self, path: &'a str) -> Fut<'a, Result<Option<Node>, String>> {
+            Box::pin(async move {
+                Ok(match path {
+                    "/" | "/d" => Some(Node { path: path.into(), entry: crate::Entry { name: "d".into(), dir: true, ..Default::default() }, ..Default::default() }),
+                    "/d/f.txt" => Some(Node { path: path.into(), entry: crate::Entry { name: "f.txt".into(), size: 1, ..Default::default() }, grep: true, ..Default::default() }),
+                    _ => None,
+                })
+            })
+        }
+        fn list<'a>(&'a self, dir: &'a Node) -> Fut<'a, Result<Vec<Node>, String>> {
+            Box::pin(async move { Ok(if dir.path == "/d" || dir.path == "/" { vec![Node { path: "/d/f.txt".into(), entry: crate::Entry { name: "f.txt".into(), ..Default::default() }, grep: true, ..Default::default() }] } else { vec![] }) })
+        }
+        fn read<'a>(&'a self, _f: &'a Node) -> Fut<'a, Result<Vec<u8>, String>> {
+            Box::pin(async { Ok(b"a\nb\nX1\nc\nd\ne\nX2\nf\n".to_vec()) })
+        }
+    }
+
+    async fn out(argv: &str) -> (String, i32) {
+        let call = parse(&argv.split_whitespace().map(String::from).collect::<Vec<_>>()).unwrap();
+        let mut call = call;
+        call.req.cwd = "/".into();
+        let r = run(&One, &call).await;
+        (String::from_utf8(crate::render(&r).0).unwrap(), r.status)
+    }
+
+    #[tokio::test]
+    async fn grep_context() {
+        assert_eq!(out("grep -n -A1 X /d/f.txt").await.0, "3:X1\n4-c\n--\n7:X2\n8-f\n");
+        assert_eq!(out("grep -C1 X /d/f.txt").await.0, "b\nX1\nc\n--\ne\nX2\nf\n");
+        assert_eq!(out("grep -B3 X2 /d/f.txt").await.0, "c\nd\ne\nX2\n");
+    }
+
+    #[tokio::test]
+    async fn tree_listing() {
+        assert_eq!(out("tree /d").await.0, "/d\n└── f.txt\n\n0 directories, 1 file\n");
+    }
+
+    #[tokio::test]
+    async fn sed_prints_and_rejects_writes_without_support() {
+        assert_eq!(out("sed -n s/X/Y/p /d/f.txt").await.0, "Y1\nY2\n");
+        // the sandbox forbids writing files from the script
+        assert_ne!(out("sed w/tmp/x /d/f.txt").await.1, 0);
+        // -i needs a tree that can write
+        assert_ne!(out("sed -i s/X/Y/ /d/f.txt").await.1, 0);
     }
 }

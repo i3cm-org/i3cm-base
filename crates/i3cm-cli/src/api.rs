@@ -104,6 +104,25 @@ impl Api {
         self.get_bytes(&format!("/aspects/{aspect}/index"), &[("node", node), ("name", dir)])
     }
 
+    fn put(&self, m: reqwest::Method, path: &str, q: &[(&str, &str)], data: Vec<u8>) -> Result<(), String> {
+        Self::send(self.req(m, path).query(q).body(data)).map(|_| ())
+    }
+
+    /// Write a file of a view node (one order on the server).
+    pub fn put_file(&self, aspect: &str, node: &str, name: &str, data: Vec<u8>) -> Result<(), String> {
+        self.put(reqwest::Method::PUT, &format!("/aspects/{aspect}/file"), &[("node", node), ("name", name)], data)
+    }
+
+    /// Write the index of an object node (attributes in the front matter).
+    pub fn put_index(&self, aspect: &str, node: &str, data: Vec<u8>) -> Result<(), String> {
+        self.put(reqwest::Method::PUT, &format!("/aspects/{aspect}/index"), &[("node", node)], data)
+    }
+
+    /// A new file in a folder with `dropType`.
+    pub fn drop_file(&self, aspect: &str, folder: &str, name: &str, data: Vec<u8>) -> Result<(), String> {
+        self.put(reqwest::Method::POST, &format!("/aspects/{aspect}/drop"), &[("node", folder), ("name", name)], data)
+    }
+
     /// Several files at once: items `{"node", "name"}` or `{"node", "index": true, "name"}`.
     pub fn files(&self, aspect: &str, items: &[Value]) -> Result<Vec<Option<Vec<u8>>>, String> {
         let v = self.post_json(&format!("/aspects/{aspect}/files"), &json!({"items": items}))?;

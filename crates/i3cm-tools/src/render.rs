@@ -117,6 +117,27 @@ pub fn render(r: &Response) -> (Vec<u8>, String) {
                 s.push('\n');
                 out.extend(s.as_bytes());
             }
+            Rec::Context { path, line, text } => {
+                let mut s = String::new();
+                if let Some(p) = path {
+                    s.push_str(p);
+                    s.push('-');
+                }
+                if let Some(n) = line {
+                    s.push_str(&format!("{n}-"));
+                }
+                s.push_str(text);
+                s.push('\n');
+                out.extend(s.as_bytes());
+            }
+            Rec::Separator => out.extend(b"--\n"),
+            Rec::TreeLine { prefix, name, .. } => out.extend(format!("{prefix}{name}\n").as_bytes()),
+            Rec::TreeSummary { dirs, files } => {
+                let d = if *dirs == 1 { "directory" } else { "directories" };
+                let f = if *files == 1 { "file" } else { "files" };
+                out.extend(format!("\n{dirs} {d}, {files} {f}\n").as_bytes());
+            }
+            Rec::Written { .. } => {}
             Rec::Binary { path } => out.extend(format!("Binary file {path} matches\n").as_bytes()),
             Rec::Name { path } => out.extend(format!("{path}\n").as_bytes()),
             Rec::Count { path, count } => match path {

@@ -35,6 +35,12 @@ impl I18n {
                 let b = bundles.entry(lang.clone()).or_insert_with(|| {
                     let mut b = FluentBundle::new_concurrent(vec![id]);
                     b.set_use_isolating(false);
+                    // TIME($dateTime): "HH:MM" (e.g. the fallback name of a mail, DEC-135)
+                    let _ = b.add_function("TIME", |pos, _named| match pos.first() {
+                        Some(fluent_bundle::FluentValue::String(s)) => fluent_bundle::FluentValue::String(time_of(s).into()),
+                        Some(v) => v.clone(),
+                        None => fluent_bundle::FluentValue::None,
+                    });
                     b
                 });
                 let res = FluentResource::try_new(src.clone()).map_err(|_| BaseError::invalid("i18n.parse", "Fluent file cannot be parsed"))?;
@@ -129,4 +135,16 @@ impl I18n {
         let desc = self.render(lang, &format!("{base}-description"), attrs).unwrap_or_default();
         (name, desc)
     }
+}
+
+/// Clock time `HH:MM` of an ISO date-time in the server's time zone: `I3CM_TIMEZONE` as a
+/// fixed offset such as `+01:00` (default UTC). Anything else is returned unchanged.
+pub fn time_of(s: &str) -> String {
+    let Ok(t) = chrono::DateTime::parse_from_rfc3339(s) else { return s.to_string() };
+    let off = std::env::var("I3CM_TIMEZONE")
+        .ok()
+        .and_then(|z| chrono::DateTime::parse_from_rfc3339(&format!("2000-01-01T00:00:00{z}")).ok())
+        .map(|d| *d.offset())
+        .unwrap_or_else(|| chrono::FixedOffset::east_opt(0).unwrap());
+    t.with_timezone(&off).format("%H:%M").to_string()
 }

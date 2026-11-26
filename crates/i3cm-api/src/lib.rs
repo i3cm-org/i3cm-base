@@ -1,6 +1,7 @@
 //! i3cm-api: REST API (`/v1`, JSON). Every request carries `Authorization: Bearer <token>`;
 //! the token determines tenant and `me`. Display names follow `Accept-Language`.
 
+pub mod describe;
 use axum::body::Bytes;
 use axum::extract::{Path, Query, State};
 use axum::http::{header, HeaderMap, StatusCode};
@@ -154,6 +155,11 @@ pub fn router(store: Store) -> Router {
     let m = metrics.clone();
     Router::new()
         .route("/health", get(|| async { "ok" }))
+        .route("/", get(|| async { ([(header::CONTENT_TYPE, "text/markdown; charset=utf-8")], describe::ENTRY) }))
+        .route("/guide/agents", get(|| async { ([(header::CONTENT_TYPE, "text/markdown; charset=utf-8")], describe::GUIDE) }))
+        .route("/openapi.json", get(|| async { Json(describe::openapi()) }))
+        .route("/skill.zip", get(|| async { ([(header::CONTENT_TYPE, "application/zip")], describe::skill_zip()) }))
+        .route("/v1/version", get(|| async { Json(json!({"version": env!("CARGO_PKG_VERSION"), "revision": env!("I3CM_REV")})) }))
         .route("/v1/catalog", get(catalog))
         .route("/v1/orders", post(order))
         .route("/v1/objects", post(create))
@@ -192,6 +198,7 @@ pub fn router(store: Store) -> Router {
         .route("/v1/aspects", get(aspects))
         .route("/v1/aspects/{a}/children", get(aspect_children))
         .route("/v1/aspects/{a}/node", get(aspect_node))
+        .route("/v1/aspects/{a}/path", get(aspect_path))
         .route("/v1/aspects/{a}/file", get(aspect_file).put(put_aspect_file))
         .route("/v1/aspects/{a}/tab", get(aspect_tab))
         .route("/v1/objects/{id}/eval", get(eval_path))
@@ -394,6 +401,11 @@ async fn aspects(State(s): State<Store>, h: HeaderMap) -> R<Json<Value>> {
 async fn aspect_children(State(s): State<Store>, h: HeaderMap, Path(a): Path<String>, Query(q): Query<NodeQ>) -> R<Json<Value>> {
     let r = auth(&s, &h).await?;
     Ok(Json(serde_json::to_value(s.aspect_children_paged(&r.ctx, &a, &q.node, &r.lang, i3cm_store::aspect::Page { offset: q.offset.unwrap_or(0).max(0), limit: q.limit, after: q.after.clone() }).await?).unwrap_or_default()))
+}
+
+async fn aspect_path(State(s): State<Store>, h: HeaderMap, Path(a): Path<String>, Query(q): Query<NodeQ>) -> R<Json<Value>> {
+    let r = auth(&s, &h).await?;
+    Ok(Json(serde_json::to_value(s.aspect_path(&r.ctx, &a, &q.node, &r.lang).await?).unwrap_or_default()))
 }
 
 async fn aspect_node(State(s): State<Store>, h: HeaderMap, Path(a): Path<String>, Query(q): Query<NodeQ>) -> R<Json<Value>> {

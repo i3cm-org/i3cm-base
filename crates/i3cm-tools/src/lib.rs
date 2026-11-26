@@ -18,7 +18,7 @@ pub use render::render;
 use serde::{Deserialize, Serialize};
 
 /// The tools, by their Unix names.
-pub const TOOLS: &[&str] = &["ls", "cat", "head", "tail", "wc", "stat", "grep", "find"];
+pub const TOOLS: &[&str] = &["ls", "cat", "head", "tail", "wc", "stat", "grep", "find", "tree", "sed"];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -31,6 +31,8 @@ pub enum Tool {
     Stat,
     Grep,
     Find,
+    Tree,
+    Sed,
 }
 
 impl Tool {
@@ -46,6 +48,8 @@ impl Tool {
             "stat" => Tool::Stat,
             "grep" => Tool::Grep,
             "find" => Tool::Find,
+            "tree" => Tool::Tree,
+            "sed" => Tool::Sed,
             _ => return None,
         })
     }
@@ -117,6 +121,20 @@ pub struct Options {
     pub maxdepth: Option<u32>,
     pub mindepth: Option<u32>,
     pub exec: Option<Exec>,
+    /// grep `-A N`
+    pub after_context: Option<u64>,
+    /// grep `-B N`
+    pub before_context: Option<u64>,
+    /// tree `-L N`
+    pub level: Option<u32>,
+    /// tree `-d`
+    pub dirs_only: bool,
+    /// sed scripts (`-e` or the first operand)
+    pub scripts: Vec<String>,
+    /// sed `-i`: write the result back (one order for all files)
+    pub in_place: bool,
+    /// sed `-n`
+    pub quiet: bool,
 }
 
 /// A tool call: paths are relative to `cwd` (a path in the tree, `/` is the root).
@@ -206,6 +224,32 @@ pub enum Rec {
         #[serde(skip_serializing_if = "Option::is_none")]
         path: Option<String>,
         count: u64,
+    },
+    /// A context line around a match (grep -A/-B/-C).
+    Context {
+        #[serde(skip_serializing_if = "Option::is_none")]
+        path: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        line: Option<u64>,
+        text: String,
+    },
+    /// Separator between groups of context lines (`--`).
+    Separator,
+    /// One line of `tree`: the drawn prefix and the name.
+    TreeLine {
+        prefix: String,
+        name: String,
+        dir: bool,
+    },
+    /// Closing line of `tree`.
+    TreeSummary {
+        dirs: u64,
+        files: u64,
+    },
+    /// Files written back (sed -i), with the order's transaction.
+    Written {
+        paths: Vec<String>,
+        txn: i64,
     },
     /// A message for stderr.
     Error {

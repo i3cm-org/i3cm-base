@@ -85,7 +85,7 @@ fn compare(env: &Env, fs: &Fs, dir: u64, aspect: &str, node: &str, depth: u32, s
                 assert_eq!(Some(a.ino.0), want, "inode of {name}");
                 let object = c.id.is_some() && (c.file || c.node.starts_with("o:"));
                 assert_eq!(a.nlink, if object { 2 } else { 1 }, "nlink of {name}");
-                assert_eq!(a.perm, 0o444);
+                assert_eq!(a.perm, 0o644);
             }
         }
     }

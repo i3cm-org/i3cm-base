@@ -1,8 +1,13 @@
-//! The FUSE driver (read-only). It shows the API faithfully: a directory lists exactly the
+//! The FUSE driver. It shows the API faithfully: a directory lists exactly the
 //! children from `children` (a node as `<name>/` plus its index `<name>.md`, a file as `<name>`),
 //! a file holds exactly the bytes from `file` or `index`, and `stat` matches. Directories are
 //! fetched completely (paged internally) and the files of a directory are read in one request,
 //! so a recursive reader costs requests per directory, not per file.
+//!
+//! Writing (SPEC-004 section 5): a written file is buffered and sent when it is closed (or
+//! flushed); each send is one order on the server, so rights and checks apply as always. A
+//! rejected write returns `EIO`, and the server's message is kept in `/.i3cm-errors`. A new
+//! file in a folder whose view declares `dropType` creates an object.
 
 use crate::api::{Api, Child};
 use i3cm_tools::{fs_name, project, Named, Slot};
@@ -18,6 +23,11 @@ const DIR_BASE: u64 = 1 << 60;
 /// Read files of a directory together up to this size each and in total.
 const BATCH_FILE: u64 = 1 << 20;
 const BATCH_TOTAL: u64 = 16 << 20;
+/// The error log at the root of the mount.
+const ERR_INO: u64 = 2;
+const ERR_NAME: &str = ".i3cm-errors";
+/// Inodes of files created in this mount but not yet sent.
+const NEW_BASE: u64 = 1 << 59;
 
 #[derive(Debug, Clone)]
 enum Kind {
@@ -25,6 +35,17 @@ enum Kind {
     Dir { aspect: String, node: String },
     File { aspect: String, node: String, name: String },
     Index { aspect: String, node: String, dir: String },
+    /// Created here, sent on close (drop into a folder).
+    New { aspect: String, folder: String, name: String },
+    Errors,
+}
+
+/// A file being written.
+#[derive(Default)]
+struct WBuf {
+    data: Vec<u8>,
+    dirty: bool,
+    opens: u32,
 }
 
 #[derive(Debug, Clone)]
@@ -47,6 +68,9 @@ struct State {
     next_dir: u64,
     listings: HashMap<u64, (Instant, Vec<(String, u64)>)>,
     data: HashMap<u64, (Instant, Arc<Vec<u8>>)>,
+    wbuf: HashMap<u64, WBuf>,
+    errors: Vec<String>,
+    next_new: u64,
 }
 
 pub struct Fs {
@@ -94,7 +118,7 @@ fn chrono_like_parse(t: &str) -> Option<i64> {
 impl Fs {
     pub fn new(api: Api, ttl: Duration) -> Fs {
         let (uid, gid) = unsafe { (libc::getuid(), libc::getgid()) };
-        let mut st = State { next_dir: DIR_BASE, ..Default::default() };
+        let mut st = State { next_dir: DIR_BASE, next_new: NEW_BASE, ..Default::default() };
         st.inodes.insert(1, Ino { kind: Kind::Root, dir: true, size: 0, nlink: 1, mtime: SystemTime::now(), parent: 1, path: "/".into() });
         Fs { api, ttl, uid, gid, started: SystemTime::now(), st: Mutex::new(st) }
     }
@@ -109,7 +133,7 @@ impl Fs {
             ctime: i.mtime,
             crtime: i.mtime,
             kind: if i.dir { FileType::Directory } else { FileType::RegularFile },
-            perm: if i.dir { 0o555 } else { 0o444 },
+            perm: if i.dir { 0o755 } else if matches!(i.kind, Kind::Errors) { 0o444 } else { 0o644 },
             nlink: i.nlink,
             uid: self.uid,
             gid: self.gid,
@@ -199,6 +223,11 @@ impl Fs {
                     st.inodes.insert(iid, Ino { kind, dir: false, size: a["size"].as_u64().unwrap_or(0), nlink: 1, mtime: self.started, parent: 1, path: String::new() });
                     out.push((format!("{fname}.md"), iid));
                 }
+                if !st.errors.is_empty() {
+                    let size = st.errors.iter().map(|e| e.len() as u64 + 1).sum();
+                    st.inodes.insert(ERR_INO, Ino { kind: Kind::Errors, dir: false, size, nlink: 1, mtime: SystemTime::now(), parent: 1, path: String::new() });
+                    out.push((ERR_NAME.into(), ERR_INO));
+                }
                 st.listings.insert(dir, (Instant::now(), out.clone()));
                 out
             }
@@ -255,7 +284,16 @@ impl Fs {
                 && t.elapsed() < self.ttl {
                     return Ok(d.clone());
                 }
+            if let Some(b) = st.wbuf.get(&id) {
+                return Ok(Arc::new(b.data.clone()));
+            }
             let i = st.inodes.get(&id).ok_or(Errno::ENOENT)?.clone();
+            if matches!(i.kind, Kind::Errors) {
+                return Ok(Arc::new(st.errors.iter().map(|e| format!("{e}\n")).collect::<String>().into_bytes()));
+            }
+            if matches!(i.kind, Kind::New { .. }) {
+                return Ok(Arc::new(vec![]));
+            }
             let p = i.parent;
             (i, p)
         };
@@ -348,9 +386,85 @@ impl Fs {
 }
 
 impl Fs {
+    /// Start or continue writing `ino`: the buffer holds the current bytes.
+    fn wbuf_open(&self, ino: u64) -> Result<(), Errno> {
+        if self.st.lock().unwrap().wbuf.contains_key(&ino) {
+            return Ok(());
+        }
+        let kind = self.st.lock().unwrap().inodes.get(&ino).map(|i| i.kind.clone()).ok_or(Errno::ENOENT)?;
+        match kind {
+            Kind::File { .. } | Kind::Index { .. } | Kind::New { .. } => {}
+            _ => return Err(Errno::EACCES),
+        }
+        let cur = self.data(ino)?;
+        self.st.lock().unwrap().wbuf.insert(ino, WBuf { data: cur.as_ref().clone(), dirty: false, opens: 0 });
+        Ok(())
+    }
+
+    /// Send a dirty buffer to the server (one order). On failure the message goes to the log.
+    fn commit(&self, ino: u64) -> Result<(), Errno> {
+        let (kind, data, path) = {
+            let st = self.st.lock().unwrap();
+            let Some(b) = st.wbuf.get(&ino) else { return Ok(()) };
+            if !b.dirty {
+                return Ok(());
+            }
+            let i = st.inodes.get(&ino).ok_or(Errno::ENOENT)?;
+            (i.kind.clone(), b.data.clone(), i.path.clone())
+        };
+        let res = match &kind {
+            Kind::File { aspect, node, name } => self.api.put_file(aspect, node, name, data),
+            Kind::Index { aspect, node, .. } => self.api.put_index(aspect, node, data),
+            Kind::New { aspect, folder, name } => self.api.drop_file(aspect, folder, name, data),
+            _ => Err("not writable".into()),
+        };
+        let mut st = self.st.lock().unwrap();
+        // what was read before is stale now
+        st.data.clear();
+        st.listings.clear();
+        match res {
+            Ok(()) => {
+                if let Some(b) = st.wbuf.get_mut(&ino) {
+                    b.dirty = false;
+                }
+                if matches!(kind, Kind::New { .. }) {
+                    st.wbuf.remove(&ino);
+                    st.inodes.remove(&ino);
+                }
+                Ok(())
+            }
+            Err(e) => {
+                let what = match &kind {
+                    Kind::File { name, .. } | Kind::New { name, .. } => name.clone(),
+                    Kind::Index { dir, .. } => format!("{dir}.md"),
+                    _ => path,
+                };
+                st.errors.push(format!("{} {what}: {e}", chrono_now()));
+                if st.errors.len() > 100 {
+                    st.errors.remove(0);
+                }
+                if let Some(b) = st.wbuf.get_mut(&ino) {
+                    b.dirty = false; // the attempt is over; the file shows the server's state again
+                }
+                st.wbuf.remove(&ino);
+                Err(Errno::EIO)
+            }
+        }
+    }
+
     /// The entry `name` in directory `parent`, as the kernel's lookup sees it.
     pub fn lookup_name(&self, parent: u64, name: &str) -> Result<FileAttr, Errno> {
-        let found = if self.is_id_root(parent) { self.by_id(parent, name) } else { self.listing(parent)?.into_iter().find(|(n, _)| n == name).map(|x| x.1) };
+        let pending = {
+            let st = self.st.lock().unwrap();
+            st.inodes.iter().find(|(_, i)| i.parent == parent && matches!(&i.kind, Kind::New { name: n, .. } if n == name)).map(|(id, _)| *id)
+        };
+        let found = if let Some(p) = pending {
+            Some(p)
+        } else if self.is_id_root(parent) {
+            self.by_id(parent, name)
+        } else {
+            self.listing(parent)?.into_iter().find(|(n, _)| n == name).map(|x| x.1)
+        };
         let id = found.ok_or(Errno::ENOENT)?;
         let mut st = self.st.lock().unwrap();
         let i = st.inodes.get_mut(&id).ok_or(Errno::ENOENT)?;
@@ -360,7 +474,13 @@ impl Fs {
 
     pub fn getattr_of(&self, ino: u64) -> Result<FileAttr, Errno> {
         let st = self.st.lock().unwrap();
-        st.inodes.get(&ino).map(|i| self.attr(ino, i)).ok_or(Errno::ENOENT)
+        let i = st.inodes.get(&ino).ok_or(Errno::ENOENT)?;
+        let mut a = self.attr(ino, i);
+        if let Some(b) = st.wbuf.get(&ino) {
+            a.size = b.data.len() as u64;
+            a.blocks = a.size.div_ceil(512);
+        }
+        Ok(a)
     }
 
     /// Names and node ids of a directory (without `.` and `..`).
@@ -390,9 +510,22 @@ impl fuser::Filesystem for Fs {
         }
     }
 
-    fn open(&self, _req: &Request, ino: INodeNo, _flags: OpenFlags, _kill: bool, reply: ReplyOpen) {
-        match self.st.lock().unwrap().inodes.get(&ino.0) {
-            Some(i) if !i.dir => reply.opened(FileHandle(0), FopenFlags::FOPEN_KEEP_CACHE),
+    fn open(&self, _req: &Request, ino: INodeNo, flags: OpenFlags, _kill: bool, reply: ReplyOpen) {
+        if flags.acc_mode() != fuser::OpenAccMode::O_RDONLY {
+            return match self.wbuf_open(ino.0) {
+                Ok(()) => {
+                    if let Some(b) = self.st.lock().unwrap().wbuf.get_mut(&ino.0) {
+                        b.opens += 1;
+                    }
+                    reply.opened(FileHandle(1), FopenFlags::FOPEN_DIRECT_IO)
+                }
+                Err(e) => reply.error(e),
+            };
+        }
+        let kind = self.st.lock().unwrap().inodes.get(&ino.0).map(|i| (i.dir, matches!(i.kind, Kind::Errors)));
+        match kind {
+            Some((false, true)) => reply.opened(FileHandle(0), FopenFlags::FOPEN_DIRECT_IO),
+            Some((false, false)) => reply.opened(FileHandle(0), FopenFlags::FOPEN_KEEP_CACHE),
             Some(_) => reply.error(Errno::EISDIR),
             None => reply.error(Errno::ENOENT),
         }
@@ -407,6 +540,87 @@ impl fuser::Filesystem for Fs {
             }
             Err(e) => reply.error(e),
         }
+    }
+
+    fn write(&self, _req: &Request, ino: INodeNo, _fh: FileHandle, offset: u64, data: &[u8], _wf: fuser::WriteFlags, _flags: OpenFlags, _lock: Option<fuser::LockOwner>, reply: fuser::ReplyWrite) {
+        if let Err(e) = self.wbuf_open(ino.0) {
+            return reply.error(e);
+        }
+        let mut st = self.st.lock().unwrap();
+        let b = st.wbuf.get_mut(&ino.0).expect("buffer");
+        let end = offset as usize + data.len();
+        if b.data.len() < end {
+            b.data.resize(end, 0);
+        }
+        b.data[offset as usize..end].copy_from_slice(data);
+        b.dirty = true;
+        reply.written(data.len() as u32);
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn setattr(&self, _req: &Request, ino: INodeNo, _mode: Option<u32>, _uid: Option<u32>, _gid: Option<u32>, size: Option<u64>, _atime: Option<fuser::TimeOrNow>, _mtime: Option<fuser::TimeOrNow>,
+        _ctime: Option<SystemTime>, _fh: Option<FileHandle>, _crtime: Option<SystemTime>, _chgtime: Option<SystemTime>, _bkuptime: Option<SystemTime>, _flags: Option<fuser::BsdFileFlags>, _kill: bool, reply: ReplyAttr) {
+        if let Some(n) = size {
+            if let Err(e) = self.wbuf_open(ino.0) {
+                return reply.error(e);
+            }
+            let mut st = self.st.lock().unwrap();
+            let b = st.wbuf.get_mut(&ino.0).expect("buffer");
+            if b.data.len() as u64 != n {
+                b.data.resize(n as usize, 0);
+                b.dirty = true;
+            }
+        }
+        match self.getattr_of(ino.0) {
+            Ok(a) => reply.attr(&self.ttl, &a),
+            Err(e) => reply.error(e),
+        }
+    }
+
+    fn flush(&self, _req: &Request, ino: INodeNo, _fh: FileHandle, _lock: fuser::LockOwner, reply: fuser::ReplyEmpty) {
+        match self.commit(ino.0) {
+            Ok(()) => reply.ok(),
+            Err(e) => reply.error(e),
+        }
+    }
+
+    fn fsync(&self, _req: &Request, ino: INodeNo, _fh: FileHandle, _datasync: bool, reply: fuser::ReplyEmpty) {
+        match self.commit(ino.0) {
+            Ok(()) => reply.ok(),
+            Err(e) => reply.error(e),
+        }
+    }
+
+    fn release(&self, _req: &Request, ino: INodeNo, fh: FileHandle, _flags: OpenFlags, _lock: Option<fuser::LockOwner>, _flush: bool, reply: fuser::ReplyEmpty) {
+        if fh.0 == 1 {
+            let _ = self.commit(ino.0);
+            let mut st = self.st.lock().unwrap();
+            let last = st.wbuf.get_mut(&ino.0).map(|b| {
+                b.opens = b.opens.saturating_sub(1);
+                b.opens == 0 && !b.dirty
+            });
+            if last == Some(true) {
+                st.wbuf.remove(&ino.0);
+            }
+        }
+        reply.ok();
+    }
+
+    fn create(&self, _req: &Request, parent: INodeNo, name: &OsStr, _mode: u32, _umask: u32, _flags: i32, _kill: bool, _owner: fuser::Owner, reply: fuser::ReplyCreate) {
+        let Some(name) = name.to_str() else { return reply.error(Errno::EINVAL) };
+        let mut st = self.st.lock().unwrap();
+        let Some(Kind::Dir { aspect, node }) = st.inodes.get(&parent.0).map(|i| i.kind.clone()) else { return reply.error(Errno::EACCES) };
+        if !node.starts_with("f:") {
+            // only folders of a view can take new files (and only those with dropType, checked by the server)
+            return reply.error(Errno::EACCES);
+        }
+        st.next_new += 1;
+        let id = st.next_new;
+        let ino = Ino { kind: Kind::New { aspect, folder: node, name: name.to_string() }, dir: false, size: 0, nlink: 1, mtime: SystemTime::now(), parent: parent.0, path: String::new() };
+        let attr = self.attr(id, &ino);
+        st.inodes.insert(id, ino);
+        st.wbuf.insert(id, WBuf { data: vec![], dirty: true, opens: 1 });
+        reply.created(&self.ttl, &attr, Generation(0), FileHandle(1), FopenFlags::FOPEN_DIRECT_IO);
     }
 
     fn readdir(&self, _req: &Request, ino: INodeNo, _fh: FileHandle, offset: u64, mut reply: ReplyDirectory) {
@@ -432,10 +646,15 @@ impl fuser::Filesystem for Fs {
     }
 }
 
-/// Mount read-only at `mountpoint` and serve until unmounted.
+fn chrono_now() -> String {
+    let s = SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
+    format!("@{s}")
+}
+
+/// Mount at `mountpoint` and serve until unmounted (reading and writing, SPEC-004).
 pub fn mount(api: Api, mountpoint: &str, ttl: Duration) -> std::io::Result<()> {
     let mut cfg = fuser::Config::default();
-    cfg.mount_options = vec![fuser::MountOption::FSName("i3cm".into()), fuser::MountOption::Subtype("i3cm".into()), fuser::MountOption::RO, fuser::MountOption::NoExec];
+    cfg.mount_options = vec![fuser::MountOption::FSName("i3cm".into()), fuser::MountOption::Subtype("i3cm".into()), fuser::MountOption::NoExec];
     cfg.n_threads = Some(4);
     fuser::mount(Fs::new(api, ttl), mountpoint, &cfg)
 }

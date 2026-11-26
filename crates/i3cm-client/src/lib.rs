@@ -266,6 +266,16 @@ pub struct Client {
 }
 
 impl Client {
+    /// The server address this client talks to (without `/v1`).
+    pub fn base_url(&self) -> &str {
+        &self.base
+    }
+
+    /// GET with query parameters, answer as JSON.
+    pub async fn get_q_value(&self, path: &str, q: &[(&str, &str)]) -> Result<Value> {
+        self.get_q(path, &q).await
+    }
+
     pub fn new(base: &str, token: &str) -> Client {
         let http = reqwest::Client::builder().pool_max_idle_per_host(64).build().expect("http client");
         Client { http, base: base.trim_end_matches('/').to_string(), token: token.to_string(), lang: None }

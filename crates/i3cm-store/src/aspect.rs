@@ -358,6 +358,62 @@ impl Store {
         t
     }
 
+    /// The chain of nodes from the top of a view down to `node` (for opening a tree at a node).
+    /// An object reached only through a folder of another object has no known chain above it.
+    pub async fn aspect_path(&self, ctx: &Ctx, aspect: &str, node: &str, lang: &str) -> Result<Vec<NodeOut>> {
+        let nav = StoreNav::new(self, ctx);
+        let grp = |keys: &[String]| -> Vec<NodeOut> {
+            (1..=keys.len()).map(|i| Self::group_out(format!("g:{}", keys[..i].iter().map(|k| esc(k)).collect::<Vec<_>>().join("/")), keys[i - 1].clone(), None)).collect()
+        };
+        let obj_chain = |id: Uuid| async move {
+            let mut out: Vec<NodeOut> = vec![];
+            if aspect == VIEW_TYPE {
+                if let Some(o) = self.plain_object_out(&nav, id, lang).await? {
+                    if let Some(t) = o.type_name.clone() {
+                        out.push(Self::group_out(format!("g:{}", esc(&t)), t, None));
+                    }
+                    out.push(o);
+                }
+                return Ok::<_, BaseError>(out);
+            }
+            if is_builtin(aspect) {
+                out.extend(self.plain_object_out(&nav, id, lang).await?);
+                return Ok(out);
+            }
+            let a = self.aspect_def(aspect)?;
+            let set = nav.view(id).await?.map(|v| v.types.iter().map(|t| t.type_name.clone()).collect::<BTreeSet<String>>()).unwrap_or_default();
+            if self.model.set_is_a(set.iter(), &a.entry.type_name) && !a.entry.group_by.is_empty() {
+                let def = self.model.require_type(&a.entry.type_name)?;
+                let mut keys = vec![];
+                let c = self.client().await?;
+                for g in &a.entry.group_by {
+                    let Some(k) = group_key(&expr(g)?) else { break };
+                    let Some(ad) = def.attributes.iter().find(|x| x.name == k.attr) else { break };
+                    let ct = Col::of(&ad.vt);
+                    let (from, v) = if ad.list { (format!("CROSS JOIN LATERAL unnest(x.{}) u", col(&k.attr)), "u".to_string()) } else { (String::new(), format!("x.{}", col(&k.attr))) };
+                    let sql = format!("SELECT {} FROM {} x {from} WHERE x.tenant_id=$1 AND x.object_id=$2 AND x.valid_to IS NULL ORDER BY 1 LIMIT 1", Self::key_sql(&v, ct, &k), type_table(def));
+                    match c.query_opt(&sql, &[&ctx.tenant, &id]).await.map_err(db)?.and_then(|r| r.get::<_, Option<String>>(0)) {
+                        Some(key) => keys.push(key),
+                        None => break,
+                    }
+                }
+                out.extend(grp(&keys));
+            }
+            out.extend(self.object_out(&nav, a, id, lang).await?);
+            Ok(out)
+        };
+        Ok(match parse_node(node)? {
+            NodeRef::Root => vec![],
+            NodeRef::Group(keys) => grp(&keys),
+            NodeRef::Object(id) => obj_chain(id).await?,
+            NodeRef::Folder(id, label) => {
+                let mut v = obj_chain(id).await?;
+                v.push(NodeOut { node: node.to_string(), file: false, display_name: label, ..Default::default() });
+                v
+            }
+        })
+    }
+
     /// Group keys of level `prefix.len()` below `prefix` (with counts), or the objects at full
     /// depth. Always in SQL; a list attribute places an object under each of its values.
     async fn group_level(&self, ctx: &Ctx, nav: &StoreNav<'_>, a: &AspectDef, prefix: &[String], lang: &str, page: Page) -> Result<Vec<NodeOut>> {

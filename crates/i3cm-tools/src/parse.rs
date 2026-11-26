@@ -14,7 +14,10 @@ pub fn supported(tool: Tool) -> Vec<String> {
         Tool::Grep => &[
             "-r", "-R", "-i", "-n", "-l", "-c", "-v", "-w", "-F", "-E", "-e PATTERN", "--recursive", "--ignore-case", "--line-number",
             "--files-with-matches", "--count", "--invert-match", "--word-regexp", "--fixed-strings", "--extended-regexp", "--regexp=PATTERN",
+            "-A N", "-B N", "-C N", "--after-context=N", "--before-context=N", "--context=N",
         ],
+        Tool::Tree => &["-L N", "-d", "-a"],
+        Tool::Sed => &["-e SCRIPT", "-i", "-n", "-E", "-r", "--expression=SCRIPT", "--in-place", "--quiet", "--silent", "--regexp-extended"],
         Tool::Find => &["-name P", "-iname P", "-path P", "-type f|d", "-maxdepth N", "-mindepth N", "-print", "-exec CMD {} ;", "-exec CMD {} +"],
     };
     s.iter().map(|x| x.to_string()).collect()
@@ -28,8 +31,10 @@ fn fields(tool: Tool) -> &'static [&'static str] {
         Tool::Head => &["lines", "bytes"],
         Tool::Tail => &["lines", "bytes", "fromStart"],
         Tool::Wc => &["countLines", "countWords", "countBytes"],
-        Tool::Grep => &["patterns", "recursive", "ignoreCase", "lineNumber", "filesWithMatches", "count", "invert", "word", "fixed", "extended"],
+        Tool::Grep => &["patterns", "recursive", "ignoreCase", "lineNumber", "filesWithMatches", "count", "invert", "word", "fixed", "extended", "afterContext", "beforeContext"],
         Tool::Find => &["tests", "maxdepth", "mindepth", "exec"],
+        Tool::Tree => &["level", "dirsOnly", "all"],
+        Tool::Sed => &["scripts", "inPlace", "quiet", "extended"],
     }
 }
 
@@ -45,6 +50,9 @@ pub fn check(call: &Call) -> Result<(), ToolError> {
     }
     if call.tool == Tool::Grep && call.req.options.patterns.is_empty() {
         return Err(err(call.tool, "tool.missing_operand", "grep: no pattern given".into()));
+    }
+    if call.tool == Tool::Sed && call.req.options.scripts.is_empty() {
+        return Err(err(call.tool, "tool.missing_operand", "sed: no script given".into()));
     }
     Ok(())
 }
@@ -115,7 +123,9 @@ pub fn parse(argv: &[String]) -> Result<Call, ToolError> {
                     (Tool::Grep, "invert-match") => o.invert = true,
                     (Tool::Grep, "word-regexp") => o.word = true,
                     (Tool::Grep, "fixed-strings") => o.fixed = true,
-                    (Tool::Grep, "extended-regexp") => o.extended = true,
+                    (Tool::Grep, "extended-regexp") | (Tool::Sed, "regexp-extended") => o.extended = true,
+                    (Tool::Sed, "in-place") => o.in_place = true,
+                    (Tool::Sed, "quiet") | (Tool::Sed, "silent") => o.quiet = true,
                     _ => return false,
                 }
                 true
@@ -124,6 +134,14 @@ pub fn parse(argv: &[String]) -> Result<Call, ToolError> {
                 (Tool::Head | Tool::Tail, "lines", Some(v)) => o.lines = Some(number(tool, &v, tool == Tool::Tail, &mut o)?),
                 (Tool::Head | Tool::Tail, "bytes", Some(v)) => o.bytes = Some(number(tool, &v, tool == Tool::Tail, &mut o)?),
                 (Tool::Grep, "regexp", Some(v)) => o.patterns.push(v),
+                (Tool::Grep, "after-context", Some(v)) => o.after_context = Some(number(tool, &v, false, &mut o)?),
+                (Tool::Grep, "before-context", Some(v)) => o.before_context = Some(number(tool, &v, false, &mut o)?),
+                (Tool::Grep, "context", Some(v)) => {
+                    let n = number(tool, &v, false, &mut o)?;
+                    o.after_context = Some(n);
+                    o.before_context = Some(n);
+                }
+                (Tool::Sed, "expression", Some(v)) => o.scripts.push(v),
                 (_, k, None) if flag(&mut o, k) => {}
                 _ => return Err(unknown(tool, a)),
             }
@@ -140,7 +158,10 @@ pub fn parse(argv: &[String]) -> Result<Call, ToolError> {
             let c = chars[j];
             j += 1;
             // options with a value: rest of the cluster or the next argument
-            let takes_value = matches!((tool, c), (Tool::Head | Tool::Tail, 'n') | (Tool::Head | Tool::Tail, 'c') | (Tool::Grep, 'e'));
+            let takes_value = matches!(
+                (tool, c),
+                (Tool::Head | Tool::Tail, 'n') | (Tool::Head | Tool::Tail, 'c') | (Tool::Grep, 'e') | (Tool::Grep, 'A') | (Tool::Grep, 'B') | (Tool::Grep, 'C') | (Tool::Tree, 'L') | (Tool::Sed, 'e')
+            );
             if takes_value {
                 let rest: String = chars[j..].iter().collect();
                 let v = if !rest.is_empty() {
@@ -152,9 +173,18 @@ pub fn parse(argv: &[String]) -> Result<Call, ToolError> {
                     return Err(err(tool, "tool.missing_value", format!("{}: option '-{c}' requires a value", tool.name())));
                 };
                 j = chars.len();
-                match c {
-                    'n' => o.lines = Some(number(tool, &v, tool == Tool::Tail, &mut o)?),
-                    'c' => o.bytes = Some(number(tool, &v, tool == Tool::Tail, &mut o)?),
+                match (tool, c) {
+                    (_, 'n') => o.lines = Some(number(tool, &v, tool == Tool::Tail, &mut o)?),
+                    (_, 'c') => o.bytes = Some(number(tool, &v, tool == Tool::Tail, &mut o)?),
+                    (_, 'A') => o.after_context = Some(number(tool, &v, false, &mut o)?),
+                    (_, 'B') => o.before_context = Some(number(tool, &v, false, &mut o)?),
+                    (_, 'C') => {
+                        let n = number(tool, &v, false, &mut o)?;
+                        o.after_context = Some(n);
+                        o.before_context = Some(n);
+                    }
+                    (_, 'L') => o.level = Some(number(tool, &v, false, &mut o)? as u32),
+                    (Tool::Sed, 'e') => o.scripts.push(v),
                     _ => o.patterns.push(v),
                 }
                 continue;
@@ -174,7 +204,11 @@ pub fn parse(argv: &[String]) -> Result<Call, ToolError> {
                 (Tool::Grep, 'v') => o.invert = true,
                 (Tool::Grep, 'w') => o.word = true,
                 (Tool::Grep, 'F') => o.fixed = true,
-                (Tool::Grep, 'E') => o.extended = true,
+                (Tool::Grep, 'E') | (Tool::Sed, 'E') | (Tool::Sed, 'r') => o.extended = true,
+                (Tool::Tree, 'd') => o.dirs_only = true,
+                (Tool::Tree, 'a') => o.all = true,
+                (Tool::Sed, 'i') => o.in_place = true,
+                (Tool::Sed, 'n') => o.quiet = true,
                 _ => return Err(unknown(tool, &format!("-{c}"))),
             }
         }
@@ -185,7 +219,13 @@ pub fn parse(argv: &[String]) -> Result<Call, ToolError> {
         }
         o.patterns.push(operands.remove(0));
     }
-    if matches!(tool, Tool::Cat | Tool::Head | Tool::Tail | Tool::Wc | Tool::Stat) && operands.is_empty() {
+    if tool == Tool::Sed && o.scripts.is_empty() {
+        if operands.is_empty() {
+            return Err(err(tool, "tool.missing_operand", "sed: no script given".into()));
+        }
+        o.scripts.push(operands.remove(0));
+    }
+    if matches!(tool, Tool::Cat | Tool::Head | Tool::Tail | Tool::Wc | Tool::Stat | Tool::Sed) && operands.is_empty() {
         return Err(err(tool, "tool.missing_operand", format!("{}: missing file operand (standard input is not supported)", tool.name())));
     }
     Ok(Call { tool, req: Request { cwd: String::new(), paths: operands, display: vec![], options: o } })

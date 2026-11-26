@@ -62,7 +62,7 @@ pub fn load() -> Result<Config, String> {
         Err(_) if !legacy.is_empty() => Some(legacy),
         Err(_) => None,
     };
-    let covers = |what: &str, var: &str, lower: &str| eprintln!("base: {what} from {var} covers the one in {lower}");
+    let covers = |what: &str, var: &str, lower: &str| eprintln!("i3cm: {what} from {var} covers the one in {lower}");
     if let Ok(v) = std::env::var("I3CM_SERVER") {
         if !c.server.is_empty() && c.server != v {
             covers("server", "I3CM_SERVER", &p.display().to_string());
@@ -83,6 +83,9 @@ pub fn load() -> Result<Config, String> {
             }
         }
         Err(_) => c.token = file_token.unwrap_or_default(),
+    }
+    if let Ok(v) = std::env::var("I3CM_LANG") {
+        c.lang = v;
     }
     if c.lang.is_empty() {
         c.lang = lang_from_env();
@@ -123,4 +126,68 @@ pub fn token_from(file: Option<&str>) -> Result<String, String> {
             Ok(s.trim().to_string())
         }
     }
+}
+
+/// Every configuration value with its source, for `i3cm config` (the token itself is never shown).
+pub fn describe() -> Vec<(String, String, String)> {
+    let p = path();
+    let file: Config = std::fs::read_to_string(&p).ok().and_then(|s| toml::from_str(&s).ok()).unwrap_or_default();
+    let fp = p.display().to_string();
+    let mut out = vec![];
+    let mut val = |name: &str, var: &str, from_file: &str, default: Option<String>| {
+        let (v, src) = match std::env::var(var) {
+            Ok(v) => (v, format!("environment {var}")),
+            Err(_) if !from_file.is_empty() => (from_file.to_string(), fp.clone()),
+            Err(_) => match &default {
+                Some(d) => (d.clone(), "default".into()),
+                None => ("(not set)".into(), "-".into()),
+            },
+        };
+        out.push((name.to_string(), v, src));
+    };
+    val("server", "I3CM_SERVER", &file.server, None);
+    val("tenant", "I3CM_TENANT", &file.tenant, None);
+    val("lang", "I3CM_LANG", &file.lang, Some(lang_from_env()));
+    let tp = token_path();
+    let token = match std::env::var("I3CM_TOKEN_FILE") {
+        Ok(f) => ("(hidden)".to_string(), format!("environment I3CM_TOKEN_FILE ({f})")),
+        Err(_) if tp.exists() => ("(hidden)".to_string(), tp.display().to_string()),
+        Err(_) => ("(not set)".to_string(), "-".to_string()),
+    };
+    out.push(("token".into(), token.0, token.1));
+    let pwd = match std::env::var("I3CM_PWD") {
+        Ok(v) if !v.is_empty() => (v, "environment I3CM_PWD".to_string()),
+        _ => match read_pwd() {
+            Some(v) => (v, pwd_file().display().to_string()),
+            None => ("/".into(), "default".into()),
+        },
+    };
+    out.push(("pwd".into(), pwd.0, pwd.1));
+    out
+}
+
+/// State file of `i3cm-cd` for this shell session (the session id of the calling shell).
+pub fn pwd_file() -> PathBuf {
+    let base = std::env::var_os("XDG_STATE_HOME")
+        .filter(|v| !v.is_empty())
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from(std::env::var_os("HOME").unwrap_or_default()).join(".local/state"));
+    let sid = unsafe { libc::getsid(0) };
+    base.join("i3cm").join(format!("pwd-{sid}"))
+}
+
+pub fn read_pwd() -> Option<String> {
+    std::fs::read_to_string(pwd_file()).ok().map(|s| s.trim().to_string()).filter(|s| !s.is_empty())
+}
+
+pub fn write_pwd(path: &str) -> Result<(), String> {
+    let f = pwd_file();
+    let dir = f.parent().unwrap();
+    std::fs::DirBuilder::new().recursive(true).mode(0o700).create(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+    std::fs::write(&f, format!("{path}\n")).map_err(|e| format!("{}: {e}", f.display()))
+}
+
+/// Working path of the `i3cm-*` tools: `I3CM_PWD`, else the one set by `i3cm-cd`, else `/`.
+pub fn pwd() -> String {
+    std::env::var("I3CM_PWD").ok().filter(|s| !s.is_empty()).or_else(read_pwd).unwrap_or_else(|| "/".into())
 }

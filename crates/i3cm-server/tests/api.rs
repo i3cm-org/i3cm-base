@@ -7,7 +7,7 @@ use i3cm_core::Model;
 use i3cm_server::{serve, EmbeddedDb};
 use i3cm_store::tenant::TenantInit;
 use i3cm_store::Store;
-use serde_json::json;
+use serde_json::{json, Value};
 use std::sync::OnceLock;
 use uuid::Uuid;
 
@@ -712,8 +712,8 @@ async fn equal_names_use_the_fallback_then_the_id() {
     let day = ls("/base:mailbox/2026-11-24").await;
     let dirs: Vec<&str> = day.lines().filter(|l| !l.ends_with(".md")).collect();
     assert_eq!(dirs.len(), 4, "{day}");
-    assert!(dirs.iter().any(|d| d.starts_with("anna@example.org - Angebot (2026-11-24T07:15")), "fallback with the time: {day}");
-    let at10: Vec<&&str> = dirs.iter().filter(|d| d.contains("T09:00")).collect();
+    assert!(dirs.iter().any(|d| d.starts_with("anna@example.org - Angebot (07:15)")), "fallback with the time: {day}");
+    let at10: Vec<&&str> = dirs.iter().filter(|d| d.contains("(09:00)")).collect();
     assert_eq!(at10.len(), 2, "{day}");
     assert!(at10.iter().any(|d| d.ends_with(" ~2")), "same time: numbered: {day}");
     // the numbering follows the id, so a name always means the same mail
@@ -909,4 +909,62 @@ async fn write_through_views() {
     let (_p, cp) = env.person("reader", &[]).await;
     env.admin.assign("base:reader", _p).await.unwrap();
     assert!(cp.put_aspect_file("t:mail-drop", &node, "mail.md", b"x".to_vec()).await.is_err());
+}
+
+#[tokio::test]
+async fn sed_in_place_is_one_order() {
+    let env = env().await;
+    let mut o = Order::new();
+    o.create("m1", None, json!({"base:Mail": {"receivedAt": "2026-11-24T08:15:00Z", "sender": "anna@example.org", "subject": "Angebot"}}));
+    o.create("m2", None, json!({"base:Mail": {"receivedAt": "2026-11-24T09:15:00Z", "sender": "ben@example.org", "subject": "Hi there"}}));
+    let r = env.admin.order(&o).await.unwrap();
+    let (m1, m2) = (r.created["m1"], r.created["m2"]);
+    for m in [m1, m2] {
+        env.admin.put_text(m, "base:mail.md", "# Hallo Welt").await.unwrap();
+    }
+    let ls = env.admin.tool_exec("/", &["ls", &format!("/_id/{m1}")]).await.unwrap();
+    assert!(ls["stdout"].as_str().unwrap().contains("mail.md"), "{ls}");
+    // two text files: one order, both changed
+    let res = env.admin.tool_exec("/", &["sed", "-i", "s/Hallo/Hi/", &format!("/_id/{m1}/mail.md"), &format!("/_id/{m2}/mail.md")]).await.unwrap();
+    assert_eq!(res["status"], json!(0), "{res}");
+    for m in [m1, m2] {
+        assert_eq!(env.admin.get_text(m, "base:mail.md").await.unwrap(), "# Hi Welt");
+    }
+    // a text plus an index whose body would change: rejected as a whole, nothing written
+    let res = env.admin.tool_exec("/", &["sed", "-i", "s/Hi/Ho/", &format!("/_id/{m1}/mail.md"), &format!("/_id/{m2}.md")]).await.unwrap();
+    assert_ne!(res["status"], json!(0), "{res}");
+    assert_eq!(env.admin.get_text(m1, "base:mail.md").await.unwrap(), "# Hi Welt");
+    // without -i: output only
+    let res = env.admin.tool_exec("/", &["sed", "s/Hi/Ho/", &format!("/_id/{m1}/mail.md")]).await.unwrap();
+    assert_eq!(res["stdout"], json!("# Ho Welt"));
+}
+
+#[tokio::test]
+async fn self_description_version_and_paths() {
+    let env = env().await;
+    let base = env.admin.base_url().to_string();
+    let http = reqwest::Client::new();
+    for p in ["/", "/guide/agents", "/openapi.json", "/skill.zip", "/v1/version"] {
+        let r = http.get(format!("{base}{p}")).send().await.unwrap();
+        assert!(r.status().is_success(), "{p}: {}", r.status());
+    }
+    let api: Value = http.get(format!("{base}/openapi.json")).send().await.unwrap().json().await.unwrap();
+    assert!(api["paths"]["/v1/aspects/{a}/path"]["get"].is_object());
+    // path of a mail in the mailbox: day group, then the mail
+    let mut o = Order::new();
+    o.create("m", None, json!({"base:Mail": {"receivedAt": "2026-11-24T08:15:00Z", "sender": "anna@example.org", "subject": "Angebot"}}));
+    let m = env.admin.order(&o).await.unwrap().created["m"];
+    let chain: Value = env.admin.get_q_value("/aspects/base:mailbox/path", &[("node", &format!("o:{m}"))]).await.unwrap();
+    let nodes: Vec<&str> = chain.as_array().unwrap().iter().map(|n| n["node"].as_str().unwrap()).collect();
+    assert_eq!(nodes, vec!["g:2026-11-24".to_string(), format!("o:{m}")]);
+}
+
+#[tokio::test]
+async fn unused_tokens_lapse() {
+    let env = env().await;
+    let (p, cp) = env.person("idle", &[]).await;
+    assert!(cp.me().await.is_ok());
+    let c = env.store.client().await.unwrap();
+    c.execute("UPDATE token SET last_used = now() - interval '91 days' WHERE account=$1", &[&p]).await.unwrap();
+    assert_eq!(cp.me().await.unwrap_err().error_id(), Some("auth.unused_token"));
 }

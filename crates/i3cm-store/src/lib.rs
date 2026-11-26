@@ -83,7 +83,7 @@ impl Store {
         res
     }
 
-    /// Resolve a bearer token; expired and revoked tokens are rejected.
+    /// Resolve a bearer token; expired, revoked and long unused tokens are rejected.
     pub async fn authenticate(&self, token: &str) -> Result<Auth> {
         let hash = tenant::hash_token(token);
         let c = self.client().await?;
@@ -91,7 +91,8 @@ impl Store {
         let row = c
             .query_opt(
                 "SELECT tenant_id, account, id, expires_at, revoked_at IS NOT NULL, expires_at IS NOT NULL AND expires_at <= now(), \
-                 last_used IS NULL OR last_used < now() - interval '1 minute' FROM token WHERE hash=$1",
+                 last_used IS NULL OR last_used < now() - interval '1 minute', \
+                 coalesce(last_used, created_at) < now() - interval '90 days' FROM token WHERE hash=$1",
                 &[&hash],
             )
             .await
@@ -102,6 +103,10 @@ impl Store {
         }
         if row.get::<_, bool>(5) {
             return Err(unauth("auth.expired_token", "the token has expired"));
+        }
+        if row.get::<_, bool>(7) {
+            // unused for 90 days: the token lapses (DEC-124, SPEC-004)
+            return Err(unauth("auth.unused_token", "the token was not used for 90 days"));
         }
         let id: uuid::Uuid = row.get(2);
         if row.get::<_, bool>(6) {

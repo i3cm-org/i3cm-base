@@ -249,4 +249,20 @@ impl Tree for FsTree<'_> {
     fn candidates<'b>(&'b self, literal: &'b str, icase: bool) -> Fut<'b, Option<HashSet<String>>> {
         Box::pin(async move { self.store.text_candidates(self.ctx, literal, icase).await.ok() })
     }
+
+    fn write<'b>(&'b self, files: &'b [(Node, Vec<u8>)]) -> Fut<'b, Result<i64, String>> {
+        Box::pin(async move {
+            let mut items = vec![];
+            for (n, data) in files {
+                let h: H = serde_json::from_str(&n.handle).map_err(|_| format!("{}: not writable", n.path))?;
+                items.push(match h {
+                    H::File { aspect, node, name } => crate::write::WriteItem { aspect, node, name: Some(name), data: data.clone(), drop: false },
+                    H::Index { aspect, node, .. } => crate::write::WriteItem { aspect, node, name: None, data: data.clone(), drop: false },
+                    _ => return Err(format!("{}: not writable", n.path)),
+                });
+            }
+            let mut ctx = self.ctx.clone();
+            self.store.write_files(&mut ctx, &items, &self.lang).await.map(|r| r.txn).map_err(|e| format!("{} ({})", e.description, e.error_id))
+        })
+    }
 }
