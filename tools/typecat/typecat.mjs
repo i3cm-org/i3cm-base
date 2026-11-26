@@ -330,7 +330,7 @@ function aspectOf(name, def) {
   for (const [t, n] of pairs(def.nodes)) {
     nodes[t] = {
       attributes: pairs(n.attributes).map(([label, path]) => ({ label, path })),
-      subNodes: pairs(n.subNodes).map(([label, v]) => ({ label, path: v.path, folder: !!v.folder })),
+      subNodes: pairs(n.subNodes).map(([label, v]) => ({ label, path: v.path, folder: !!v.folder, ...(v.dropType ? { dropType: v.dropType } : {}) })),
       files: pairs(n.files).map(([name, path]) => ({ name, path })),
       tabs: pairs(n.tabs).map(([label, v]) => ({ label, path: v.path, columns: pairs(v.columns).map(([l, p]) => ({ label: l, path: p })) })),
       functions: pairs(n.functions).map(([name, v]) => ({ name, url: v.url })),

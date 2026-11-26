@@ -72,7 +72,10 @@ fn test_model() -> Model {
     c.modules.push(
         serde_json::from_value(json!({
             "name": "t", "requires": ["base"], "rooms": ["tsub"], "i18n": {},
-            "aspects": [{"name": "t:due-mine", "entry": {"type": "base:Task", "groupBy": [], "where": "due <= now() and status != 'done' and assignees = %me"},
+            "aspects": [{"name": "t:mail-drop", "entry": {"type": "base:Mail", "groupBy": []},
+                "nodes": {"base:Mail": {"attributes": [], "subNodes": [{"label": "attachments", "path": "attachments", "folder": true, "dropType": "base:MailAttachment"}],
+                    "files": [{"name": "mail.md", "path": "_texts.`mail.md`"}, {"name": "mail.eml", "path": "_content"}], "tabs": [], "functions": [], "filesFirst": false}}},
+                {"name": "t:due-mine", "entry": {"type": "base:Task", "groupBy": [], "where": "due <= now() and status != 'done' and assignees = %me"},
                 "nodes": {"base:Task": {"attributes": [{"label": "subject", "path": "subject"}], "subNodes": [], "files": [], "tabs": [], "functions": [], "filesFirst": true}}}],
             "profiles": [
                 {"name": "t:no-person-sub", "rights": [{"sign": "-", "art": ["read"], "types": ["base:Person"], "room": "tsub"}]},
@@ -868,6 +871,42 @@ async fn view_filter_due_and_mine() {
     assert_eq!(names, vec!["past-mine".to_string(), "via-group".to_string()]);
     // bad filters are rejected when the catalog is loaded
     let mut c = test_model().catalog.clone();
-    c.modules.last_mut().unwrap().aspects[0].entry.filter = Some("subject.length() > 3".into());
+    c.modules.last_mut().unwrap().aspects[1].entry.filter = Some("subject.length() > 3".into());
     assert_eq!(Model::new(c).err().map(|e| e.error_id).as_deref(), Some("path.bad_filter"));
+}
+
+
+#[tokio::test]
+async fn write_through_views() {
+    let env = env().await;
+    let mut o = Order::new();
+    o.create("m", None, json!({"base:Mail": {"receivedAt": "2026-11-24T08:15:00Z", "sender": "anna@example.org", "subject": "Angebot"}}));
+    let m = env.admin.order(&o).await.unwrap().created["m"];
+    env.admin.put_text(m, "base:mail.md", "# Hallo").await.unwrap();
+    env.admin.put_content(m, b"From: anna".to_vec(), "message/rfc822", None).await.unwrap();
+    let node = format!("o:{m}");
+    // text and content
+    env.admin.put_aspect_file("t:mail-drop", &node, "mail.md", b"# Neu".to_vec()).await.unwrap();
+    assert_eq!(env.admin.aspect_file("t:mail-drop", &node, "mail.md").await.unwrap(), b"# Neu");
+    env.admin.put_aspect_file("t:mail-drop", &node, "mail.eml", b"From: ben".to_vec()).await.unwrap();
+    assert_eq!(env.admin.get_content(m).await.unwrap(), b"From: ben");
+    // attributes in the front matter of the index
+    let idx = env.admin.aspect_index("t:mail-drop", &node, None).await.unwrap();
+    let changed = idx.replace("\"subject\": \"Angebot\"", "x").replace("subject: \"Angebot\"", "subject: \"Auftrag\"");
+    assert_ne!(idx, changed);
+    env.admin.put_aspect_index("t:mail-drop", &node, &changed).await.unwrap();
+    assert_eq!(env.admin.get_object(m, None).await.unwrap().parts.iter().find(|t| t.type_name == "base:Mail").unwrap().attributes["subject"], json!("Auftrag"));
+    // an invalid value fails as a whole, nothing is stored
+    let bad = changed.replace("receivedAt: \"", "receivedAt: \"x");
+    assert!(env.admin.put_aspect_index("t:mail-drop", &node, &bad).await.is_err());
+    // the body (references) is not writable
+    assert_eq!(env.admin.put_aspect_index("t:mail-drop", &node, &format!("{changed}\n- [[/x|y]]\n")).await.unwrap_err().error_id(), Some("index.body_readonly"));
+    // a new file in the folder becomes an attachment
+    env.admin.drop_file("t:mail-drop", &format!("f:{m}:attachments"), "neu.pdf", b"%PDF-9".to_vec()).await.unwrap();
+    let atts = env.admin.aspect_children("t:mail-drop", &format!("f:{m}:attachments")).await.unwrap();
+    assert_eq!(atts.len(), 1);
+    // without write right: denied
+    let (_p, cp) = env.person("reader", &[]).await;
+    env.admin.assign("base:reader", _p).await.unwrap();
+    assert!(cp.put_aspect_file("t:mail-drop", &node, "mail.md", b"x".to_vec()).await.is_err());
 }

@@ -59,6 +59,12 @@ pub enum Op {
         rank: Option<i32>,
     },
     Unlink { reference: String, id: Uuid },
+    /// Internal (writing files through views, `sed -i`): new content version from a stored blob.
+    #[serde(skip_deserializing)]
+    SetContent { id: String, sha256: String, media_type: String, size: i64, filename: Option<String> },
+    /// Internal: new version of a text.
+    #[serde(skip_deserializing)]
+    SetText { id: String, text_type: String, content: String },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -574,6 +580,50 @@ impl Exec<'_, '_> {
                 self.links.push(rid);
                 self.touched.insert(a);
                 self.touched.insert(b);
+            }
+            Op::SetContent { id, sha256, media_type, size, filename } => {
+                let id = self.resolve(id)?;
+                let (_, path) = self.live(id).await?;
+                let set = types_of(self.tx, tenant, id, None).await?;
+                let tables = self.m.table_types(&set.keys().cloned().collect());
+                let t = tables.into_iter().find(|t| self.m.type_def(t).map(|d| d.content.is_some()).unwrap_or(false))
+                    .ok_or_else(|| BaseError::invalid("type.no_such_part", "the object has no type with content"))?;
+                if !self.new_objects.contains(&id) {
+                    self.check_on(Art::Write, &t, &path, id).await?;
+                }
+                self.tx.execute("UPDATE content SET valid_to=$3 WHERE tenant_id=$1 AND object_id=$2 AND valid_to IS NULL", &[&tenant, &id, &self.txn]).await.map_err(db)?;
+                self.tx
+                    .execute(
+                        "INSERT INTO content (tenant_id, object_id, sha256, media_type, size, filename, valid_from) VALUES ($1,$2,$3,$4,$5,$6,$7)",
+                        &[&tenant, &id, sha256, media_type, size, filename, &self.txn],
+                    )
+                    .await
+                    .map_err(db)?;
+                self.touched.insert(id);
+            }
+            Op::SetText { id, text_type, content } => {
+                let id = self.resolve(id)?;
+                let def = self.m.text_type(text_type).ok_or_else(|| BaseError::invalid("text.unknown_type", "unknown text type").with("textType", text_type.clone()))?.clone();
+                let (_, path) = self.live(id).await?;
+                let set = types_of(self.tx, tenant, id, None).await?;
+                if !self.m.table_types(&set.keys().cloned().collect()).contains(&def.owner) {
+                    return Err(BaseError::invalid("type.no_such_part", "the object has no type with this text").with("textType", text_type.clone()));
+                }
+                if !self.new_objects.contains(&id) {
+                    self.check_on(Art::Write, &def.owner, &path, id).await?;
+                }
+                self.tx
+                    .execute("UPDATE text_part SET valid_to=$4 WHERE tenant_id=$1 AND object_id=$2 AND text_type=$3 AND valid_to IS NULL", &[&tenant, &id, text_type, &self.txn])
+                    .await
+                    .map_err(db)?;
+                self.tx
+                    .execute(
+                        "INSERT INTO text_part (tenant_id, object_id, text_type, content, media_type, valid_from) VALUES ($1,$2,$3,$4,$5,$6)",
+                        &[&tenant, &id, text_type, content, &def.media_type, &self.txn],
+                    )
+                    .await
+                    .map_err(db)?;
+                self.touched.insert(id);
             }
             Op::Unlink { reference, id } => {
                 let def = self.m.ref_def(reference).ok_or_else(|| BaseError::invalid("reference.unknown", "unknown reference").with("reference", reference.clone()))?.clone();

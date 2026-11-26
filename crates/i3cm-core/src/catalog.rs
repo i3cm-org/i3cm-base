@@ -82,6 +82,9 @@ pub struct SubNodeDef {
     pub path: String,
     #[serde(default)]
     pub folder: bool,
+    /// Files copied into this folder become new objects of this type (writable views).
+    #[serde(rename = "dropType", default, skip_serializing_if = "Option::is_none")]
+    pub drop_type: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

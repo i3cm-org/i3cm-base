@@ -76,7 +76,8 @@ export interface ProfileDef { name: string; guardian?: boolean; includes?: strin
 /** Paths are FHIRPath expressions relative to the node object. */
 export interface NodeDef {
   attributes?: Record<string, string>;
-  subNodes?: Record<string, { path: string; folder?: boolean }>;
+  /** `dropType`: files copied into the folder become new objects of this type (writable views). */
+  subNodes?: Record<string, { path: string; folder?: boolean; dropType?: string }>;
   /** File name -> `_content` or `_texts.<text type>`; `{attr}` in the name is replaced. */
   files?: Record<string, string>;
   /** Objects reached by `path`; with `columns` shown as a grid, without as a list. */

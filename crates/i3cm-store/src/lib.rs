@@ -14,6 +14,7 @@ pub mod rights;
 pub mod schema;
 pub mod sql;
 pub mod tenant;
+pub mod write;
 
 use i3cm_core::i18n::I18n;
 use i3cm_core::{BaseError, Model, Result};

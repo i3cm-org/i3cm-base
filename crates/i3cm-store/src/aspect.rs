@@ -666,6 +666,23 @@ impl Store {
     }
 
     /// Content of a file of an object node: (bytes, media type).
+    /// The files of an object node with what stands behind them (content or text).
+    pub async fn files_of_node(&self, ctx: &Ctx, aspect: &str, node: &str) -> Result<Vec<(String, Item)>> {
+        let nav = StoreNav::new(self, ctx);
+        let NodeRef::Object(id) = parse_node(node)? else {
+            return Err(BaseError::invalid("aspect.bad_node", "files belong to object nodes"));
+        };
+        if is_builtin(aspect) {
+            let v = nav.view(id).await?.ok_or_else(|| BaseError::not_found("object.not_found", "object not found"))?;
+            return Ok(Self::plain_files(&v));
+        }
+        let a = self.aspect_def(aspect)?;
+        let (v, _, n) = self.node_def(&nav, a, id).await?;
+        let Some(n) = n else { return Ok(vec![]) };
+        let attrs = StoreNav::attrs(&v);
+        self.files_of(&nav, id, n, &attrs).await
+    }
+
     pub async fn aspect_file(&self, ctx: &Ctx, aspect: &str, node: &str, name: &str) -> Result<(Vec<u8>, String)> {
         if is_builtin(aspect) {
             return self.builtin_file(ctx, node, name).await;

@@ -184,16 +184,18 @@ pub fn router(store: Store) -> Router {
             Ok::<_, ApiError>(Json(json!({"requests": m.requests.load(Ordering::Relaxed)})))
         }))
         .route("/v1/aspects/{a}/entry", get(aspect_entry))
-        .route("/v1/aspects/{a}/index", get(aspect_index))
+        .route("/v1/aspects/{a}/index", get(aspect_index).put(put_aspect_index))
+        .route("/v1/aspects/{a}/drop", post(aspect_drop))
         .route("/v1/aspects/{a}/files", post(aspect_files))
         .route("/v1/tools/exec", post(tool_exec))
         .route("/v1/tools/{tool}", post(tool_call))
         .route("/v1/aspects", get(aspects))
         .route("/v1/aspects/{a}/children", get(aspect_children))
         .route("/v1/aspects/{a}/node", get(aspect_node))
-        .route("/v1/aspects/{a}/file", get(aspect_file))
+        .route("/v1/aspects/{a}/file", get(aspect_file).put(put_aspect_file))
         .route("/v1/aspects/{a}/tab", get(aspect_tab))
         .route("/v1/objects/{id}/eval", get(eval_path))
+        .layer(axum::extract::DefaultBodyLimit::max(64 << 20))
         .layer(axum::middleware::from_fn_with_state(metrics, count))
         .with_state(store)
 }
@@ -490,6 +492,30 @@ async fn eval_path(State(s): State<Store>, h: HeaderMap, Path(id): Path<Uuid>, Q
 async fn aspect_entry(State(s): State<Store>, h: HeaderMap, Path(a): Path<String>, Query(q): Query<NodeQ>) -> R<Json<Value>> {
     let r = auth(&s, &h).await?;
     Ok(Json(serde_json::to_value(s.aspect_entry(&r.ctx, &a, &q.node, q.name.as_deref(), &r.lang).await?).unwrap_or_default()))
+}
+
+async fn write_one(s: &Store, h: &HeaderMap, item: i3cm_store::write::WriteItem) -> R<Json<Value>> {
+    let mut r = auth(s, h).await?;
+    let lang = r.lang.clone();
+    let res = s.write_files(&mut r.ctx, &[item], &lang).await?;
+    Ok(Json(serde_json::to_value(res).unwrap_or_default()))
+}
+
+/// Write a file of a view node (content or text of the object behind it).
+async fn put_aspect_file(State(s): State<Store>, h: HeaderMap, Path(a): Path<String>, Query(q): Query<NodeQ>, body: axum::body::Bytes) -> R<Json<Value>> {
+    let name = q.name.clone().ok_or_else(|| BaseError::invalid("aspect.no_file", "parameter name missing"))?;
+    write_one(&s, &h, i3cm_store::write::WriteItem { aspect: a, node: q.node, name: Some(name), data: body.to_vec(), drop: false }).await
+}
+
+/// Write the index of an object node: changed attributes in the front matter.
+async fn put_aspect_index(State(s): State<Store>, h: HeaderMap, Path(a): Path<String>, Query(q): Query<NodeQ>, body: axum::body::Bytes) -> R<Json<Value>> {
+    write_one(&s, &h, i3cm_store::write::WriteItem { aspect: a, node: q.node, name: None, data: body.to_vec(), drop: false }).await
+}
+
+/// A new file in a folder with `dropType`: creates an object.
+async fn aspect_drop(State(s): State<Store>, h: HeaderMap, Path(a): Path<String>, Query(q): Query<NodeQ>, body: axum::body::Bytes) -> R<Json<Value>> {
+    let name = q.name.clone().ok_or_else(|| BaseError::invalid("aspect.no_file", "parameter name missing"))?;
+    write_one(&s, &h, i3cm_store::write::WriteItem { aspect: a, node: q.node, name: Some(name), data: body.to_vec(), drop: true }).await
 }
 
 async fn aspect_index(State(s): State<Store>, h: HeaderMap, Path(a): Path<String>, Query(q): Query<NodeQ>) -> R<Response> {

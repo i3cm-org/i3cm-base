@@ -422,6 +422,24 @@ impl Client {
         Ok(Self::check(r.send().await?).await?.bytes().await?.to_vec())
     }
 
+    /// Write a file of a view node (content or text behind it); one order.
+    pub async fn put_aspect_file(&self, aspect: &str, node: &str, name: &str, data: Vec<u8>) -> Result<Value> {
+        let r = self.req(reqwest::Method::PUT, &format!("/aspects/{aspect}/file")).query(&[("node", node), ("name", name)]).body(data);
+        Ok(Self::check(r.send().await?).await?.json().await?)
+    }
+
+    /// Write the index of an object node (attributes in the front matter); one order.
+    pub async fn put_aspect_index(&self, aspect: &str, node: &str, text: &str) -> Result<Value> {
+        let r = self.req(reqwest::Method::PUT, &format!("/aspects/{aspect}/index")).query(&[("node", node)]).body(text.to_string());
+        Ok(Self::check(r.send().await?).await?.json().await?)
+    }
+
+    /// Copy a new file into a folder with `dropType`: creates an object.
+    pub async fn drop_file(&self, aspect: &str, folder: &str, name: &str, data: Vec<u8>) -> Result<Value> {
+        let r = self.req(reqwest::Method::POST, &format!("/aspects/{aspect}/drop")).query(&[("node", folder), ("name", name)]).body(data);
+        Ok(Self::check(r.send().await?).await?.json().await?)
+    }
+
     /// One tab of an object node; `query` holds `offset`, `limit`, `sort`, `desc` as needed.
     pub async fn aspect_tab(&self, aspect: &str, node: &str, tab: &str, query: &[(&str, &str)]) -> Result<Value> {
         let mut q = vec![("node", node), ("tab", tab)];

@@ -229,6 +229,11 @@ fn check_aspect(m: &Model, a: &crate::catalog::AspectDef) -> Result<()> {
         }
         for x in &n.sub_nodes {
             check_path(m, &a.name, Some(t), &x.path)?;
+            if let Some(d) = &x.drop_type {
+                if m.type_def(d).is_none() || !x.folder || crate::paths::step(m, t, &x.path).is_err() {
+                    return Err(err("aspect.bad_drop", "dropType needs a folder over one reference end and a known type").with("aspect", a.name.clone()).with("folder", x.label.clone()));
+                }
+            }
         }
         for x in &n.tabs {
             check_path(m, &a.name, Some(t), &x.path)?;
