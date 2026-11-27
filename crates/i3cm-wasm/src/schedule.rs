@@ -30,6 +30,10 @@ pub fn period_seconds(rrule: &str) -> Result<i64> {
     Ok(base * interval.max(1))
 }
 
+fn dberr(e: tokio_postgres::Error) -> BaseError {
+    BaseError::internal(format!("database: {}", e.as_db_error().map(|d| d.message().to_string()).unwrap_or_else(|| e.to_string())))
+}
+
 impl Runtime {
     /// One scheduler pass: create the due rows for this period, then run every open one this
     /// container can claim. Returns the number of runs executed here.
@@ -55,7 +59,7 @@ impl Runtime {
                             &[&tenant, &m.name, &sc.op, &(secs as f64)],
                         )
                         .await
-                        .map_err(|e| BaseError::internal(format!("database: {e}")))?;
+                        .map_err(dberr)?;
                     }
                     loop {
                         let audit = Audit { module: Some(m.name.clone()), function: Some(sc.op.clone()), tool: Some("scheduler".into()) };
@@ -67,7 +71,7 @@ impl Runtime {
                                 &[&tenant, &m.name, &sc.op],
                             )
                             .await
-                            .map_err(|e| BaseError::internal(format!("database: {e}")))?;
+                            .map_err(dberr)?;
                         let Some(row) = row else {
                             session.abort().await;
                             break;
@@ -77,7 +81,7 @@ impl Runtime {
                             .client()
                             .execute("UPDATE schedule_run SET done_at=now(), worker=$5 WHERE tenant_id=$1 AND module=$2 AND op=$3 AND due=$4", &[&tenant, &m.name, &sc.op, &due, &worker])
                             .await
-                            .map_err(|e| BaseError::internal(format!("database: {e}")))?;
+                            .map_err(dberr)?;
                         let params = json!({ "scheduled": due.to_rfc3339() });
                         match self.run_in(session, &ctx, &m.name, &sc.op, &params).await {
                             Ok(_) => ran += 1,

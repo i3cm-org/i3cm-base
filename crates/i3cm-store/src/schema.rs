@@ -41,14 +41,14 @@ CREATE TABLE IF NOT EXISTS profile_include (tenant_id uuid NOT NULL, profile tex
 CREATE TABLE IF NOT EXISTS assignment (tenant_id uuid NOT NULL, id uuid NOT NULL, profile text NOT NULL, carrier uuid NOT NULL, valid_from bigint NOT NULL, valid_to bigint, PRIMARY KEY (tenant_id, id, valid_from));
 CREATE INDEX IF NOT EXISTS assignment_cur ON assignment (tenant_id, carrier) WHERE valid_to IS NULL;
 CREATE TABLE IF NOT EXISTS token (hash text PRIMARY KEY, tenant_id uuid NOT NULL, account uuid NOT NULL, created_at timestamptz NOT NULL DEFAULT now());
-ALTER TABLE token ADD COLUMN IF NOT EXISTS id uuid NOT NULL DEFAULT gen_random_uuid();
-ALTER TABLE token ADD COLUMN IF NOT EXISTS label text;
-ALTER TABLE token ADD COLUMN IF NOT EXISTS expires_at timestamptz;
-ALTER TABLE token ADD COLUMN IF NOT EXISTS revoked_at timestamptz;
-ALTER TABLE token ADD COLUMN IF NOT EXISTS last_used timestamptz;
+DO $$ BEGIN IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema = current_schema() AND table_name = 'token' AND column_name = 'id') THEN ALTER TABLE token ADD COLUMN id uuid NOT NULL DEFAULT gen_random_uuid(); END IF; END $$;
+DO $$ BEGIN IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema = current_schema() AND table_name = 'token' AND column_name = 'label') THEN ALTER TABLE token ADD COLUMN label text; END IF; END $$;
+DO $$ BEGIN IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema = current_schema() AND table_name = 'token' AND column_name = 'expires_at') THEN ALTER TABLE token ADD COLUMN expires_at timestamptz; END IF; END $$;
+DO $$ BEGIN IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema = current_schema() AND table_name = 'token' AND column_name = 'revoked_at') THEN ALTER TABLE token ADD COLUMN revoked_at timestamptz; END IF; END $$;
+DO $$ BEGIN IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema = current_schema() AND table_name = 'token' AND column_name = 'last_used') THEN ALTER TABLE token ADD COLUMN last_used timestamptz; END IF; END $$;
 CREATE UNIQUE INDEX IF NOT EXISTS token_id ON token (id);
 CREATE INDEX IF NOT EXISTS token_account ON token (tenant_id, account);
-ALTER TABLE profile_right ADD COLUMN IF NOT EXISTS cond text;
+DO $$ BEGIN IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema = current_schema() AND table_name = 'profile_right' AND column_name = 'cond') THEN ALTER TABLE profile_right ADD COLUMN cond text; END IF; END $$;
 DO $$ BEGIN
   IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema = current_schema() AND table_name = 'txn' AND column_name = 'module') THEN
     ALTER TABLE txn ADD COLUMN module text, ADD COLUMN function text, ADD COLUMN tool text;
@@ -114,6 +114,28 @@ pub fn catalog_ddl(m: &Model) -> Vec<String> {
         out.push(add_column(&tb, "seq", "bigserial"));
         out.push(format!("CREATE INDEX IF NOT EXISTS {tb}_a ON {tb} (tenant_id, a_id) WHERE valid_to IS NULL"));
         out.push(format!("CREATE INDEX IF NOT EXISTS {tb}_b ON {tb} (tenant_id, b_id) WHERE valid_to IS NULL"));
+    }
+    out
+}
+
+/// Split a script into statements (lines ending with `;`, `DO $$ … $$;` blocks kept whole).
+pub fn statements(script: &str) -> Vec<String> {
+    let mut out = vec![];
+    let mut cur = String::new();
+    let mut dollars = 0;
+    for line in script.lines() {
+        if line.trim().is_empty() && cur.is_empty() {
+            continue;
+        }
+        cur.push_str(line);
+        cur.push('\n');
+        dollars += line.matches("$$").count();
+        if dollars % 2 == 0 && line.trim_end().ends_with(';') {
+            out.push(std::mem::take(&mut cur));
+        }
+    }
+    if !cur.trim().is_empty() {
+        out.push(cur);
     }
     out
 }

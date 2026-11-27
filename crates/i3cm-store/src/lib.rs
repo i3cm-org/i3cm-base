@@ -79,7 +79,11 @@ impl Store {
             c.batch_execute("CREATE TABLE IF NOT EXISTS schema_state (hash text PRIMARY KEY, applied_at timestamptz NOT NULL DEFAULT now())").await.map_err(db)?;
             let done: bool = c.query_one("SELECT EXISTS (SELECT 1 FROM schema_state WHERE hash=$1)", &[&hash]).await.map_err(db)?.get(0);
             if !done {
-                c.batch_execute(schema::SYSTEM).await.map_err(db)?;
+                // one statement at a time: a multi-statement batch is one transaction that keeps the
+                // locks of all its statements and can deadlock with running orders
+                for stmt in schema::statements(schema::SYSTEM) {
+                    c.batch_execute(&stmt).await.map_err(db)?;
+                }
                 for stmt in &ddl {
                     c.batch_execute(stmt).await.map_err(db)?;
                 }
