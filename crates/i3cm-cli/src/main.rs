@@ -83,6 +83,9 @@ fn base(args: &[String]) -> i32 {
 
 /// `i3cm studio load|save|status [--force]` from the current directory (or below it).
 fn studio_cmd(args: &[String]) -> i32 {
+    if let Some(bad) = args.iter().skip(1).find(|a| *a != "--force") {
+        return fail("i3cm studio", &format!("unknown option {bad} (supported: --force)"));
+    }
     let force = args.iter().any(|a| a == "--force");
     let cfg = match config::load() {
         Ok(c) => c,
@@ -101,6 +104,16 @@ fn studio_cmd(args: &[String]) -> i32 {
 
 /// `i3cm scaffold ops --lang rust | ui [--force]` in the module repository.
 fn scaffold_cmd(args: &[String]) -> i32 {
+    let mut rest = args.iter().skip(1);
+    while let Some(a) = rest.next() {
+        match a.as_str() {
+            "--force" => {}
+            "--lang" => {
+                rest.next();
+            }
+            bad => return fail("i3cm scaffold", &format!("unknown option {bad} (supported: --lang, --force)")),
+        }
+    }
     let force = args.iter().any(|a| a == "--force");
     let here = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
     let Some(repo) = studio::find_repo(&here) else {

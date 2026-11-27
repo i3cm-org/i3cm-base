@@ -15,6 +15,7 @@ ENV I3CM_REV=$I3CM_REV
 WORKDIR /src
 COPY Cargo.toml Cargo.lock ./
 COPY crates crates
+COPY wit wit
 RUN cargo build --release -p i3cm-server -p i3cm-cli
 
 FROM debian:bookworm-slim
