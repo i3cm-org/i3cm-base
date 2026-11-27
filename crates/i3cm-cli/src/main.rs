@@ -10,8 +10,11 @@
 //! * `i3cm-cd <path>`: remember the working path of the `i3cm-*` tools for this shell session.
 //! * `sort`, `uniq`, `cut`: run here as usual; files in a mount are fetched in one request.
 //! * `i3cm config`: every setting with its source. `i3cm --version`: version and revision.
+//! * `i3cm studio load|save|status [--force]`: the module repository's `i3cm/` and its copy in a
+//!   development tenant (no merging; refuses to throw away changes of the other side).
+//! * `i3cm scaffold ops --lang rust | ui [--force]`: frames for the IDE in the module repository.
 
-use i3cm_cli::{api, config, fuse};
+use i3cm_cli::{api, config, fuse, scaffold, studio};
 use i3cm_tools::{join, parse, render, Call, Tool, TOOLS};
 use std::io::Write;
 use std::os::unix::process::CommandExt;
@@ -43,6 +46,8 @@ fn usage() -> i32 {
         "usage: i3cm links <dir>            create links for all tools and i3cm-* names\n       \
          i3cm init --server URL --tenant NAME [--token-file FILE] [--lang LANG]\n       \
          i3cm mount <mountpoint> [--ttl SECONDS]\n       \
+         i3cm studio load|save|status [--force]   module repository <-> development tenant\n       \
+         i3cm scaffold ops --lang rust | ui [--force]\n       \
          i3cm <tool> args…                 tool on tree paths (tools: {})",
         TOOLS.join(" ")
     );
@@ -59,6 +64,8 @@ fn base(args: &[String]) -> i32 {
             0
         }
         Some("cd") => cd(&args[1..]),
+        Some("studio") => studio_cmd(&args[1..]),
+        Some("scaffold") => scaffold_cmd(&args[1..]),
         Some("config") => {
             for (k, v, src) in config::describe() {
                 println!("{k:<7} {v:<40} {src}");
@@ -71,6 +78,55 @@ fn base(args: &[String]) -> i32 {
             tree_tool(&argv[0].clone(), &argv)
         }
         _ => usage(),
+    }
+}
+
+/// `i3cm studio load|save|status [--force]` from the current directory (or below it).
+fn studio_cmd(args: &[String]) -> i32 {
+    let force = args.iter().any(|a| a == "--force");
+    let cfg = match config::load() {
+        Ok(c) => c,
+        Err(e) => return fail("i3cm studio", &e),
+    };
+    let api = api::Api::new(&cfg);
+    let here = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+    let r = match args.first().map(|s| s.as_str()) {
+        Some("load") => studio::load(&api, &here, force),
+        Some("save") => studio::save(&api, &here, force),
+        Some("status") => studio::status(&api, &here),
+        _ => return fail("i3cm studio", "usage: i3cm studio load|save|status [--force]"),
+    };
+    r.unwrap_or_else(|e| fail("i3cm studio", &e))
+}
+
+/// `i3cm scaffold ops --lang rust | ui [--force]` in the module repository.
+fn scaffold_cmd(args: &[String]) -> i32 {
+    let force = args.iter().any(|a| a == "--force");
+    let here = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+    let Some(repo) = studio::find_repo(&here) else {
+        return fail("i3cm scaffold", "no i3cm/module.ts here or above");
+    };
+    let module = std::fs::read_to_string(repo.join("i3cm/module.ts")).ok().and_then(|s| studio::module_name(&s));
+    let Some(module) = module else {
+        return fail("i3cm scaffold", "module.ts names no module");
+    };
+    let files = match args.first().map(|s| s.as_str()) {
+        Some("ops") => match flag(args, "--lang") {
+            Some("rust") => scaffold::ops_rust(&module),
+            Some(l) => return fail("i3cm scaffold", &format!("unknown language {l} (known: {})", scaffold::LANGUAGES.join(" "))),
+            None => return fail("i3cm scaffold", &format!("--lang is required (known: {})", scaffold::LANGUAGES.join(" "))),
+        },
+        Some("ui") => scaffold::ui(&module, &scaffold::aspects_in(&scaffold::aspect_sources(&repo))),
+        _ => return fail("i3cm scaffold", "usage: i3cm scaffold ops --lang rust | ui [--force]"),
+    };
+    match scaffold::write(&repo, &files, force) {
+        Ok(written) => {
+            for p in written {
+                println!("{}", p.display());
+            }
+            0
+        }
+        Err(e) => fail("i3cm scaffold", &e),
     }
 }
 

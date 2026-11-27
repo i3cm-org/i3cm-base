@@ -101,6 +101,35 @@ the extension the prefilter scans the texts. `find -exec` runs our tools on the 
 per file, `+` once); another program runs locally per file through the mount. Standard input
 is not supported; `grep` without files hands over to the system tool.
 
+## Studio: module repository and development tenant
+
+In a module repository (recognised by `i3cm/module.ts`, searched from the working directory
+upwards) the program copies the declarative part, the files below `i3cm/`, to and from a
+development tenant. There it is a `studio:ModuleSource` with one `studio:SourceFile` per file
+(path, content, and the SHA-256 of the disk state at the last load or save).
+
+```sh
+i3cm studio status        # per file: same, changed in tenant, changed on disk, changed on both sides,
+                          # new in tenant, deleted on disk, only on disk
+i3cm studio load          # make the tenant equal to the disk
+i3cm studio save          # make the disk equal to the tenant (only below i3cm/, never ops/)
+```
+
+There is no merging; versions, branches and merges are git's. `load` stops (exit code 3) when it
+would throw away changes made in the tenant since the last load or save, `save` when it would
+throw away changes made on disk; `--force` goes on. Hidden files and `node_modules` are not
+copied. `load` writes structure, contents and hashes in one order (all or nothing).
+
+## Scaffolds
+
+```sh
+i3cm scaffold ops --lang rust    # ops/: WebAssembly component against the kernel's WIT world, with a test
+i3cm scaffold ui                 # i3cm/ui/<module>.html: one template per aspect and node type
+```
+
+Existing files are not overwritten without `--force`. The WIT file is the one the program was
+built with (`wit/module.wit` of the kernel).
+
 ## API
 
 The tools are reachable without the program:
