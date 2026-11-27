@@ -82,7 +82,7 @@ offered when its module has at least one aspect in the tenant (inactive modules 
   and declarations are found in the sources by name.
 
 The logic without DOM (catalog index, diagram model, layout, highlighting, issue conversion,
-finding declarations) lives in `ui/lib/` and has unit tests: `make test-ui` (Node's test runner,
+finding declarations) lives in `ui/lib/` and has unit tests: `node --test ui/test/*.test.mjs` (Node's test runner,
 no dependencies).
 
 ## Layout

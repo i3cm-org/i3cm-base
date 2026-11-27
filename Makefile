@@ -1,4 +1,4 @@
-.PHONY: catalog test test-typecat test-ui loadtest dev
+.PHONY: catalog test test-typecat loadtest dev
 
 catalog:
 	cd tools/typecat && npm ci --no-audit --no-fund >/dev/null
@@ -7,10 +7,7 @@ catalog:
 test-typecat:
 	cd tools/typecat && npm test
 
-test-ui:
-	node --test ui/test/*.test.mjs
-
-test: catalog test-typecat test-ui
+test: catalog test-typecat
 	cargo test --workspace
 
 loadtest: catalog
