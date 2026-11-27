@@ -100,8 +100,21 @@ that re-exports them, e.g. `import { Document } from "@i3cm/dms"`.
 Operations and hooks are a WebAssembly component (`wasm32-wasip2`) built from the module's `ops/`
 directory against the kernel's WIT world `i3cm:module` (`wit/module.wit`): the module exports
 `run(conn, op, params) -> result<string, string>`; the kernel hands it a `connection` with `me`,
-`get`, `query`, `order`, `call` and `impersonate`. One order is one database transaction; writes go
-in immediately, any error or trap aborts the whole order; every order has a deadline of 10 s.
+`get`, `query`, `ends`, `order`, `call` and `impersonate`. One order is one database transaction;
+writes go in immediately, any error or trap aborts the whole order; every order has a deadline of
+10 s. Everything a handle reads or writes is checked against the rights of its identity.
+
+| Function | What it does |
+|---|---|
+| `get(id)` | the object as JSON (readable parts only), with `references`: `{<end>: [id, …]}` for the filled reference ends, readable targets only, at most 100 per end; ends with more are listed in `referencesTruncated` |
+| `query(type, filter)` | `filter` `{"where": "<expression>", "after": "<id>", "limit": 100}`: objects matching an expression in the language of an aspect's `where` (`now()`, `today()`, `%me`, date arithmetic, names of the host type), readable ones only, ordered by id, paged by key; answers `{"items": [...], "next": "<id>" \| null}`. Any other JSON object: own attributes equal to the given values, at most 200, as an array |
+| `ends(id, end, offset, limit)` | ids of the readable objects at a reference end, in the end's order, at most 500 per call |
+| `order(ops)` | operations as in `POST /v1/orders`, applied at once in the open order; returns `{local name: id}` |
+| `call(op, params)` | an operation of a module (`ns:op`), same order, same identity |
+| `impersonate(carrier)` | a handle acting as a carrier of this module, for operations marked for it |
+
+The WIT package is `i3cm:module@0.6.1`, a compatible extension of `0.6.0`: components built against
+`0.6.0` keep running; use `0.6.1` for `ends`.
 `examples/example-module` is a complete module (types, profiles, carrier, operations, a hook, a
 schedule) with its code in Rust (`wit-bindgen`).
 
@@ -112,14 +125,21 @@ export const module = { name: "example", requires: ["base"] };      // mandatory
                                                                     // developmentOnly: true for tools such as the studio
 export const carriers: CarrierDef[] = [ { name: "system", profiles: ["writer"] } ];
 export const operations: OperationDef[] = [ { name: "greet" }, { name: "stamp", impersonates: ["system"] } ];
-export const hooks: HookDef[] = [ { type: "example:Note", on: "create", phase: "before", op: "checkNote" } ];
+export const hooks: HookDef[] = [
+  { type: "example:Note", on: "create", phase: "before", op: "checkNote" },
+  { type: "example:Note", on: "update", phase: "after", op: "onUpdate" },
+];
 export const schedules: ScheduleDef[] = [ { op: "tick", rrule: "FREQ=MINUTELY" } ];
 ```
 
 * A carrier is an agent account of the module, created on activation with the given profiles.
   `impersonate` is allowed only for operations listing the carrier.
-* Hooks get read-only handles; a `before` hook rejects the order by returning an error (a JSON
-  error object `{"error_id", "description", "params"}` or text).
+* Hooks run in the identity of the order and get `{"phase", "on", "type", "id", "op"}` as
+  parameters. A `before` hook gets a read-only handle and rejects the order by returning an error (a
+  JSON error object `{"error_id", "description", "params"}` or text). An `after` hook may write
+  with `order` in the same order, with the same rights; what it writes runs hooks again, so an
+  `after` hook must stop writing once its work is done (check the state first). A chain of hooks
+  and calls ends at depth 16 with `module.depth`; any failing hook aborts the whole order.
 * Schedules run per tenant in the identity of the module's first carrier, exactly once per
   period even with several main containers (`FREQ=MINUTELY|HOURLY|DAILY|WEEKLY;INTERVAL=n`).
 
@@ -152,8 +172,8 @@ node $KERNEL/tools/typecat/pack.mjs $KERNEL/types . \
 
 A module without code packs without `--wasm`. The release workflow of
 `examples/example-module/.github/workflows/release.yml` packs and attaches the files to a GitHub
-release on every tag `v*`; it needs the secrets `I3CM_SIGNING_KEY` and, while the kernel
-repository is private, `I3CM_BASE_TOKEN`.
+release on every tag `v*`; it needs the secret `I3CM_SIGNING_KEY` (for modules of i3cm-org the
+organisation's key).
 
 ## Registry
 
@@ -170,7 +190,7 @@ from the operator's keys, never from the registry:
 ```
 
 `package` and `signature` are URLs or file paths. The installer refuses a package whose checksum
-differs from the entry or whose signature matches none of the operator's trusted keys.
+differs from the entry or whose signature matches none of the trusted keys (see below).
 
 ## Activation
 
@@ -182,12 +202,18 @@ or types of other modules). Types of modules not active in a tenant do not exist
 
 ## Installing (operator)
 
-* From a file: `i3cm-server module install <name>-<version>.tar.gz --trusted <hex key>` (signature in
-  `<file>.sig`).
+* From a file: `i3cm-server module install <name>-<version>.tar.gz [--trusted <hex key>]`
+  (signature in `<file>.sig`).
 * From the registry: `i3cm-server module install <name>[@<version>] --registry <url or file of
   registry.json>`; the package checksum must match the registry entry, the signature one of the
-  operator's trusted keys (`I3CM_TRUSTED_KEYS`). `I3CM_REGISTRY_TOKEN` is sent for private release
-  assets.
+  trusted keys. `I3CM_REGISTRY_TOKEN` is sent for private release assets.
+* Trusted keys: the key of i3cm-org built into the server (`deploy/keys/i3cm-org.pub`), plus the
+  operator's own keys from `--trusted`, `I3CM_TRUSTED_KEYS` (comma-separated) and
+  `I3CM_TRUSTED_KEYS_FILE` (one hex key per line, `#` comments). Own keys let an instance run
+  self-signed modules, e.g. its own customisations.
+* An instance started with `I3CM_ALLOW_DEVELOPMENT` also installs packages without a trusted
+  signature (no `.sig`, or signed by an unknown key), with a warning in the log and in the result;
+  the checksums of the package are checked all the same. Other instances refuse them.
 * Over HTTP: with `I3CM_OPERATOR_TOKEN` (at least 32 characters) and `--modules-dir`, the server
   offers `GET /v1/operator/registry` and `POST /v1/operator/modules/install` (`{"name", "version"?}`),
   authenticated with that secret, separate from tenant tokens. Off without the secret.
@@ -197,7 +223,10 @@ Packages carry the module's sources (`src/`, the files under `i3cm/`); the insta
 of modules that depend on it (`POST /v1/catalog/check`, see api.md).
 
 Installed modules are in force after the next start of the main container. Mandatory modules of
-the image are bundled with `tools/bundle-modules.sh` (sources and refs in `deploy/modules/SOURCES`).
+the image are bundled with `tools/bundle-modules.sh` (sources and refs in `deploy/modules/SOURCES`):
+catalog part, UI templates, sources and, for modules with code, `<module>.wasm`, taken from the
+module's release package when a fourth column names it (checked against its `SHA256SUMS`), else
+built from `ops/` at the ref.
 The kernel itself carries no business types; its own tests use the test module
 `tests/modules/sample`.
 

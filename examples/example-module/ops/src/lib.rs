@@ -58,6 +58,58 @@ impl Guest for Example {
                 note(conn, "written before the crash")?;
                 panic!("deliberate crash");
             }
+            // after-update hook: when a note becomes done, stamp it and write a log note, in the
+            // same order; titles with "loop" write on every update (ends at the depth limit),
+            // titles with "fail" make the hook fail (the whole order is rolled back)
+            "onUpdate" => {
+                let id = args["id"].as_str().unwrap_or_default().to_string();
+                let note: Value = serde_json::from_str(&conn.get(&id)?).map_err(|e| e.to_string())?;
+                let part = note["parts"].as_array().and_then(|ps| ps.iter().find(|p| p["type"] == "example:Note")).cloned().unwrap_or(Value::Null);
+                let attrs = &part["attributes"];
+                let title = attrs["title"].as_str().unwrap_or("");
+                if title.contains("fail") {
+                    return Err(json!({ "error_id": "example.after_failed", "description": "after hook failed", "params": {} }).to_string());
+                }
+                if title.contains("loop") {
+                    let ops = json!([{ "op": "update", "id": id, "types": { "example:Note": { "author": format!("{}x", attrs["author"].as_str().unwrap_or("")) } } }]);
+                    conn.order(&ops.to_string())?;
+                    return Ok("{}".into());
+                }
+                if attrs["status"] == "done" && attrs["doneAt"].is_null() {
+                    let ops = json!([
+                        { "op": "update", "id": id, "types": { "example:Note": { "doneAt": "2026-01-01T00:00:00Z" } } },
+                        { "op": "create", "ref": "log", "types": { "example:Note": { "title": format!("log: {title} done"), "author": conn.me() } } }
+                    ]);
+                    conn.order(&ops.to_string())?;
+                }
+                Ok("{}".into())
+            }
+            // all open notes due before a time, read page by page through the filter expression
+            "findOpen" => {
+                let mut after = Value::Null;
+                let mut ids = vec![];
+                let mut pages = 0;
+                loop {
+                    let f = json!({ "where": args["where"].as_str().unwrap_or("status = 'open'"), "after": after, "limit": args["limit"].as_i64().unwrap_or(100) });
+                    let page: Value = serde_json::from_str(&conn.query("example:Note", &f.to_string())?).map_err(|e| e.to_string())?;
+                    pages += 1;
+                    for o in page["items"].as_array().cloned().unwrap_or_default() {
+                        ids.push(o["id"].clone());
+                    }
+                    if page["next"].is_null() {
+                        break;
+                    }
+                    after = page["next"].clone();
+                }
+                Ok(json!({ "count": ids.len(), "pages": pages, "ids": ids }).to_string())
+            }
+            // the reference ends of a note, from get and from ends
+            "refs" => {
+                let id = args["id"].as_str().unwrap_or_default();
+                let v: Value = serde_json::from_str(&conn.get(id)?).map_err(|e| e.to_string())?;
+                let children: Value = serde_json::from_str(&conn.ends(id, "children", 0, 500)?).map_err(|e| e.to_string())?;
+                Ok(json!({ "references": v["references"], "children": children }).to_string())
+            }
             "spin" => {
                 #[allow(clippy::empty_loop)]
                 loop {}

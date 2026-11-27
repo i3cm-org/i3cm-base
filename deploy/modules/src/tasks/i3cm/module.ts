@@ -1,4 +1,4 @@
-import type { ProfileDef } from "@i3cm/lib";
+import type { ProfileDef, OperationDef } from "@i3cm/lib";
 
 /** Mandatory module: delivered with the base and active in every tenant from its creation. */
 export const module = { name: "tasks", requires: ["base"], mandatory: true };
@@ -12,3 +12,5 @@ export const profiles: ProfileDef[] = [
   { name: "assignee", rights: [
     { sign: "+", art: ["read", "write"], types: ["tasks:Task", "tasks:Deadline"], room: "root", when: "assignees = %me" } ] },
 ];
+/** Code in ops/: `complete` marks a task done, sets doneAt and creates the next occurrence of a series. */
+export const operations: OperationDef[] = [ { name: "complete" } ];

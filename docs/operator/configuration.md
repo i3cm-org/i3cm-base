@@ -14,10 +14,11 @@ the default. The image sets the variables marked "image".
 | `serve --listen` | `I3CM_LISTEN` | `0.0.0.0:8480` | address of the API |
 | `serve --pool` | — | `32` | database connections |
 | `module install --registry` | `I3CM_REGISTRY` | — | registry (URL or file of `registry.json`) |
-| `module install --trusted` | `I3CM_TRUSTED_KEYS` | — | trusted ed25519 public keys (hex), comma-separated |
+| `module install --trusted` | `I3CM_TRUSTED_KEYS` | — | further trusted ed25519 public keys (hex), comma-separated; added to the built-in key of i3cm-org |
+| — | `I3CM_TRUSTED_KEYS_FILE` | — | file with further trusted keys, one hex key per line, `#` comments |
 | — | `I3CM_REGISTRY_TOKEN` | — | bearer token for private release assets when fetching packages |
 | — | `I3CM_OPERATOR_TOKEN` | — (surface off) | secret of the operator surface over HTTP, at least 32 characters |
-| — | `I3CM_ALLOW_DEVELOPMENT` | off | `true`, `1` or `yes`: development tenants may be created |
+| — | `I3CM_ALLOW_DEVELOPMENT` | off | `true`, `1` or `yes`: development tenants may be created, and module packages without a trusted signature are installed (with a warning) |
 | — | `I3CM_NODE` | `node` | Node for source checks |
 | — | `I3CM_TYPECAT` | image: `/opt/i3cm/typecat/typecat.mjs` | `typecat` for source checks |
 | — | `I3CM_TYPES_DIR` | image: `/opt/i3cm/types` | type sources of the kernel for source checks |

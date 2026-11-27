@@ -143,7 +143,8 @@ pub struct Operator {
     pub catalog: PathBuf,
     pub modules_dir: PathBuf,
     pub registry: Option<String>,
-    pub trusted: Vec<String>,
+    /// Keys and whether unsigned packages are accepted ([`install::Trust::from_env`]).
+    pub trust: install::Trust,
 }
 
 /// `GET /v1/operator/registry`, `POST /v1/operator/modules/install` (`{"name", "version"?}` from
@@ -185,7 +186,7 @@ pub fn operator_router(op: Operator) -> axum::Router {
                 }
                 let Some(src) = &op.registry else { return fail(StatusCode::NOT_FOUND, "operator.no_registry", "no registry configured".into()) };
                 let Some(name) = b["name"].as_str() else { return fail(StatusCode::BAD_REQUEST, "operator.bad_request", "name required".into()) };
-                match install::install_from_registry(&op.db_url, &op.catalog, &op.modules_dir, src, name, b["version"].as_str(), &op.trusted).await {
+                match install::install_from_registry_with(&op.db_url, &op.catalog, &op.modules_dir, src, name, b["version"].as_str(), &op.trust).await {
                     Ok(r) => (StatusCode::OK, Json(json!({"installed": r, "note": "in force after the next start"}))),
                     Err(e) => fail(StatusCode::BAD_REQUEST, "operator.install_failed", format!("{e:#}")),
                 }

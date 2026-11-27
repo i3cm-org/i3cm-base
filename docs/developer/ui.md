@@ -42,10 +42,28 @@ The frame fills `data-attr="<key>"` with the values of the aspect attribute `<ke
 
 * `<base-list-view>`: items with icon, display name and a secondary line, paged with
   "Load more", selectable by mouse and keyboard (arrows, Home, End, Enter), fires `open`.
+* `<base-action>`: a button that runs an operation of a module (see Actions).
 * `<base-grid-view>`: columns, server-side paging (25 rows) and sorting by clicking a column
   header (ascending, descending), fires `open` for a row. It **always** offers "Download as
   XLSX" and "Download as CSV"; the export contains **all** rows and is made by the server
   (`GET /v1/aspects/{aspect}/tab?…&format=xlsx|csv`), so agents get the same through the API.
+
+## Actions
+
+`<base-action>` runs an operation of a module from a snippet, without code of the module:
+
+```html
+<template data-aspect="tasks:mine" data-type="tasks:Task">
+  <span data-attr="subject"></span>
+  <base-action op="tasks/complete" params='{"id": "{id}"}' confirm="Mark as done?">Done</base-action>
+</template>
+```
+
+`op` is `module/op`; `params` is JSON where `{id}` (the node's object) and `{<key>}` (an attribute of
+the aspect node) are filled in; a string that is exactly one placeholder keeps the value's type.
+The button calls `POST /v1/modules/{module}/ops/{op}`; the server checks the operation as any
+order, an error is shown next to the button, and after success the node is loaded again (events
+`done` and `failed`). `confirm` (optional) asks first, `appearance` sets the button style.
 
 ## Tool pages
 

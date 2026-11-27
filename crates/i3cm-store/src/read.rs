@@ -243,6 +243,18 @@ impl Store {
         Ok(ObjectView { id, room, deleted: deleted.is_some(), created_by: obj.get(0), created_at: obj.get(1), types, parts, content, texts })
     }
 
+    /// The type that names an object: an attached (not implied) type that is not a facet of
+    /// another attached type (`@requires` a type the object carries); else any attached type.
+    pub fn main_type<'a>(&self, types: &'a [Shown]) -> Option<&'a Shown> {
+        let facet = |t: &Shown| {
+            self.model
+                .type_def(&t.type_name)
+                .map(|d| d.requires.types.iter().any(|r| types.iter().any(|o| o.type_name != t.type_name && self.model.is_a(&o.type_name, r))))
+                .unwrap_or(false)
+        };
+        types.iter().find(|t| !t.implied && !facet(t)).or_else(|| types.iter().find(|t| !t.implied)).or(types.first())
+    }
+
     /// Current type names of an object inside an open order.
     pub async fn types_in(&self, c: &tokio_postgres::Client, tenant: Uuid, id: Uuid) -> Result<Vec<String>> {
         Ok(types_of(c, tenant, id, None).await?.into_keys().collect())
@@ -287,6 +299,126 @@ impl Store {
         Ok(out)
     }
 
+    /// Objects of a type matching a filter expression (the language of an aspect's `where`),
+    /// inside an open order; only readable objects, ordered by id, paged by key (`after`).
+    /// Returns the objects and the id to continue after, if there may be more.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn query_in(&self, c: &tokio_postgres::Client, ctx: &Ctx, t: &str, expr: &str, after: Option<Uuid>, limit: i64, lang: &str) -> Result<(Vec<ObjectView>, Option<Uuid>)> {
+        let def = self.model.require_type(t)?;
+        let limit = limit.clamp(1, 500);
+        let access = self.access(ctx, Art::Read, t)?;
+        if access.is_empty() {
+            return Ok((vec![], None));
+        }
+        let mut params: Vec<Param> = vec![Box::new(ctx.tenant)];
+        let mut conds = String::new();
+        if !expr.trim().is_empty() {
+            let f = i3cm_core::paths::view_filter(&self.model, t, expr)?;
+            conds.push_str(&format!(" AND {}", self.filter_sql(&f, t, ctx, &mut params)?));
+        }
+        if let Some(a) = after {
+            params.push(Box::new(a));
+            conds.push_str(&format!(" AND x.object_id > ${}", params.len()));
+        }
+        let from = format!(
+            "FROM {} x JOIN object_state s ON s.tenant_id=x.tenant_id AND s.object_id=x.object_id AND s.valid_to IS NULL AND s.deleted_at IS NULL",
+            type_table(def)
+        );
+        let wh = format!("WHERE x.tenant_id=$1 AND x.valid_to IS NULL AND x.deleted_at IS NULL{conds}");
+        // one branch per part of the access, merged by UNION (no OR)
+        let branches = self.rights_branches(&access, ctx, &mut params);
+        let parts: Vec<String> = branches.iter().map(|b| format!("(SELECT x.object_id {from} {wh} AND {b} ORDER BY x.object_id LIMIT {limit})")).collect();
+        let sql = format!("SELECT object_id FROM ({}) u ORDER BY object_id LIMIT {limit}", parts.join(" UNION "));
+        let ids: Vec<Uuid> = c.query(&sql, &refs(&params)).await.map_err(db)?.iter().map(|r| r.get(0)).collect();
+        let next = if ids.len() as i64 == limit { ids.last().copied() } else { None };
+        let mut out = vec![];
+        for id in ids {
+            if let Ok(v) = self.view(c, ctx, id, None, lang).await {
+                out.push(v);
+            }
+        }
+        Ok((out, next))
+    }
+
+    /// Ids (with link id) of the objects at the named end of an object, without checking that
+    /// they are readable; `None` when the object has no such end.
+    async fn end_rows<C: GenericClient>(&self, c: &C, ctx: &Ctx, id: Uuid, end: &str, limit: i64, offset: i64) -> Result<Option<Vec<(Uuid, Uuid)>>> {
+        let set: BTreeSet<String> = types_of(c, ctx.tenant, id, None).await?.into_keys().collect();
+        let Some((def, side)) = self.model.end_by_name(&set, end) else { return Ok(None) };
+        let (this, other) = match side {
+            Side::Holder => ("a_id", "b_id"),
+            Side::Target => ("b_id", "a_id"),
+        };
+        let order = if def.ordered { "x.rank NULLS LAST, x.seq" } else { "x.seq" };
+        let sql = format!(
+            "SELECT x.{other}, x.id FROM {} x JOIN object_state s ON s.tenant_id=x.tenant_id AND s.object_id=x.{other} AND s.valid_to IS NULL AND s.deleted_at IS NULL \
+             WHERE x.tenant_id=$1 AND x.{this}=$2 AND x.valid_to IS NULL ORDER BY {order} LIMIT $3 OFFSET $4",
+            ref_table(def)
+        );
+        let rows = c.query(&sql, &[&ctx.tenant, &id, &limit, &offset]).await.map_err(db)?;
+        Ok(Some(rows.iter().map(|r| (r.get(0), r.get(1))).collect()))
+    }
+
+    /// Readable objects at the named end of an object inside an open order (module code).
+    pub async fn end_ids_in(&self, c: &tokio_postgres::Client, ctx: &Ctx, id: Uuid, end: &str, offset: i64, limit: i64) -> Result<Vec<Uuid>> {
+        self.view(c, ctx, id, None, "en").await?;
+        let rows = self
+            .end_rows(c, ctx, id, end, limit, offset)
+            .await?
+            .ok_or_else(|| BaseError::invalid("reference.unknown_end", "the object has no such end").with("end", end))?;
+        let mut out = vec![];
+        for (other, _) in rows {
+            if self.readable(c, ctx, other).await? {
+                out.push(other);
+            }
+        }
+        Ok(out)
+    }
+
+    /// The filled reference ends of an object with their readable targets (at most `per_end`
+    /// each), and the ends that have more; inside an open order (module code).
+    pub async fn references_in(&self, c: &tokio_postgres::Client, ctx: &Ctx, id: Uuid, per_end: i64) -> Result<(BTreeMap<String, Vec<Uuid>>, Vec<String>)> {
+        let set: BTreeSet<String> = types_of(c, ctx.tenant, id, None).await?.into_keys().collect();
+        let mut names: Vec<String> = self
+            .model
+            .ends_for(&set)
+            .into_iter()
+            .map(|(r, side)| match side {
+                Side::Holder => r.holder.end.clone(),
+                Side::Target => r.target.end.clone(),
+            })
+            .filter(|n| !n.is_empty())
+            .collect();
+        names.sort();
+        names.dedup();
+        let (mut refs_out, mut truncated) = (BTreeMap::new(), vec![]);
+        for n in names {
+            let Some(rows) = self.end_rows(c, ctx, id, &n, per_end + 1, 0).await? else { continue };
+            if rows.len() as i64 > per_end {
+                truncated.push(n.clone());
+            }
+            let mut ids = vec![];
+            for (other, _) in rows.into_iter().take(per_end as usize) {
+                if self.readable(c, ctx, other).await? {
+                    ids.push(other);
+                }
+            }
+            if !ids.is_empty() {
+                refs_out.insert(n, ids);
+            }
+        }
+        Ok((refs_out, truncated))
+    }
+
+    /// Whether the caller can read the object at all.
+    async fn readable<C: GenericClient>(&self, c: &C, ctx: &Ctx, id: Uuid) -> Result<bool> {
+        match self.view(c, ctx, id, None, "en").await {
+            Ok(v) => Ok(!v.deleted),
+            Err(e) if e.kind == i3cm_core::ErrorKind::NotFound => Ok(false),
+            Err(e) => Err(e),
+        }
+    }
+
     pub async fn get_object(&self, ctx: &Ctx, id: Uuid, at: Option<i64>, lang: &str) -> Result<ObjectView> {
         let c = self.client().await?;
         self.view(&**c, ctx, id, at, lang).await
@@ -296,7 +428,7 @@ impl Store {
         match self.view(c, ctx, id, None, lang).await {
             Ok(v) if !v.deleted => Ok(Some(Summary {
                 id,
-                display_name: v.types.iter().find(|t| !t.implied).or(v.types.first()).map(|t| t.display_name.clone()).unwrap_or_default(),
+                display_name: self.main_type(&v.types).map(|t| t.display_name.clone()).unwrap_or_default(),
                 types: v.types.iter().map(|t| t.type_name.clone()).collect(),
                 link: None,
                 value: None,
@@ -334,26 +466,14 @@ impl Store {
     pub async fn ends(&self, ctx: &Ctx, id: Uuid, end: &str, limit: i64, offset: i64, lang: &str) -> Result<Vec<Summary>> {
         let c = self.client().await?;
         self.view(&**c, ctx, id, None, lang).await?;
-        let set: BTreeSet<String> = types_of(&**c, ctx.tenant, id, None).await?.into_keys().collect();
-        let (def, side) = self
-            .model
-            .end_by_name(&set, end)
+        let rows = self
+            .end_rows(&**c, ctx, id, end, limit, offset)
+            .await?
             .ok_or_else(|| BaseError::invalid("reference.unknown_end", "the object has no such end").with("end", end))?;
-        let (this, other) = match side {
-            Side::Holder => ("a_id", "b_id"),
-            Side::Target => ("b_id", "a_id"),
-        };
-        let order = if def.ordered { "x.rank NULLS LAST, x.seq" } else { "x.seq" };
-        let sql = format!(
-            "SELECT x.{other}, x.id FROM {} x JOIN object_state s ON s.tenant_id=x.tenant_id AND s.object_id=x.{other} AND s.valid_to IS NULL AND s.deleted_at IS NULL \
-             WHERE x.tenant_id=$1 AND x.{this}=$2 AND x.valid_to IS NULL ORDER BY {order} LIMIT $3 OFFSET $4",
-            ref_table(def)
-        );
-        let rows = c.query(&sql, &[&ctx.tenant, &id, &limit, &offset]).await.map_err(db)?;
         let mut out = vec![];
-        for r in rows {
-            if let Some(mut s) = self.summary(&**c, ctx, r.get(0), lang).await? {
-                s.link = Some(r.get(1));
+        for (other, link) in rows {
+            if let Some(mut s) = self.summary(&**c, ctx, other, lang).await? {
+                s.link = Some(link);
                 out.push(s);
             }
         }

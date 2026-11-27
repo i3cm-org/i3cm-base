@@ -84,13 +84,14 @@ enum ModuleCmd {
         /// Registry (URL or file of registry.json): install `name[@version]` from it
         #[arg(long, env = "I3CM_REGISTRY")]
         registry: Option<String>,
-        /// Trusted ed25519 public keys (hex), comma-separated
-        #[arg(long, env = "I3CM_TRUSTED_KEYS", value_delimiter = ',')]
+        /// Further trusted ed25519 public keys (hex), comma-separated; added to the built-in key of
+        /// i3cm-org, I3CM_TRUSTED_KEYS and I3CM_TRUSTED_KEYS_FILE
+        #[arg(long, value_delimiter = ',')]
         trusted: Vec<String>,
     },
 }
 
-/// The operator allows development tenants on this instance (DEC-136).
+/// The operator allows development tenants (and unsigned module packages) on this instance.
 fn development_allowed() -> bool {
     matches!(std::env::var("I3CM_ALLOW_DEVELOPMENT").as_deref(), Ok("true") | Ok("1") | Ok("yes"))
 }
@@ -124,7 +125,7 @@ async fn main() -> Result<()> {
                     catalog: catalog.clone(),
                     modules_dir: dir.clone(),
                     registry: std::env::var("I3CM_REGISTRY").ok(),
-                    trusted: std::env::var("I3CM_TRUSTED_KEYS").map(|v| v.split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect()).unwrap_or_default(),
+                    trust: i3cm_server::install::Trust::from_env(&[])?,
                 }),
                 _ => None,
             };
@@ -145,8 +146,9 @@ async fn main() -> Result<()> {
         }
         Cmd::Module { cmd: ModuleCmd::Install { package, registry, trusted } } => {
             let dir = cli.modules_dir.clone().ok_or_else(|| anyhow::anyhow!("--modules-dir or I3CM_MODULES_DIR required"))?;
-            if trusted.is_empty() {
-                anyhow::bail!("no trusted keys (--trusted or I3CM_TRUSTED_KEYS)");
+            let trust = i3cm_server::install::Trust::from_env(&trusted)?;
+            if trust.keys.is_empty() && !trust.allow_unsigned {
+                anyhow::bail!("no trusted keys (built-in key of i3cm-org, --trusted, I3CM_TRUSTED_KEYS or I3CM_TRUSTED_KEYS_FILE)");
             }
             let r = match &registry {
                 Some(src) if !package.exists() => {
@@ -155,9 +157,9 @@ async fn main() -> Result<()> {
                         Some((n, v)) => (n.to_string(), Some(v.to_string())),
                         None => (spec, None),
                     };
-                    i3cm_server::install::install_from_registry(&db()?, &catalog, &dir, src, &name, version.as_deref(), &trusted).await?
+                    i3cm_server::install::install_from_registry_with(&db()?, &catalog, &dir, src, &name, version.as_deref(), &trust).await?
                 }
-                _ => i3cm_server::install::install(&db()?, &catalog, &dir, &package, &trusted).await?,
+                _ => i3cm_server::install::install_with(&db()?, &catalog, &dir, &package, &trust).await?,
             };
             println!("{}", serde_json::to_string_pretty(&r)?);
         }

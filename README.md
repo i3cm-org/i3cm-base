@@ -6,9 +6,12 @@ several types at once, every change is versioned, rooms and profiles decide who 
 serves the browser UI, the file system view, the Unix tools and agents alike. Business functions come
 from modules; the mandatory modules `tasks` and `dms` are delivered with the kernel.
 
-This is milestone 0.7.1: kernel with views, rights paths, the data as a file system with Unix tools,
-modules as signed WebAssembly packages with installer and activation per tenant, development tenants
-and the studio support, and a self-description for agents at `/guide/agents`.
+This is milestone 0.8: kernel with views, rights paths, the data as a file system with Unix tools,
+modules as signed WebAssembly packages with installer and activation per tenant (module code that
+queries, reads references and writes from hooks; mandatory modules with their code; operations as
+buttons in the UI; the key of i3cm-org built in, operator keys, unsigned packages on development
+instances), development tenants and the studio support, and a self-description for agents at
+`/guide/agents`.
 
 ## Documentation
 

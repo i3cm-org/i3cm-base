@@ -64,6 +64,8 @@
   td.key { width: 30%; color: var(--colorNeutralForeground2); }
   .md :is(h1, h2, h3) { font-weight: var(--fontWeightSemibold); }
   .md a, a.link { color: var(--colorBrandForeground1); cursor: pointer; }
+  base-action { display: inline-flex; align-items: center; gap: 8px; }
+  base-action .action-msg { color: var(--colorPaletteRedForeground1); }
   pre { white-space: pre-wrap; word-break: break-word; font-family: var(--fontFamilyMonospace); margin: 0; }
   .files li { margin: 6px 0; display: flex; gap: 8px; align-items: center; }
   .preview { margin-top: 12px; }
@@ -235,6 +237,7 @@ import "./components/code-editor.js";
 import "./components/diagram.js";
 import "./components/issue-list.js";
 import "./components/source-workbench.js";
+import { splitOp, fillParams } from "./lib/actions.js";
 
 const PAGE = 50;
 const $ = (s) => document.querySelector(s);
@@ -449,6 +452,47 @@ class BaseGridView extends HTMLElement {
 }
 customElements.define("base-grid-view", BaseGridView);
 
+/**
+ * <base-action op="tasks/complete" params='{"id": "{id}"}' confirm="…">Done</base-action>: a button in a
+ * module snippet that runs an operation of a module (POST /v1/modules/{module}/ops/{op}) without code
+ * of its own. `{id}` and `{<attribute key>}` in `params` take values of the shown node (a whole string
+ * "{x}" keeps the value's type). Errors of the server are shown next to the button; after success it
+ * fires `done` and the frame reloads the node. The server checks everything, as for any order.
+ */
+class BaseAction extends HTMLElement {
+  // properties set before the upgrade (snippets are filled while still detached) are kept
+  constructor() { super(); this.context ??= { id: null, attrs: {} }; this.api ??= api; }
+  connectedCallback() {
+    if (this.btn) return;
+    const label = this.textContent.trim() || this.getAttribute("op") || "Run";
+    this.textContent = "";
+    this.btn = el("fluent-button", { appearance: this.getAttribute("appearance") || "outline", onclick: () => this.run() }, label);
+    this.msg = el("span", { class: "action-msg", role: "status" });
+    this.append(this.btn, this.msg);
+  }
+  async run() {
+    const name = splitOp(this.getAttribute("op"));
+    if (!name) { this.msg.textContent = "op must be module/op"; return; }
+    const [module, op] = name;
+    const confirmText = this.getAttribute("confirm");
+    if (confirmText && !window.confirm(confirmText)) return;
+    let params = {};
+    try { params = fillParams(JSON.parse(this.getAttribute("params") || "{}"), this.context); }
+    catch { this.msg.textContent = "params is not JSON"; return; }
+    this.btn.disabled = true; this.msg.textContent = "…";
+    try {
+      const r = await this.api(`/v1/modules/${encodeURIComponent(module)}/ops/${encodeURIComponent(op)}`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(params) });
+      const result = await r.json().catch(() => null);
+      this.msg.textContent = "";
+      this.dispatchEvent(new CustomEvent("done", { detail: result, bubbles: true }));
+    } catch (e) {
+      this.msg.textContent = e.message;
+      this.dispatchEvent(new CustomEvent("failed", { detail: e.message, bubbles: true }));
+    } finally { this.btn.disabled = false; }
+  }
+}
+customElements.define("base-action", BaseAction);
+
 // ---- module templates: one HTML file per module; code goes into its components (ui/*.js) ---------
 const loadedModules = new Set();
 async function loadModule(ns) {
@@ -477,6 +521,9 @@ function moduleSummary(aspect, type, detail) {
   frag.querySelectorAll("[data-attr]").forEach((e) => (e.textContent = fmt(attrs[e.dataset.attr]?.values)));
   frag.querySelectorAll("[data-label]").forEach((e) => (e.textContent = attrs[e.dataset.label]?.label ?? e.textContent));
   frag.querySelectorAll("[data-field]").forEach((e) => (e.textContent = fmt(detail.node?.[e.dataset.field])));
+  // actions get the values of the node for their parameters
+  const values = Object.fromEntries((detail.attributes || []).map((a) => [a.key, Array.isArray(a.values) && a.values.length <= 1 ? a.values[0] : a.values]));
+  frag.querySelectorAll("base-action").forEach((e) => { e.context = { id: detail.node?.id ?? null, attrs: values }; });
   return frag;
 }
 
@@ -553,6 +600,7 @@ async function select(aspect, entry, parentName) {
   if (detail.node?.displayName) $("#title").textContent = detail.node.displayName;
   const isObject = !!(detail.node?.id || entry.id);
   $("#summary").replaceChildren(moduleSummary(aspect, detail.node?.type ?? entry.type, detail) ?? "");
+  $("#summary").querySelectorAll("base-action").forEach((b) => b.addEventListener("done", () => { if (current?.entry === entry) select(aspect, entry, parentName); }));
   tabs([
     ...(isObject ? [["Details", async () => table(["Attribute", "Value"], detail.attributes, (r, c) => (c === "Attribute" ? r.label : r.values))]] : []),
     ...(detail.tabs || []).map((t) => [t.label, async () => tabView(aspect, entry.node, t)]),

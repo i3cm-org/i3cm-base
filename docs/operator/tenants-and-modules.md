@@ -31,11 +31,16 @@ business data matters.
 Installing is the operator's job and applies to the whole instance; activating is the tenant
 administrator's job and applies to one tenant ([../tenant-admin/](../tenant-admin/README.md)).
 
-* From a package file: `i3cm-server module install <name>-<version>.tar.gz --trusted <hex key>`; the
-  signature is read from `<file>.sig`.
+* From a package file: `i3cm-server module install <name>-<version>.tar.gz [--trusted <hex key>]`;
+  the signature is read from `<file>.sig`.
 * From the registry: `i3cm-server module install <name>[@<version>] --registry <url or file>`; the
-  checksum must match the registry entry and the signature one of the trusted keys
-  (`I3CM_TRUSTED_KEYS`). Set `I3CM_REGISTRY_TOKEN` for private release assets.
+  checksum must match the registry entry and the signature one of the trusted keys. Set
+  `I3CM_REGISTRY_TOKEN` for private release assets.
+* Trusted keys: the key of i3cm-org is built in; add your own keys (for self-signed modules, e.g.
+  customisations of your own) with `--trusted`, `I3CM_TRUSTED_KEYS` or `I3CM_TRUSTED_KEYS_FILE`.
+* A development instance (`I3CM_ALLOW_DEVELOPMENT=true`) also installs packages without a trusted
+  signature, with a warning, so that a module under development need not be signed for every
+  build. Do not set it on instances with business data.
 
 The installer checks the package, its catalog part against the installed catalog, creates the tables of
 the module (all or nothing) and puts `module.json`, `module.wasm`, texts, UI templates and sources into

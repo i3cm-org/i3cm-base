@@ -81,7 +81,11 @@ only. Binary contents are stored once by hash; texts are indexed with trigrams f
 
 Module code is a WebAssembly component (wasmtime, component model) built against the WIT world
 `i3cm:module` (`wit/module.wit`). The kernel hands it an unforgeable `connection` resource with `me`,
-`get`, `query`, `order`, `call` and `impersonate`; `impersonate` returns a new connection in the identity
-of one of the module's own carriers and only for operations marked for it. Every transaction records the
-caller, module, function, identity and tool. Schedules run per tenant, exactly once per period even with
-several main containers.
+`get` (with reference ends), `query` (filter expressions of the aspects, paged), `ends`, `order`, `call`
+and `impersonate`; `impersonate` returns a new connection in the identity of one of the module's own
+carriers and only for operations marked for it. Hooks run around the operations of an order in its
+identity: `before` hooks only read and may reject, `after` hooks may write in the same transaction.
+Every transaction records the caller, module, function, identity and tool. Schedules run per tenant,
+exactly once per period even with several main containers. Packages are signed (ed25519); the key of
+i3cm-org is built in, operators add their own keys, development instances also accept unsigned
+packages.

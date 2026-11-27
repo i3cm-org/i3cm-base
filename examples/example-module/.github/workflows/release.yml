@@ -1,6 +1,6 @@
 # Builds the module code and packs a signed package on every tag v*; attaches it to the release.
-# Secrets: I3CM_SIGNING_KEY (ed25519 private key, PEM), I3CM_BASE_TOKEN (read access to the kernel
-# repository while it is private).
+# Secret: I3CM_SIGNING_KEY (ed25519 private key, PEM; for modules of i3cm-org the organisation's
+# key). The kernel repository is public, no token is needed to read it.
 name: release
 on:
   push:
@@ -16,7 +16,6 @@ jobs:
         with:
           repository: i3cm-org/i3cm-base
           path: kernel
-          token: ${{ secrets.I3CM_BASE_TOKEN }}
       - uses: actions/setup-node@v4
         with:
           node-version: "22"

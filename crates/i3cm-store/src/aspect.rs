@@ -588,7 +588,7 @@ impl Store {
         let set: BTreeSet<String> = v.types.iter().map(|t| t.type_name.clone()).collect();
         match self.model.aspect_node(a, &set) {
             Some((t, n)) => Ok((v, t, Some(n))),
-            None => Ok((v.clone(), v.types.first().map(|t| t.type_name.clone()).unwrap_or_default(), None)),
+            None => Ok((v.clone(), self.main_type(&v.types).map(|t| t.type_name.clone()).unwrap_or_default(), None)),
         }
     }
 
@@ -855,7 +855,7 @@ impl Store {
     /// Object node with the global display texts.
     async fn plain_object_out(&self, nav: &StoreNav<'_>, id: Uuid, lang: &str) -> Result<Option<NodeOut>> {
         let Some(v) = nav.view(id).await? else { return Ok(None) };
-        let t = v.types.iter().find(|x| !x.implied).or(v.types.first()).map(|x| x.type_name.clone()).unwrap_or_default();
+        let t = self.main_type(&v.types).map(|x| x.type_name.clone()).unwrap_or_default();
         let mut attrs = StoreNav::attrs(&v);
         for anc in self.model.ancestors(&t) {
             for x in &anc.attributes {

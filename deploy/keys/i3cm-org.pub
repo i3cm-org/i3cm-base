@@ -1,0 +1,5 @@
+# Public ed25519 key (hex) of i3cm-org, built into the server and always trusted for module
+# packages. Operators add their own keys with I3CM_TRUSTED_KEYS or I3CM_TRUSTED_KEYS_FILE.
+# One key per line; lines starting with # are comments.
+#
+# The key of i3cm-org is not published yet; until then only the operator's keys are trusted.

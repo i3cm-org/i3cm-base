@@ -16,6 +16,7 @@ WORKDIR /src
 COPY Cargo.toml Cargo.lock ./
 COPY crates crates
 COPY wit wit
+COPY deploy/keys deploy/keys
 RUN cargo build --release -p i3cm-server -p i3cm-cli
 
 FROM debian:bookworm-slim

@@ -1,17 +1,32 @@
-package i3cm:module@0.6.0;
+package i3cm:module@0.6.1;
 
-/// What the kernel offers module code: a handle on the open order, nothing more (DEC-117, DEC-119).
+/// What the kernel offers module code: a handle on the open order, nothing more.
+///
+/// 0.6.1 (kernel 0.8) is a compatible extension of 0.6.0: `get` also reports reference ends,
+/// `query` takes a filter expression with paging, `ends` is new. Components built against 0.6.0
+/// keep running unchanged.
 interface host {
   resource connection {
     /// The account (identity) this handle acts as.
     me: func() -> string;
-    /// Read one object as JSON (only what the identity may read).
+    /// Read one object as JSON (only what the identity may read). `references` maps each filled
+    /// reference end to the ids of its readable targets (at most 100 per end; ends with more are
+    /// listed in `referencesTruncated`, read them with `ends`).
     get: func(id: string) -> result<string, string>;
-    /// Objects of a type whose own attributes equal the JSON object `filter`; JSON array.
+    /// Objects of a type, JSON. Two forms of `filter`:
+    /// - `{"where": "<filter expression of the aspects>", "after": "<id>", "limit": 100}`: objects
+    ///   matching the expression (same language as an aspect's `where`, with `now()`, `today()`,
+    ///   `%me`, date arithmetic and names of the host type), ordered by id, paged by key; answers
+    ///   `{"items": [...], "next": "<id>" | null}`;
+    /// - any other JSON object: objects whose own attributes equal the given values, at most 200,
+    ///   as a JSON array (0.6.0 form).
     query: func(%type: string, filter: string) -> result<string, string>;
+    /// Ids of the readable objects at the named reference end of an object, in the order of the
+    /// end, from `offset`, at most `limit` (1..=500); JSON array.
+    ends: func(id: string, end: string, offset: u32, limit: u32) -> result<string, string>;
     /// Apply operations (JSON array, same form as `POST /v1/orders` ops) immediately in the open
     /// order; returns the created objects as a JSON object `{local name: id}`. Any error aborts
-    /// the whole order.
+    /// the whole order. Handles of `before` hooks may only read.
     order: func(ops: string) -> result<string, string>;
     /// Call an operation of a module (`ns:op`) through the kernel, same order, same identity.
     call: func(op: string, params: string) -> result<string, string>;

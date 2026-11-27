@@ -1,10 +1,12 @@
-//! Module code as WebAssembly components inside the server (DEC-119).
+//! Module code as WebAssembly components inside the server.
 //!
 //! One order is one database transaction (a [`Session`]); every call into module code is a
 //! frame with a fresh store and instance and its own `connection` handle. Writes go straight
 //! into the transaction; any error or trap aborts the whole order (no savepoints). `call` runs
 //! through the kernel with the identity of the calling handle; `impersonate` hands out a new
-//! handle for a carrier of the same module, only for operations marked for it (DEC-117).
+//! handle for a carrier of the same module, only for operations marked for it. Hooks of the
+//! phase `before` get read-only handles; hooks of the phase `after` write in the same order with
+//! the identity of the order (their writes run hooks again, up to the depth limit).
 
 use i3cm_core::catalog::{HookDef, Model};
 use i3cm_core::{BaseError, Result as IResult};
@@ -38,9 +40,11 @@ pub mod schedule;
 
 /// Milliseconds per epoch tick; the order deadline is counted in ticks.
 const TICK_MS: u64 = 10;
-/// Hard deadline of an order (DEC-119).
+/// Hard deadline of an order.
 pub const ORDER_TIMEOUT: Duration = Duration::from_secs(10);
 const MAX_DEPTH: u32 = 16;
+/// Targets per reference end reported by `get`; more are read with `ends`.
+const REFS_PER_END: i64 = 100;
 
 /// A `connection` handle: identity (its context), the frame it belongs to, read or write.
 pub struct ConnRep {
@@ -243,15 +247,16 @@ fn hooks_for<'a>(model: &'a Model, on: &str, phase: &str, types: &[String]) -> V
     out
 }
 
-/// Apply one operation of an order, with the hooks around it. Hooks get read-only handles in the
-/// identity of the order; a failing before hook rejects the order.
+/// Apply one operation of an order, with the hooks around it, in the identity of the order.
+/// Before hooks get read-only handles and may reject the order; after hooks may write in the
+/// same order. Any failing hook aborts the order.
 async fn apply_with_hooks(rt: &Arc<Inner>, shared: &Arc<Shared>, ctx: &mut Ctx, op: &Op, depth: u32) -> IResult<Option<Uuid>> {
     let ev = hook_event(shared, ctx, op).await?;
     let op_json = serde_json::to_value(op).unwrap_or(Value::Null);
     if let Some((on, types, id)) = &ev {
         for (module, h) in hooks_for(&rt.model, on, "before", types) {
             let params = json!({ "phase": "before", "on": on, "type": h.type_name, "id": id, "op": op_json });
-            hook_frame(rt, shared, ctx, module, &h.op, depth, params).await?;
+            hook_frame(rt, shared, ctx, module, &h.op, depth, false, params).await?;
         }
     }
     let created = {
@@ -263,17 +268,18 @@ async fn apply_with_hooks(rt: &Arc<Inner>, shared: &Arc<Shared>, ctx: &mut Ctx, 
         let id = id.or(created);
         for (module, h) in hooks_for(&rt.model, on, "after", types) {
             let params = json!({ "phase": "after", "on": on, "type": h.type_name, "id": id, "op": op_json });
-            hook_frame(rt, shared, ctx, module, &h.op, depth, params).await?;
+            hook_frame(rt, shared, ctx, module, &h.op, depth, true, params).await?;
         }
     }
     Ok(created)
 }
 
-async fn hook_frame(rt: &Arc<Inner>, shared: &Arc<Shared>, ctx: &Ctx, module: &str, op: &str, depth: u32, params: Value) -> IResult<()> {
-    if depth >= MAX_DEPTH {
-        return Err(BaseError::invalid("module.depth", "call depth limit"));
+#[allow(clippy::too_many_arguments)]
+async fn hook_frame(rt: &Arc<Inner>, shared: &Arc<Shared>, ctx: &Ctx, module: &str, op: &str, depth: u32, writable: bool, params: Value) -> IResult<()> {
+    if depth + 1 >= MAX_DEPTH {
+        return Err(BaseError::invalid("module.depth", "call depth limit").with("hook", format!("{module}:{op}")));
     }
-    match Box::pin(run_frame(rt.clone(), shared.clone(), ctx.clone(), module.into(), op.into(), depth + 1, false, params.to_string())).await {
+    match Box::pin(run_frame(rt.clone(), shared.clone(), ctx.clone(), module.into(), op.into(), depth + 1, writable, params.to_string())).await {
         Ok(Ok(_)) => Ok(()),
         Ok(Err(e)) => Err(module_error(&e).with("hook", format!("{module}:{op}"))),
         Err(trap) => Err(BaseError::invalid("module.trap", "hook failed, order aborted").with("hook", format!("{module}:{op}")).with("detail", format!("{trap:#}"))),
@@ -317,8 +323,31 @@ impl HostConnection for HostState {
         let Ok(uid) = Uuid::parse_str(&id) else { return Ok(Err(err(BaseError::invalid("object.bad_id", "not a UUID")))) };
         let g = self.order.session.lock().await;
         let Some(sess) = g.as_ref() else { return Ok(Err("order lost its session".into())) };
-        Ok(match self.order.store.view_in(sess.client(), &ctx, uid, "en").await {
-            Ok(v) => Ok(serde_json::to_string(&v).unwrap_or_default()),
+        let v = match self.order.store.view_in(sess.client(), &ctx, uid, "en").await {
+            Ok(v) => v,
+            Err(e) => return Ok(Err(err(e))),
+        };
+        let (refs, truncated) = match self.order.store.references_in(sess.client(), &ctx, uid, REFS_PER_END).await {
+            Ok(r) => r,
+            Err(e) => return Ok(Err(err(e))),
+        };
+        let mut out = serde_json::to_value(&v).unwrap_or(Value::Null);
+        if let Some(o) = out.as_object_mut() {
+            o.insert("references".into(), json!(refs));
+            if !truncated.is_empty() {
+                o.insert("referencesTruncated".into(), json!(truncated));
+            }
+        }
+        Ok(Ok(out.to_string()))
+    }
+
+    async fn ends(&mut self, s: Resource<ConnRep>, id: String, end: String, offset: u32, limit: u32) -> wasmtime::Result<std::result::Result<String, String>> {
+        let ctx = self.conn(&s)?.ctx.clone();
+        let Ok(uid) = Uuid::parse_str(&id) else { return Ok(Err(err(BaseError::invalid("object.bad_id", "not a UUID")))) };
+        let g = self.order.session.lock().await;
+        let Some(sess) = g.as_ref() else { return Ok(Err("order lost its session".into())) };
+        Ok(match self.order.store.end_ids_in(sess.client(), &ctx, uid, &end, offset as i64, limit.clamp(1, 500) as i64).await {
+            Ok(ids) => Ok(json!(ids).to_string()),
             Err(e) => Err(err(e)),
         })
     }
@@ -332,6 +361,22 @@ impl HostConnection for HostState {
         };
         let g = self.order.session.lock().await;
         let Some(sess) = g.as_ref() else { return Ok(Err("order lost its session".into())) };
+        if let Some(w) = f.get("where") {
+            let Some(w) = w.as_str() else { return Ok(Err(err(BaseError::invalid("query.bad_filter", "where must be a string")))) };
+            let after = match f.get("after") {
+                None | Some(Value::Null) => None,
+                Some(Value::String(a)) => match Uuid::parse_str(a) {
+                    Ok(u) => Some(u),
+                    Err(_) => return Ok(Err(err(BaseError::invalid("query.bad_after", "after must be an object id")))),
+                },
+                Some(_) => return Ok(Err(err(BaseError::invalid("query.bad_after", "after must be an object id")))),
+            };
+            let limit = f.get("limit").and_then(|l| l.as_i64()).unwrap_or(100);
+            return Ok(match self.order.store.query_in(sess.client(), &ctx, &t, w, after, limit, "en").await {
+                Ok((items, next)) => Ok(json!({ "items": items, "next": next }).to_string()),
+                Err(e) => Err(err(e)),
+            });
+        }
         Ok(match self.order.store.find_in(sess.client(), &ctx, &t, &f, 200, "en").await {
             Ok(v) => Ok(serde_json::to_string(&v).unwrap_or_default()),
             Err(e) => Err(err(e)),
@@ -380,7 +425,7 @@ impl HostConnection for HostState {
             return Ok(Err(err(BaseError::invalid("module.depth", "call depth limit"))));
         }
         let (ctx, depth, writable) = (c.ctx.clone(), c.depth + 1, c.writable);
-        // a trap in the callee aborts the whole order (no savepoints, DEC-119)
+        // a trap in the callee aborts the whole order (no savepoints)
         Box::pin(run_frame(self.rt.clone(), self.order.clone(), ctx, module.to_string(), name.to_string(), depth, writable, params)).await
     }
 

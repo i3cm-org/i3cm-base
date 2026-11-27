@@ -1,4 +1,4 @@
-//! Installing module packages (operator, DEC-128/129): verify the signature and checksums, check
+//! Installing module packages (operator): verify the signature and checksums, check
 //! the merged catalog, create the tables in one transaction, then place the files in the modules
 //! directory. The new catalog is in force after the next start of the main container.
 
@@ -17,6 +17,62 @@ pub struct Installed {
     pub sha256: String,
     pub tables: usize,
     pub files: Vec<String>,
+    /// Set when an unsigned (or not trusted) package was accepted on a development instance.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub warnings: Vec<String>,
+}
+
+/// The built-in key file of i3cm-org (`deploy/keys/i3cm-org.pub`).
+const BUILTIN_KEYS: &str = include_str!("../../../deploy/keys/i3cm-org.pub");
+
+/// Keys of a key file: one hex key per line, `#` starts a comment.
+pub fn parse_keys(text: &str) -> Vec<String> {
+    text.lines().map(|l| l.split('#').next().unwrap_or("").trim().to_string()).filter(|l| !l.is_empty()).collect()
+}
+
+/// What the instance trusts: the built-in key of i3cm-org, the operator's keys, and whether
+/// packages without a trusted signature are accepted (development instances only).
+#[derive(Debug, Clone, Default)]
+pub struct Trust {
+    pub keys: Vec<String>,
+    pub allow_unsigned: bool,
+}
+
+impl Trust {
+    /// Exactly these keys, signatures required (tests, tools).
+    pub fn keys(keys: &[String]) -> Trust {
+        Trust { keys: keys.to_vec(), allow_unsigned: false }
+    }
+
+    /// The built-in keys of i3cm-org.
+    pub fn builtin() -> Vec<String> {
+        parse_keys(BUILTIN_KEYS)
+    }
+
+    /// The instance's trust: built-in keys, `extra` (command line), `I3CM_TRUSTED_KEYS`
+    /// (comma-separated), the file `I3CM_TRUSTED_KEYS_FILE`; unsigned packages are accepted
+    /// when the instance allows development (`I3CM_ALLOW_DEVELOPMENT`).
+    pub fn from_env(extra: &[String]) -> Result<Trust> {
+        let file = match std::env::var("I3CM_TRUSTED_KEYS_FILE") {
+            Ok(f) => Some(std::fs::read_to_string(&f).with_context(|| format!("cannot read I3CM_TRUSTED_KEYS_FILE {f}"))?),
+            Err(_) => None,
+        };
+        let env = std::env::var("I3CM_TRUSTED_KEYS").unwrap_or_default();
+        let dev = matches!(std::env::var("I3CM_ALLOW_DEVELOPMENT").as_deref(), Ok("true") | Ok("1") | Ok("yes"));
+        Ok(Trust::build(BUILTIN_KEYS, extra, &env, file.as_deref(), dev))
+    }
+
+    /// The trust from its sources: built-in key file, extra keys, a comma-separated list, a key
+    /// file of the operator, development instance or not.
+    pub fn build(builtin: &str, extra: &[String], list: &str, file: Option<&str>, development: bool) -> Trust {
+        let mut keys = parse_keys(builtin);
+        keys.extend(extra.iter().map(|k| k.trim().to_string()).filter(|k| !k.is_empty()));
+        keys.extend(list.split(',').map(|k| k.trim().to_string()).filter(|k| !k.is_empty()));
+        keys.extend(file.map(parse_keys).unwrap_or_default());
+        keys.sort();
+        keys.dedup();
+        Trust { keys, allow_unsigned: development }
+    }
 }
 
 fn hex_sha(b: &[u8]) -> String {
@@ -57,15 +113,36 @@ pub fn load_model(base: &Path, dir: Option<&Path>) -> Result<Model> {
     Model::new(merged_catalog(base, dir)?).map_err(|e| anyhow::anyhow!("{}: {} {}", e.error_id, e.description, serde_json::Value::Object(e.params)))
 }
 
+/// Whether `sig_hex` is a signature of the package by one of the keys.
+fn signed_by(pkg: &[u8], sig_hex: &str, keys: &[String]) -> bool {
+    let digest = Sha256::digest(pkg);
+    let Some(sig) = hex::decode(sig_hex.trim()).ok().and_then(|b| Signature::from_slice(&b).ok()) else { return false };
+    keys.iter().any(|k| {
+        hex::decode(k.trim()).ok().and_then(|b| <[u8; 32]>::try_from(b.as_slice()).ok()).and_then(|b| VerifyingKey::from_bytes(&b).ok()).is_some_and(|vk| vk.verify(&digest, &sig).is_ok())
+    })
+}
+
 /// Verify a package against the trusted public keys (hex ed25519) and unpack it in memory.
 pub fn verify(pkg: &[u8], sig_hex: &str, keys: &[String]) -> Result<BTreeMap<String, Vec<u8>>> {
-    let digest = Sha256::digest(pkg);
-    let sig = Signature::from_slice(&hex::decode(sig_hex.trim()).context("signature is not hex")?).context("bad signature")?;
-    let ok = keys.iter().any(|k| {
-        hex::decode(k.trim()).ok().and_then(|b| <[u8; 32]>::try_from(b.as_slice()).ok()).and_then(|b| VerifyingKey::from_bytes(&b).ok()).is_some_and(|vk| vk.verify(&digest, &sig).is_ok())
-    });
+    Ok(verify_with(pkg, Some(sig_hex), &Trust::keys(keys))?.0)
+}
+
+/// Files of a package by name.
+pub type Files = BTreeMap<String, Vec<u8>>;
+
+/// Verify a package against the instance's trust and unpack it; the second value lists
+/// warnings (a package without a trusted signature accepted on a development instance).
+/// The checksums in SHA256SUMS are always checked.
+pub fn verify_with(pkg: &[u8], sig_hex: Option<&str>, trust: &Trust) -> Result<(Files, Vec<String>)> {
+    let mut warnings = vec![];
+    let ok = sig_hex.is_some_and(|s| signed_by(pkg, s, &trust.keys));
     if !ok {
-        bail!("package signature does not match any trusted key");
+        let why = if sig_hex.is_none() { "package has no signature" } else { "package signature does not match any trusted key" };
+        if !trust.allow_unsigned {
+            bail!("{why}");
+        }
+        tracing::warn!("{why}: accepted because the instance allows development");
+        warnings.push(format!("{why}: accepted because the instance allows development"));
     }
     let mut files = BTreeMap::new();
     let mut ar = tar::Archive::new(flate2::read::GzDecoder::new(pkg));
@@ -92,15 +169,24 @@ pub fn verify(pkg: &[u8], sig_hex: &str, keys: &[String]) -> Result<BTreeMap<Str
     if listed + 1 != files.len() {
         bail!("package contains files not listed in SHA256SUMS");
     }
-    Ok(files)
+    Ok((files, warnings))
+}
+
+/// Install a package (signature in `<file>.sig`) with exactly these keys.
+pub async fn install(db_url: &str, base: &Path, dir: &Path, pkg_path: &Path, keys: &[String]) -> Result<Installed> {
+    install_with(db_url, base, dir, pkg_path, &Trust::keys(keys)).await
 }
 
 /// Install a package: verify, check the merged catalog, create tables (one transaction), place files.
-pub async fn install(db_url: &str, base: &Path, dir: &Path, pkg_path: &Path, keys: &[String]) -> Result<Installed> {
+pub async fn install_with(db_url: &str, base: &Path, dir: &Path, pkg_path: &Path, trust: &Trust) -> Result<Installed> {
     let pkg = std::fs::read(pkg_path).with_context(|| format!("cannot read {}", pkg_path.display()))?;
     let sig_path = PathBuf::from(format!("{}.sig", pkg_path.display()));
-    let sig = std::fs::read_to_string(&sig_path).with_context(|| format!("signature {} missing", sig_path.display()))?;
-    let files = verify(&pkg, &sig, keys)?;
+    let sig = match std::fs::read_to_string(&sig_path) {
+        Ok(s) => Some(s),
+        Err(_) if trust.allow_unsigned => None,
+        Err(e) => return Err(anyhow::anyhow!("signature {} missing: {e}", sig_path.display())),
+    };
+    let (files, warnings) = verify_with(&pkg, sig.as_deref(), trust)?;
     let part: Catalog = serde_json::from_slice(files.get("module.json").context("package without module.json")?)?;
     let module = part.modules.first().context("module.json without module")?.name.clone();
     let mut cat = merged_catalog(base, Some(dir))?;
@@ -200,7 +286,7 @@ pub async fn install(db_url: &str, base: &Path, dir: &Path, pkg_path: &Path, key
         }
     }
     let placed: Vec<String> = placed.into_iter().map(|(_, _, n)| n).collect();
-    Ok(Installed { module, sha256: sha, tables: ddl.len(), files: placed })
+    Ok(Installed { module, sha256: sha, tables: ddl.len(), files: placed, warnings })
 }
 
 /// Registry entry (`registry.json` of `i3cm-org/i3cm-registry`).
@@ -244,6 +330,11 @@ pub async fn registry(src: &str) -> Result<Vec<RegistryEntry>> {
 /// listed in the registry, then verify the signature against the operator's trusted keys (the
 /// registry only locates packages; trust comes from the operator's configuration).
 pub async fn install_from_registry(db_url: &str, base: &Path, dir: &Path, registry_src: &str, name: &str, version: Option<&str>, keys: &[String]) -> Result<Installed> {
+    install_from_registry_with(db_url, base, dir, registry_src, name, version, &Trust::keys(keys)).await
+}
+
+/// As [`install_from_registry`], with the instance's trust.
+pub async fn install_from_registry_with(db_url: &str, base: &Path, dir: &Path, registry_src: &str, name: &str, version: Option<&str>, trust: &Trust) -> Result<Installed> {
     let entries = registry(registry_src).await?;
     let e = entries
         .iter()
@@ -261,5 +352,5 @@ pub async fn install_from_registry(db_url: &str, base: &Path, dir: &Path, regist
     let file = dl.join(format!("{}-{}.tar.gz", e.name, e.version));
     std::fs::write(&file, &pkg)?;
     std::fs::write(PathBuf::from(format!("{}.sig", file.display())), &sig)?;
-    install(db_url, base, dir, &file, keys).await
+    install_with(db_url, base, dir, &file, trust).await
 }
