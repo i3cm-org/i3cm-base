@@ -32,7 +32,8 @@ removed: the frame logs a warning in the browser console, and `typecat check` (a
 Components shipped by a module itself (`ui/<ns>.js`, JavaScript or TypeScript compiled when packing)
 are planned; until then use the components of the frame.
 
-A module template is chosen by `data-aspect` and `data-type` and shown above the tabs of a node.
+A module template is chosen by `data-aspect` (the aspect with or without its namespace, `tasks:mine` or
+`mine`) and `data-type` and shown above the tabs of a node.
 The frame fills `data-attr="<key>"` with the values of the aspect attribute `<key>`,
 `data-label="<key>"` with its display label and `data-field="<field>"` with a field of the node
 (`displayName`, `type`, ...). `modules/base.html` holds the templates of the module `base`

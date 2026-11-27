@@ -514,7 +514,9 @@ async function loadModule(ns) {
 }
 /** Fill a module template: `data-attr` takes the attribute values by key, `data-field` a field of the node. */
 function moduleSummary(aspect, type, detail) {
-  const t = [...$("#module-templates").querySelectorAll("template")].find((x) => x.dataset.aspect === aspect && x.dataset.type === type);
+  // data-aspect names the aspect with or without its namespace ("tasks:mine" or "mine")
+  const local = aspect.includes(":") ? aspect.slice(aspect.indexOf(":") + 1) : aspect;
+  const t = [...$("#module-templates").querySelectorAll("template")].find((x) => (x.dataset.aspect === aspect || x.dataset.aspect === local) && x.dataset.type === type);
   if (!t) return null;
   const frag = t.content.cloneNode(true);
   const attrs = Object.fromEntries((detail.attributes || []).map((a) => [a.key, a]));
