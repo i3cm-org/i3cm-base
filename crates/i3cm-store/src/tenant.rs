@@ -28,6 +28,9 @@ pub struct TenantInit {
     pub admin_account: Uuid,
     pub admin_group: Uuid,
     pub token: String,
+    /// Problems that did not stop the creation (e.g. a module sync to be repeated at server start).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub warnings: Vec<String>,
 }
 
 fn attrs(v: Value) -> Map<String, Value> {
@@ -135,10 +138,15 @@ impl Store {
         tx.commit().await.map_err(db)?;
         let admin = created["admin"];
         // the first token is a start key: valid for one day
-        // carriers (agent accounts) of the mandatory modules, and anything else their definition needs
-        self.sync_modules(tenant).await?;
+        // carriers (agent accounts) of the mandatory modules, and anything else their definition needs;
+        // a failure here does not undo the tenant: the sync is repeated at every server start
+        let mut warnings = vec![];
+        match self.sync_modules(tenant).await {
+            Ok(s) => warnings.extend(s.warnings),
+            Err(e) => warnings.push(format!("module sync failed, repeated at the next server start: {} {}", e.error_id, Value::Object(e.params.clone()))),
+        }
         let token = self.create_token_unchecked(tenant, admin, Some(INIT_TOKEN_TTL_DAYS)).await?.token;
-        Ok(TenantInit { tenant, root_room: root, admin_account: admin, admin_group: admins, token })
+        Ok(TenantInit { tenant, root_room: root, admin_account: admin, admin_group: admins, token, warnings })
     }
 
     /// Name of a tenant (`GET /v1/me` reports it so that tools can check where they write).
@@ -461,6 +469,9 @@ impl Store {
     }
 }
 
+/// Key of the advisory lock that serialises module syncs of several containers.
+const SYNC_LOCK: i64 = 0x6933_636d_7379_6e63;
+
 /// One row of `profile_right`: index, sign, arts, types, room, condition.
 type RightRow = (i32, String, Vec<String>, Vec<String>, Uuid, Option<String>);
 
@@ -527,6 +538,7 @@ impl Store {
                 development,
             };
             let mut sess = self.begin(&gctx, &crate::session::Audit { module: Some(name.clone()), function: Some("sync".into()), tool: None }).await?;
+            let mut warnings: Vec<String> = vec![];
             let res = async {
                 let mut changes = vec![];
                 let mut room_ids = have_rooms.clone();
@@ -595,6 +607,16 @@ impl Store {
                     }
                 }
                 for cr in &m.carriers {
+                    let owner: Option<String> = sess
+                        .client()
+                        .query_opt("SELECT module FROM module_carrier WHERE tenant_id=$1 AND name=$2", &[&tenant, &cr.name])
+                        .await
+                        .map_err(db)?
+                        .map(|r| r.get(0));
+                    if let Some(o) = owner.filter(|o| o != &name) {
+                        warnings.push(format!("{name}: carrier {} belongs to module {o} (skipped)", cr.name));
+                        continue;
+                    }
                     let id = match have_carriers.get(&cr.name) {
                         Some(id) => *id,
                         None => {
@@ -630,6 +652,7 @@ impl Store {
                 Ok::<_, BaseError>(changes)
             }
             .await;
+            out.warnings.append(&mut warnings);
             match res {
                 Ok(changes) if changes.is_empty() => sess.abort().await,
                 Ok(changes) => {
@@ -645,12 +668,28 @@ impl Store {
         Ok(out)
     }
 
-    /// `sync_modules` for every tenant (server start).
+    /// `sync_modules` for every tenant (server start). Several containers starting at once wait
+    /// for each other (advisory lock), so the second finds nothing left to do.
     pub async fn sync_modules_all(&self) -> Result<Vec<ModuleSync>> {
-        let mut out = vec![];
-        for t in self.tenant_ids().await? {
-            out.push(self.sync_modules(t).await?);
+        // the lock needs a connection of its own besides the ones the sync uses
+        let lock = if self.pool.status().max_size >= 2 {
+            let c = self.client().await?;
+            c.execute("SELECT pg_advisory_lock($1)", &[&SYNC_LOCK]).await.map_err(db)?;
+            Some(c)
+        } else {
+            None
+        };
+        let res = async {
+            let mut out = vec![];
+            for t in self.tenant_ids().await? {
+                out.push(self.sync_modules(t).await?);
+            }
+            Ok(out)
         }
-        Ok(out)
+        .await;
+        if let Some(c) = lock {
+            let _ = c.execute("SELECT pg_advisory_unlock($1)", &[&SYNC_LOCK]).await;
+        }
+        res
     }
 }

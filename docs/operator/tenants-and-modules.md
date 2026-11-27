@@ -54,7 +54,11 @@ installed version of each module that is active there (mandatory or activated): 
 profiles and carriers are created, the rights and includes of the module's profiles are set to those of
 the module, and missing profile assignments of carriers are added. A profile that the new version no
 longer defines is kept (assignments stay valid) and logged as a warning (`module sync: …`); remove it by
-hand if it is no longer wanted. The step is idempotent: a start without changes changes nothing. The package format and signatures are described in
+hand if it is no longer wanted. The step is idempotent: a start without changes changes nothing.
+Profiles of a module belong to the module (tenant administrators assign them, they do not edit them),
+so the sync sets them to the module's definition. Carrier names carry the module's namespace; a name
+already used by another module is skipped with a warning. Several containers starting at once wait for
+each other; a failed sync is logged and does not stop the server, the next start repeats it. The package format and signatures are described in
 [../developer/modules.md](../developer/modules.md).
 
 The UI frame loads `modules/<ns>.html` for every active namespace; with the compose file for the UI, copy

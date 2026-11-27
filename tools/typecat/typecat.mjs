@@ -321,6 +321,9 @@ export function buildCatalog(typesDir, opts = {}) {
     mod.aspects = mod.aspects.map((a) => ({ ...a, name: `${mod.name}:${a.name}` }));
     const q = (n) => (n.includes(":") ? n : `${mod.name}:${n}`);
     mod.carriers = mod.carriers.map((c) => ({ name: q(c.name), profiles: (c.profiles ?? []).map(q) }));
+    for (const c of mod.carriers)
+      if (c.name.split(":")[0] !== mod.name)
+        throw new CatError("typecat.foreign_carrier_name", "a carrier belongs to the namespace of its module", { module: mod.name, carrier: c.name });
     guarded(issues, null, () => {
       const opNames = new Set(mod.operations.map((o) => o.name));
       mod.operations = mod.operations.map((o) => {

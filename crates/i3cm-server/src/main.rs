@@ -110,13 +110,19 @@ async fn main() -> Result<()> {
         Cmd::Serve { listen, pool } => {
             let store = connect_with(&db()?, &catalog, cli.modules_dir.as_deref(), pool).await?;
             // bring tenants to the installed module versions (new profiles, rights, carriers)
-            for s in store.sync_modules_all().await.map_err(|e| anyhow::anyhow!("{e}"))? {
-                for c in &s.changes {
-                    tracing::info!(tenant = %s.tenant, "module sync: {c}");
+            match store.sync_modules_all().await {
+                Ok(all) => {
+                    for s in all {
+                        for c in &s.changes {
+                            tracing::info!(tenant = %s.tenant, "module sync: {c}");
+                        }
+                        for w in &s.warnings {
+                            tracing::warn!(tenant = %s.tenant, "module sync: {w}");
+                        }
+                    }
                 }
-                for w in &s.warnings {
-                    tracing::warn!(tenant = %s.tenant, "module sync: {w}");
-                }
+                // a failed sync must not keep the instance down; the next start tries again
+                Err(e) => tracing::error!(error = %e.description, params = %serde_json::Value::Object(e.params.clone()), "module sync failed"),
             }
             let rt = match &cli.modules_dir {
                 Some(d) => Some(runtime(&store, d)?),

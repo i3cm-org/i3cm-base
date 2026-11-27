@@ -754,6 +754,21 @@ fn new_tenants_get_profiles_and_carriers_of_mandatory_modules_and_updates_are_sy
         let s = store2.sync_modules(init.tenant).await.unwrap();
         assert!(s.changes.is_empty(), "{s:?}");
         assert_eq!(s.warnings.len(), 1);
+        // two containers starting at once with a third version: one creates the carrier, neither fails
+        let v3 = example_catalog_variant("mand-v3", |ex| {
+            ex["carriers"].as_array_mut().unwrap().push(json!({"name": "example:third", "profiles": ["example:writer"]}));
+        });
+        let a = Store::connect(&url, i3cm_server::load_catalog(&v3).unwrap(), 4).await.unwrap();
+        let b = Store::connect(&url, i3cm_server::load_catalog(&v3).unwrap(), 4).await.unwrap();
+        let (ra, rb) = tokio::join!(a.sync_modules_all(), b.sync_modules_all());
+        let created = [ra.unwrap(), rb.unwrap()]
+            .iter()
+            .flatten()
+            .filter(|s| s.tenant == init.tenant)
+            .flat_map(|s| s.changes.clone())
+            .filter(|c| c == "example: carrier example:third created")
+            .count();
+        assert_eq!(created, 1);
     });
 }
 

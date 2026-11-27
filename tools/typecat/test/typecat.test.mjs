@@ -230,3 +230,10 @@ test("code inside UI template snippets is a warning, not an error", () => {
   assert.ok(issues.every((i) => i.severity === "warning" && i.error_id === "ui.inline_code" && i.file === "i3cm/ui/demo.html" && i.line > 0));
   assert.deepEqual(checkUi(buildCatalog(typesDir, { modules: [demoRepo] })), [], "clean fixture has no warnings");
 });
+
+test("a carrier belongs to the namespace of its module", () => {
+  const ok = tmpTypes({ "modules/x/module.ts": mod("x") + `export const carriers = [ { name: "system", profiles: [] } ];\n`, "modules/x/types.ts": `import { ns } from "../../lib";\n@ns("x")\nexport class A { t!: string; }\n` });
+  assert.equal(buildCatalog(ok).modules.find((m) => m.name === "x").carriers[0].name, "x:system");
+  const bad = tmpTypes({ "modules/x/module.ts": mod("x") + `export const carriers = [ { name: "y:system", profiles: [] } ];\n`, "modules/x/types.ts": `import { ns } from "../../lib";\n@ns("x")\nexport class A { t!: string; }\n` });
+  assert.throws(() => buildCatalog(bad), (e) => e.id === "typecat.foreign_carrier_name");
+});
