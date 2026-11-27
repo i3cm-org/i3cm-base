@@ -138,3 +138,20 @@ modules are active, creates the module's rooms, profiles and carriers, applies i
 existing objects, all or nothing, and reports the new rights (`red` where they reach the root room
 or types of other modules). Types of modules not active in a tenant do not exist for it.
 
+## Installing (operator)
+
+* From a file: `i3cm-server module install <name>-<version>.tar.gz --trusted <hex key>` (signature in
+  `<file>.sig`).
+* From the registry: `i3cm-server module install <name>[@<version>] --registry <url or file of
+  registry.json>`; the package checksum must match the registry entry, the signature one of the
+  operator's trusted keys (`I3CM_TRUSTED_KEYS`). `I3CM_REGISTRY_TOKEN` is sent for private release
+  assets.
+* Over HTTP: with `I3CM_OPERATOR_TOKEN` (at least 32 characters) and `--modules-dir`, the server
+  offers `GET /v1/operator/registry` and `POST /v1/operator/modules/install` (`{"name", "version"?}`),
+  authenticated with that secret, separate from tenant tokens. Off without the secret.
+
+Installed modules are in force after the next start of the main container. Mandatory modules of
+the image are bundled with `tools/bundle-modules.sh` (sources and refs in `deploy/modules/SOURCES`).
+The kernel itself carries no business types; its own tests use the test module
+`tests/modules/sample`.
+

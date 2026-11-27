@@ -327,8 +327,19 @@ impl Store {
     }
 
     /// Aspects; `size` and `ino` describe the index of the entry node (FUSE: `<name>.md`).
-    pub fn aspect_list(&self, lang: &str) -> Vec<Value> {
-        let names = [VIEW_ID.to_string(), VIEW_TYPE.to_string()].into_iter().chain(self.model.aspects().map(|a| a.name.clone()));
+    /// An aspect of a module not active in the tenant does not exist for it.
+    fn visible(ctx: &Ctx, aspect: &str) -> Result<()> {
+        if ctx.inactive.contains(i3cm_core::Model::module_of(aspect)) {
+            return Err(BaseError::not_found("aspect.unknown", "unknown aspect").with("aspect", aspect));
+        }
+        Ok(())
+    }
+
+    /// Built-in views and the aspects of the modules active in the tenant.
+    pub fn aspect_list(&self, ctx: &Ctx, lang: &str) -> Vec<Value> {
+        let names = [VIEW_ID.to_string(), VIEW_TYPE.to_string()]
+            .into_iter()
+            .chain(self.model.aspects().map(|a| a.name.clone()).filter(|n| !ctx.inactive.contains(i3cm_core::Model::module_of(n))));
         names
             .map(|a| {
                 let d = self.aspect_display(&a, lang);
@@ -607,6 +618,7 @@ impl Store {
 
     /// Children of a node, one page; every entry carries name, size, change time and inode.
     pub async fn aspect_children_paged(&self, ctx: &Ctx, aspect: &str, node: &str, lang: &str, page: Page) -> Result<Vec<NodeOut>> {
+        Self::visible(ctx, aspect)?;
         let nav = StoreNav::new(self, ctx);
         let (offset, limit, after) = (page.offset, page.limit, page.after.clone());
         let (mut out, paged) = if is_builtin(aspect) { self.builtin_children(ctx, &nav, aspect, node, lang, page).await? } else { self.children_raw(ctx, &nav, aspect, node, lang, page).await? };
@@ -682,6 +694,7 @@ impl Store {
     }
 
     pub async fn aspect_node(&self, ctx: &Ctx, aspect: &str, node: &str, lang: &str) -> Result<NodeDetail> {
+        Self::visible(ctx, aspect)?;
         if is_builtin(aspect) {
             return self.builtin_node(ctx, aspect, node, lang).await;
         }

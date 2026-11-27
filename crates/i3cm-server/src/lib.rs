@@ -133,3 +133,79 @@ pub async fn serve_with(store: Store, rt: Option<i3cm_wasm::Runtime>, addr: Sock
     });
     Ok((bound, task))
 }
+
+/// Operator surface over HTTP (proposal admin-surface-over-http): off unless a root secret is
+/// configured; separate from tenant tokens.
+#[derive(Clone)]
+pub struct Operator {
+    pub token: String,
+    pub db_url: String,
+    pub catalog: PathBuf,
+    pub modules_dir: PathBuf,
+    pub registry: Option<String>,
+    pub trusted: Vec<String>,
+}
+
+/// `GET /v1/operator/registry`, `POST /v1/operator/modules/install` (`{"name", "version"?}` from
+/// the registry); in force after the next start of the main container.
+pub fn operator_router(op: Operator) -> axum::Router {
+    use axum::extract::State;
+    use axum::http::{HeaderMap, StatusCode};
+    use axum::routing::{get, post};
+    use axum::Json;
+    use serde_json::{json, Value};
+    fn ok(op: &Operator, h: &HeaderMap) -> bool {
+        h.get("authorization").and_then(|v| v.to_str().ok()).and_then(|v| v.strip_prefix("Bearer ")).is_some_and(|t| {
+            // constant-time comparison of the root secret
+            t.len() == op.token.len() && t.bytes().zip(op.token.bytes()).fold(0u8, |a, (x, y)| a | (x ^ y)) == 0
+        })
+    }
+    fn fail(code: StatusCode, id: &str, msg: String) -> (StatusCode, Json<Value>) {
+        (code, Json(json!({"error_id": id, "description": msg, "params": {}})))
+    }
+    axum::Router::new()
+        .route(
+            "/v1/operator/registry",
+            get(|State(op): State<Operator>, h: HeaderMap| async move {
+                if !ok(&op, &h) {
+                    return fail(StatusCode::UNAUTHORIZED, "operator.denied", "operator secret required".into());
+                }
+                let Some(src) = &op.registry else { return fail(StatusCode::NOT_FOUND, "operator.no_registry", "no registry configured".into()) };
+                match install::registry(src).await {
+                    Ok(list) => (StatusCode::OK, Json(json!(list))),
+                    Err(e) => fail(StatusCode::BAD_GATEWAY, "operator.registry", format!("{e:#}")),
+                }
+            }),
+        )
+        .route(
+            "/v1/operator/modules/install",
+            post(|State(op): State<Operator>, h: HeaderMap, Json(b): Json<Value>| async move {
+                if !ok(&op, &h) {
+                    return fail(StatusCode::UNAUTHORIZED, "operator.denied", "operator secret required".into());
+                }
+                let Some(src) = &op.registry else { return fail(StatusCode::NOT_FOUND, "operator.no_registry", "no registry configured".into()) };
+                let Some(name) = b["name"].as_str() else { return fail(StatusCode::BAD_REQUEST, "operator.bad_request", "name required".into()) };
+                match install::install_from_registry(&op.db_url, &op.catalog, &op.modules_dir, src, name, b["version"].as_str(), &op.trusted).await {
+                    Ok(r) => (StatusCode::OK, Json(json!({"installed": r, "note": "in force after the next start"}))),
+                    Err(e) => fail(StatusCode::BAD_REQUEST, "operator.install_failed", format!("{e:#}")),
+                }
+            }),
+        )
+        .with_state(op)
+}
+
+/// Serve the API with optional module code and optional operator surface.
+pub async fn serve_full(store: Store, rt: Option<i3cm_wasm::Runtime>, op: Option<Operator>, addr: SocketAddr) -> Result<(SocketAddr, tokio::task::JoinHandle<()>)> {
+    let listener = tokio::net::TcpListener::bind(addr).await?;
+    let bound = listener.local_addr()?;
+    let mut app = i3cm_api::router_with(store, rt);
+    if let Some(op) = op {
+        app = app.merge(operator_router(op));
+    }
+    let task = tokio::spawn(async move {
+        if let Err(e) = axum::serve(listener, app).await {
+            tracing::error!(%e, "server stopped");
+        }
+    });
+    Ok((bound, task))
+}

@@ -205,7 +205,6 @@ fn check_aspect(m: &Model, a: &crate::catalog::AspectDef) -> Result<()> {
     if m.type_def(entry).is_none() {
         return Err(err("aspect.unknown_type", "aspect names an unknown type").with("aspect", a.name.clone()).with("type", entry.clone()));
     }
-    let entry_def = m.type_def(entry).unwrap();
     if let Some(w) = &a.entry.filter {
         crate::paths::view_filter(m, entry, w).map_err(|e| e.with("aspect", a.name.clone()))?;
     }

@@ -52,7 +52,7 @@ impl<'a> FsTree<'a> {
     }
 
     fn list_root(&self) -> Vec<Node> {
-        let aspects = self.store.aspect_list(&self.lang);
+        let aspects = self.store.aspect_list(self.ctx, &self.lang);
         let mut out = vec![];
         for a in aspects {
             let name = a["name"].as_str().unwrap_or_default().to_string();

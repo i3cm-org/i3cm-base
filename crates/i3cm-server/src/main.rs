@@ -1,5 +1,5 @@
 use anyhow::Result;
-use i3cm_server::{connect, connect_with, default_catalog, runtime, serve, serve_with, spawn_scheduler, EmbeddedDb};
+use i3cm_server::{connect, connect_with, default_catalog, runtime, serve, serve_full, spawn_scheduler, EmbeddedDb, Operator};
 use clap::{Parser, Subcommand};
 use std::net::SocketAddr;
 use std::path::PathBuf;
@@ -62,7 +62,11 @@ enum ModuleCmd {
     /// Verify and install `<name>-<version>.tar.gz` (signature in `<file>.sig`) into --modules-dir;
     /// in force after the next start
     Install {
+        /// Package file, or `name[@version]` with --registry
         package: PathBuf,
+        /// Registry (URL or file of registry.json): install `name[@version]` from it
+        #[arg(long, env = "I3CM_REGISTRY")]
+        registry: Option<String>,
         /// Trusted ed25519 public keys (hex), comma-separated
         #[arg(long, env = "I3CM_TRUSTED_KEYS", value_delimiter = ',')]
         trusted: Vec<String>,
@@ -90,16 +94,38 @@ async fn main() -> Result<()> {
                 let worker = format!("{}-{}", std::env::var("HOSTNAME").unwrap_or_else(|_| "server".into()), std::process::id());
                 spawn_scheduler(rt.clone(), worker, std::time::Duration::from_secs(20));
             }
-            let (addr, task) = serve_with(store, rt, listen).await?;
+            // operator surface over HTTP: only with a root secret (I3CM_OPERATOR_TOKEN)
+            let op = match (std::env::var("I3CM_OPERATOR_TOKEN").ok().filter(|t| t.len() >= 32), &cli.modules_dir) {
+                (Some(token), Some(dir)) => Some(Operator {
+                    token,
+                    db_url: db()?,
+                    catalog: catalog.clone(),
+                    modules_dir: dir.clone(),
+                    registry: std::env::var("I3CM_REGISTRY").ok(),
+                    trusted: std::env::var("I3CM_TRUSTED_KEYS").map(|v| v.split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect()).unwrap_or_default(),
+                }),
+                _ => None,
+            };
+            let (addr, task) = serve_full(store, rt, op, listen).await?;
             tracing::info!(%addr, "listening");
             task.await?;
         }
-        Cmd::Module { cmd: ModuleCmd::Install { package, trusted } } => {
+        Cmd::Module { cmd: ModuleCmd::Install { package, registry, trusted } } => {
             let dir = cli.modules_dir.clone().ok_or_else(|| anyhow::anyhow!("--modules-dir or I3CM_MODULES_DIR required"))?;
             if trusted.is_empty() {
                 anyhow::bail!("no trusted keys (--trusted or I3CM_TRUSTED_KEYS)");
             }
-            let r = i3cm_server::install::install(&db()?, &catalog, &dir, &package, &trusted).await?;
+            let r = match &registry {
+                Some(src) if !package.exists() => {
+                    let spec = package.to_string_lossy().to_string();
+                    let (name, version) = match spec.split_once('@') {
+                        Some((n, v)) => (n.to_string(), Some(v.to_string())),
+                        None => (spec, None),
+                    };
+                    i3cm_server::install::install_from_registry(&db()?, &catalog, &dir, src, &name, version.as_deref(), &trusted).await?
+                }
+                _ => i3cm_server::install::install(&db()?, &catalog, &dir, &package, &trusted).await?,
+            };
             println!("{}", serde_json::to_string_pretty(&r)?);
         }
         Cmd::InitTenant { name, admin } => {

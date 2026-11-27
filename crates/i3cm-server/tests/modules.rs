@@ -287,6 +287,40 @@ fn signed_packages_install_and_tampered_ones_are_refused() {
         std::fs::copy(work.join("dist/example-0.6.0.tar.gz.sig"), work.join("dist/example-0.6.1.tar.gz.sig")).unwrap();
         let e = i3cm_server::install::install(&db_url(), &base, &mods, &bad, std::slice::from_ref(&pubkey)).await.unwrap_err();
         assert!(format!("{e:#}").contains("signature"), "{e:#}");
+        // from a registry (file), through the operator surface over HTTP
+        let entry: Value = serde_json::from_slice(&std::fs::read(work.join("dist/example-0.6.0.json")).unwrap()).unwrap();
+        let reg = work.join("registry.json");
+        std::fs::write(&reg, json!({"format": 1, "modules": [{
+            "name": "example", "version": "0.6.0", "requires": ["base"], "sha256": entry["sha256"],
+            "package": pkg.display().to_string(), "signature": format!("{}.sig", pkg.display())
+        }]}).to_string()).unwrap();
+        let mods2 = work.join("modules2");
+        std::fs::create_dir_all(&mods2).unwrap();
+        let store = Store::connect(&db_url(), i3cm_server::load_catalog(&base).unwrap(), 4).await.unwrap();
+        let op = i3cm_server::Operator {
+            token: "x".repeat(40),
+            db_url: db_url(),
+            catalog: base.clone(),
+            modules_dir: mods2.clone(),
+            registry: Some(reg.display().to_string()),
+            trusted: vec![pubkey.clone()],
+        };
+        let (addr, _t) = i3cm_server::serve_full(store, None, Some(op), "127.0.0.1:0".parse().unwrap()).await.unwrap();
+        let http = reqwest::Client::new();
+        let r = http.post(format!("http://{addr}/v1/operator/modules/install")).bearer_auth("wrong").json(&json!({"name": "example"})).send().await.unwrap();
+        assert_eq!(r.status().as_u16(), 401);
+        let r = http.get(format!("http://{addr}/v1/operator/registry")).bearer_auth("x".repeat(40)).send().await.unwrap();
+        assert_eq!(r.status().as_u16(), 200);
+        let r = http.post(format!("http://{addr}/v1/operator/modules/install")).bearer_auth("x".repeat(40)).json(&json!({"name": "example", "version": "0.6.0"})).send().await.unwrap();
+        let code = r.status().as_u16();
+        assert_eq!(code, 200, "{}", r.text().await.unwrap());
+        assert!(mods2.join("example.wasm").exists());
+        // a registry entry with a wrong checksum is refused before anything is installed
+        std::fs::write(&reg, json!({"format": 1, "modules": [{
+            "name": "example", "version": "0.6.0", "sha256": "00", "package": pkg.display().to_string(), "signature": format!("{}.sig", pkg.display())
+        }]}).to_string()).unwrap();
+        let e = i3cm_server::install::install_from_registry(&db_url(), &base, &mods2, &reg.display().to_string(), "example", None, std::slice::from_ref(&pubkey)).await.unwrap_err();
+        assert!(format!("{e:#}").contains("checksum"), "{e:#}");
         // the signed package unpacks with all listed files
         let files = i3cm_server::install::verify(&std::fs::read(&pkg).unwrap(), &std::fs::read_to_string(work.join("dist/example-0.6.0.tar.gz.sig")).unwrap(), std::slice::from_ref(&pubkey)).unwrap();
         assert!(files.contains_key("module.wasm") && files.contains_key("module.json"));
@@ -402,5 +436,36 @@ fn mandatory_modules_of_the_image_are_active_in_new_tenants() {
             let e = mods.as_array().unwrap().iter().find(|x| x["name"] == m).unwrap();
             assert_eq!((e["mandatory"].as_bool(), e["active"].as_bool()), (Some(true), Some(true)), "{m}");
         }
+    });
+}
+
+/// Aspects of a module appear only once it is active (mail from `i3cm-mail` next to the kernel
+/// checkout); skipped when the module checkouts are not present.
+#[test]
+fn aspects_of_inactive_modules_are_hidden() {
+    let dms = root().join("../../i3cm-dms/product");
+    let mail = root().join("../../i3cm-mail/product");
+    if !mail.join("i3cm/module.ts").exists() || !dms.join("i3cm/module.ts").exists() {
+        eprintln!("skipped: module checkouts not present");
+        return;
+    }
+    rt().block_on(async {
+        let cat = std::env::temp_dir().join(format!("i3cm-mail-test-{}.json", std::process::id()));
+        let st = Command::new("node").arg(root().join("tools/typecat/typecat.mjs")).arg(root().join("types")).args(["--module"]).arg(&dms).args(["--module"]).arg(&mail).arg("--out").arg(&cat).stdout(std::process::Stdio::null()).status().unwrap();
+        assert!(st.success());
+        let store = Store::connect(&db_url(), i3cm_server::load_catalog(&cat).unwrap(), 8).await.unwrap();
+        let init = store.init_tenant(&format!("mail-{}", uuid::Uuid::new_v4()), "admin").await.unwrap();
+        let (addr, _t) = serve_with(store.clone(), None, "127.0.0.1:0".parse().unwrap()).await.unwrap();
+        let http = reqwest::Client::new();
+        let names = || async {
+            let v: Value = http.get(format!("http://{addr}/v1/aspects")).bearer_auth(&init.token).send().await.unwrap().json().await.unwrap();
+            v.as_array().unwrap().iter().map(|a| a["name"].as_str().unwrap().to_string()).collect::<Vec<_>>()
+        };
+        assert!(!names().await.iter().any(|n| n.starts_with("mail:")), "mail is not active yet");
+        let r = http.get(format!("http://{addr}/v1/aspects/mail:mailbox/children")).bearer_auth(&init.token).send().await.unwrap();
+        assert_eq!(r.status().as_u16(), 404);
+        let r = http.post(format!("http://{addr}/v1/modules/mail/activate")).bearer_auth(&init.token).send().await.unwrap();
+        assert_eq!(r.status().as_u16(), 200, "{}", r.text().await.unwrap());
+        assert!(names().await.iter().any(|n| n == "mail:mailbox"));
     });
 }

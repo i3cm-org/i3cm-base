@@ -156,3 +156,64 @@ pub async fn install(db_url: &str, base: &Path, dir: &Path, pkg_path: &Path, key
     }
     Ok(Installed { module, sha256: sha, tables: ddl.len(), files: placed })
 }
+
+/// Registry entry (`registry.json` of `i3cm-org/i3cm-registry`).
+#[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
+pub struct RegistryEntry {
+    pub name: String,
+    pub version: String,
+    #[serde(default)]
+    pub requires: Vec<String>,
+    pub sha256: String,
+    pub package: String,
+    pub signature: String,
+    #[serde(default)]
+    pub key: Option<String>,
+}
+
+async fn fetch(src: &str) -> Result<Vec<u8>> {
+    if src.starts_with("http://") || src.starts_with("https://") {
+        let mut req = reqwest::Client::new().get(src);
+        // private registries: a token for GitHub release assets, given by the operator
+        if let Ok(t) = std::env::var("I3CM_REGISTRY_TOKEN") {
+            req = req.bearer_auth(t).header("Accept", "application/octet-stream");
+        }
+        let r = req.send().await?;
+        if !r.status().is_success() {
+            bail!("fetching {src}: HTTP {}", r.status());
+        }
+        Ok(r.bytes().await?.to_vec())
+    } else {
+        Ok(std::fs::read(src.strip_prefix("file://").unwrap_or(src)).with_context(|| format!("cannot read {src}"))?)
+    }
+}
+
+/// Read the registry (URL or file) and return its module entries.
+pub async fn registry(src: &str) -> Result<Vec<RegistryEntry>> {
+    let v: serde_json::Value = serde_json::from_slice(&fetch(src).await?).context("registry is not JSON")?;
+    Ok(serde_json::from_value(v.get("modules").cloned().unwrap_or_default()).context("registry modules")?)
+}
+
+/// Install `name@version` from the registry: download package and signature, check the checksum
+/// listed in the registry, then verify the signature against the operator's trusted keys (the
+/// registry only locates packages; trust comes from the operator's configuration).
+pub async fn install_from_registry(db_url: &str, base: &Path, dir: &Path, registry_src: &str, name: &str, version: Option<&str>, keys: &[String]) -> Result<Installed> {
+    let entries = registry(registry_src).await?;
+    let e = entries
+        .iter()
+        .filter(|e| e.name == name && version.is_none_or(|v| e.version == v))
+        .max_by(|a, b| a.version.cmp(&b.version))
+        .with_context(|| format!("{name}{} not in the registry", version.map(|v| format!("@{v}")).unwrap_or_default()))?
+        .clone();
+    let pkg = fetch(&e.package).await?;
+    if hex_sha(&pkg) != e.sha256 {
+        bail!("package checksum differs from the registry entry");
+    }
+    let sig = fetch(&e.signature).await?;
+    let dl = dir.join(".downloads");
+    std::fs::create_dir_all(&dl)?;
+    let file = dl.join(format!("{}-{}.tar.gz", e.name, e.version));
+    std::fs::write(&file, &pkg)?;
+    std::fs::write(PathBuf::from(format!("{}.sig", file.display())), &sig)?;
+    install(db_url, base, dir, &file, keys).await
+}

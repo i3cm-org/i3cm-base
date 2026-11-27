@@ -459,7 +459,7 @@ struct ExprQ {
 
 async fn aspects(State(s): State<Store>, h: HeaderMap) -> R<Json<Value>> {
     let r = auth(&s, &h).await?;
-    Ok(Json(Value::Array(s.aspect_list(&r.lang))))
+    Ok(Json(Value::Array(s.aspect_list(&r.ctx, &r.lang))))
 }
 
 async fn aspect_children(State(s): State<Store>, h: HeaderMap, Path(a): Path<String>, Query(q): Query<NodeQ>) -> R<Json<Value>> {
