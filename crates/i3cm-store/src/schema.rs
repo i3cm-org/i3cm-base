@@ -23,6 +23,7 @@ pub fn col(name: &str) -> String {
 
 pub const SYSTEM: &str = r#"
 CREATE TABLE IF NOT EXISTS tenant (id uuid PRIMARY KEY, name text UNIQUE NOT NULL, root_room uuid, created_at timestamptz NOT NULL DEFAULT now());
+DO $$ BEGIN IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema = current_schema() AND table_name = 'tenant' AND column_name = 'development') THEN ALTER TABLE tenant ADD COLUMN development boolean NOT NULL DEFAULT false; END IF; END $$;
 CREATE SEQUENCE IF NOT EXISTS txn_seq;
 CREATE TABLE IF NOT EXISTS txn (tenant_id uuid NOT NULL, id bigint NOT NULL, at timestamptz NOT NULL DEFAULT now(), account uuid, PRIMARY KEY (tenant_id, id));
 CREATE TABLE IF NOT EXISTS object (tenant_id uuid NOT NULL, id uuid NOT NULL, created_by uuid, created_at timestamptz NOT NULL DEFAULT now(), created_txn bigint NOT NULL, PRIMARY KEY (tenant_id, id));

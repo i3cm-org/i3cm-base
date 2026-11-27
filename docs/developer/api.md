@@ -44,7 +44,7 @@ back as `integrity.violated` with a list of violations.
 | `PUT`/`GET /v1/objects/{id}/content` | binary content (`Content-Type`, `X-Filename`) |
 | `PUT`/`GET /v1/objects/{id}/texts/{textType}` | texts, e.g. `base:mail.md` |
 | `POST /v1/references`, `DELETE /v1/references/{reference}/{id}` | link / unlink |
-| `GET /v1/me`, `GET /v1/me/groups` | me and my groups (resolved through subgroups) |
+| `GET /v1/me`, `GET /v1/me/groups` | me and my groups (resolved through subgroups); `GET /v1/me` carries `_tenant: {id, development}` |
 | `GET /v1/groups/{id}/members` | members, `?transitive=true` |
 | `GET /v1/rooms` | module rooms by name and `root` |
 | `GET /v1/rooms/{id}/children`, `/objects`, `/path` | room tree |
@@ -143,10 +143,44 @@ token at once. A token unused for 90 days lapses (`auth.unused_token`).
 
 | Method and path | Purpose |
 |---|---|
-| `GET /v1/modules` | Installed modules: requires, mandatory, active in the tenant, operations |
+| `GET /v1/modules` | Installed modules: requires, mandatory, developmentOnly, active in the tenant, operations |
 | `POST /v1/modules/{name}/activate` | Activate a module in the tenant (needs `grant` at the root) |
 | `POST /v1/modules/{name}/ops/{op}` | Run an operation of the module as one order; body: JSON params |
+| `GET /v1/modules/{name}/sources` | The module's sources (`{module, files: [{path, text}]}`, paths `i3cm/...`) if its package carries them; for modules active in the tenant, in a development tenant for every installed module |
 
 With module code loaded (`--modules-dir`), `POST /v1/orders` runs the hooks of the modules around
 each operation. Errors from module code come back with status 400 and the module's error id.
+
+## Development tenants and source checks (studio)
+
+The operator allows development tenants per instance with `I3CM_ALLOW_DEVELOPMENT=true`; then
+`i3cm-server init-tenant <name> --development` creates one. A module that declares
+`developmentOnly: true` in `module.ts` can only be activated there (`module.development_only`).
+
+`POST /v1/catalog/check` (development tenants only, for guardians or whoever may write
+`studio:SourceFile`) checks module sources that are not installed yet:
+
+```json
+{ "modules": [ { "name": "probe", "files": [ { "path": "i3cm/module.ts", "text": "..." },
+                                              { "path": "i3cm/types/a.ts", "text": "..." } ] } ] }
+```
+
+The sources are built with `typecat` against the kernel types and the sources of the installed
+modules they require (packages carry their sources), then the catalog is loaded with the server's
+checker. The answer lists every issue, not only the first:
+
+```json
+{ "catalog": { ... } | null,
+  "issues": [ { "severity": "error", "source": "typescript|typecat|checker", "error_id": "...",
+                "description": "...", "params": { ... }, "file": "probe:i3cm/types/a.ts", "line": 4, "column": 3 } ],
+  "positions": { "type:probe:A": { "file": "probe:i3cm/types/a.ts", "line": 3, "column": 1 },
+                 "aspect:probe:list": { ... } } }
+```
+
+`catalog` is null when there is an error. File names are `<module>:<path>`; kernel types appear as
+`kernel:<path>`. The server needs `node` and typecat: `I3CM_NODE` (default `node`), `I3CM_TYPECAT`
+(typecat.mjs), `I3CM_TYPES_DIR` (kernel type sources); the image sets them.
+
+`i3cm-server catalog check [catalog.json]` runs the same checker on a catalog without a database
+(exit 1 on an error).
 

@@ -4,7 +4,7 @@
 // Usage: pack <typesDir> <moduleRepo> --wasm <component.wasm> --version <x.y.z> --out <dir>
 //             [--module <repo>]... [--key <ed25519 private key PEM file> | I3CM_SIGNING_KEY]
 //   <out>/<name>-<version>.tar.gz   module.json (the module's part of the catalog), module.wasm,
-//                                   i18n/*.ftl, ui/*.html, SHA256SUMS
+//                                   i18n/*.ftl, ui/*.html, src/ (the sources under i3cm/), SHA256SUMS
 //   <out>/<name>-<version>.tar.gz.sig   ed25519 signature over the SHA-256 of the package (hex)
 //   <out>/<name>-<version>.json     registry entry: name, version, requires, sha256, file
 //
@@ -67,6 +67,15 @@ export function pack({ typesDir, repo, wasm, version, out, modules = [], keyPem 
     const d = path.join(root, sub);
     if (fs.existsSync(d)) for (const f of fs.readdirSync(d).sort()) entries.push([`${sub}/${f}`, fs.readFileSync(path.join(d, f))]);
   }
+  // the module's sources (i3cm/), so that tools can check modules that depend on it (studio)
+  const walk = (d, rel) => {
+    for (const e of fs.readdirSync(d, { withFileTypes: true }).sort((a, b) => a.name.localeCompare(b.name))) {
+      if (e.name.startsWith(".") || e.name === "node_modules") continue;
+      if (e.isDirectory()) walk(path.join(d, e.name), `${rel}${e.name}/`);
+      else entries.push([`src/${rel}${e.name}`, fs.readFileSync(path.join(d, e.name))]);
+    }
+  };
+  walk(root, "");
   entries.push(["SHA256SUMS", Buffer.from(entries.map(([n, d]) => `${sha256(d)}  ${n}\n`).join(""))]);
   const pkg = zlib.gzipSync(tar(entries), { level: 9 });
   fs.mkdirSync(out, { recursive: true });

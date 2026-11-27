@@ -29,5 +29,7 @@ while read -r name repo ref; do
       references: c.references.filter((r) => own(r.name)), textTypes: c.textTypes.filter((t) => own(t.name)) };
     fs.writeFileSync(process.argv[3], JSON.stringify(part, null, 1) + "\n");
   ' "$work/catalog.json" "$name" "$out/$name.json"
+  # sources for checks of dependent modules (studio, GET /v1/modules/{name}/sources)
+  rm -rf "$out/src/$name" && mkdir -p "$out/src/$name" && cp -R "$work/$name/i3cm" "$out/src/$name/i3cm"
   echo "$name $(git -C "$repo" rev-parse --short "$ref")"
 done < "$out/SOURCES"

@@ -38,6 +38,9 @@ pub struct Module {
     /// Delivered with the kernel and activated in every tenant at creation (DEC-138).
     #[serde(default)]
     pub mandatory: bool,
+    /// Only for development tenants: activation elsewhere is refused (studio, DEC-136).
+    #[serde(rename = "developmentOnly", default)]
+    pub development_only: bool,
 }
 
 /// An operation exported by a module's WebAssembly component.

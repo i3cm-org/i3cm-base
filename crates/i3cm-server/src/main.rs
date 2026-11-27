@@ -34,6 +34,9 @@ enum Cmd {
         name: String,
         #[arg(long, default_value = "admin")]
         admin: String,
+        /// Development tenant (studio); only if the operator allows it with I3CM_ALLOW_DEVELOPMENT=true
+        #[arg(long)]
+        development: bool,
     },
     /// Issue a token for an existing login; prints token and expiry
     CreateToken {
@@ -42,6 +45,11 @@ enum Cmd {
         /// Lifetime in days (default 90, at most 365)
         #[arg(long)]
         ttl: Option<i64>,
+    },
+    /// Catalog: check a catalog.json with the server's checker, without a database
+    Catalog {
+        #[command(subcommand)]
+        cmd: CatalogCmd,
     },
     /// Modules: install a signed package (operator)
     Module {
@@ -54,6 +62,15 @@ enum Cmd {
         data: PathBuf,
         #[arg(long, default_value = "127.0.0.1:8480")]
         listen: SocketAddr,
+    },
+}
+
+#[derive(Subcommand)]
+enum CatalogCmd {
+    /// Check a catalog (default: --catalog / I3CM_CATALOG); prints the result as JSON, exit 1 on an error
+    Check {
+        /// catalog.json to check
+        file: Option<PathBuf>,
     },
 }
 
@@ -71,6 +88,11 @@ enum ModuleCmd {
         #[arg(long, env = "I3CM_TRUSTED_KEYS", value_delimiter = ',')]
         trusted: Vec<String>,
     },
+}
+
+/// The operator allows development tenants on this instance (DEC-136).
+fn development_allowed() -> bool {
+    matches!(std::env::var("I3CM_ALLOW_DEVELOPMENT").as_deref(), Ok("true") | Ok("1") | Ok("yes"))
 }
 
 #[tokio::main]
@@ -110,6 +132,17 @@ async fn main() -> Result<()> {
             tracing::info!(%addr, "listening");
             task.await?;
         }
+        Cmd::Catalog { cmd: CatalogCmd::Check { file } } => {
+            let path = file.unwrap_or(catalog);
+            let json = std::fs::read_to_string(&path).map_err(|e| anyhow::anyhow!("cannot read {}: {e}", path.display()))?;
+            match i3cm_core::Model::from_json(&json) {
+                Ok(m) => println!("{}", serde_json::json!({ "ok": true, "modules": m.catalog.modules.len(), "types": m.catalog.types.len() })),
+                Err(e) => {
+                    println!("{}", serde_json::json!({ "ok": false, "error_id": e.error_id, "description": e.description, "params": e.params }));
+                    std::process::exit(1);
+                }
+            }
+        }
         Cmd::Module { cmd: ModuleCmd::Install { package, registry, trusted } } => {
             let dir = cli.modules_dir.clone().ok_or_else(|| anyhow::anyhow!("--modules-dir or I3CM_MODULES_DIR required"))?;
             if trusted.is_empty() {
@@ -128,9 +161,12 @@ async fn main() -> Result<()> {
             };
             println!("{}", serde_json::to_string_pretty(&r)?);
         }
-        Cmd::InitTenant { name, admin } => {
+        Cmd::InitTenant { name, admin, development } => {
+            if development && !development_allowed() {
+                anyhow::bail!("development tenants are not allowed on this instance (operator: I3CM_ALLOW_DEVELOPMENT=true)");
+            }
             let store = connect(&db()?, &catalog, 4).await?;
-            let init = store.init_tenant(&name, &admin).await.map_err(|e| anyhow::anyhow!("{e}"))?;
+            let init = store.init_tenant_with(&name, &admin, development).await.map_err(|e| anyhow::anyhow!("{e}"))?;
             println!("{}", serde_json::to_string_pretty(&init)?);
         }
         Cmd::CreateToken { tenant, login, ttl } => {

@@ -38,12 +38,18 @@ impl Store {
     /// Create a tenant: root room, module rooms, profiles from the catalog, group "admins" with the
     /// guardian profile and an admin person with login and token.
     pub async fn init_tenant(&self, name: &str, admin_login: &str) -> Result<TenantInit> {
+        self.init_tenant_with(name, admin_login, false).await
+    }
+
+    /// Like `init_tenant`; `development` marks a development tenant (studio, DEC-136). Whether
+    /// the instance allows development tenants is the operator's decision, checked by the caller.
+    pub async fn init_tenant_with(&self, name: &str, admin_login: &str, development: bool) -> Result<TenantInit> {
         let tenant = Uuid::new_v4();
         let root = Uuid::new_v4();
         {
             let mut c = self.client().await?;
             let tx = c.transaction().await.map_err(db)?;
-            tx.execute("INSERT INTO tenant (id, name, root_room) VALUES ($1,$2,$3)", &[&tenant, &name, &root])
+            tx.execute("INSERT INTO tenant (id, name, root_room, development) VALUES ($1,$2,$3,$4)", &[&tenant, &name, &root, &development])
                 .await
                 .map_err(|e| match e.as_db_error().map(|d| d.code().code().to_string()) {
                     Some(code) if code == "23505" => BaseError::conflict("tenant.exists", "tenant name already used").with("name", name),
@@ -67,6 +73,7 @@ impl Store {
             subject: Subject { account: Uuid::nil(), carriers: vec![], rights: HashMap::new(), guardian: true },
             rooms: RoomTree { root, parent: [(root, None)].into() },
             inactive: Default::default(),
+            development,
         };
         let mut ops = vec![];
         for m in self.model.catalog.modules.iter().filter(|m| self.model.is_default_module(&m.name)) {
@@ -321,6 +328,9 @@ impl Store {
         let m = self.model.catalog.modules.iter().find(|m| m.name == name).ok_or_else(|| BaseError::not_found("module.not_installed", "module is not installed").with("module", name))?.clone();
         if !ctx.inactive.contains(name) {
             return Err(BaseError::conflict("module.active", "module is already active").with("module", name));
+        }
+        if m.development_only && !ctx.development {
+            return Err(BaseError::invalid("module.development_only", "this module can only be activated in a development tenant").with("module", name));
         }
         for r in &m.requires {
             if ctx.inactive.contains(r) {

@@ -45,6 +45,8 @@ pub struct Ctx {
     pub rooms: RoomTree,
     /// Installed modules not active in this tenant: their types are invisible (DEC-035).
     pub inactive: std::collections::BTreeSet<String>,
+    /// Development tenant (studio, DEC-136): set at creation, allowed by the operator.
+    pub development: bool,
 }
 
 impl Ctx {
@@ -132,7 +134,8 @@ impl Store {
 
         let rooms = self.load_rooms(c, tenant).await?;
         let inactive = self.inactive_modules(c, tenant).await?;
-        Ok(Ctx { tenant, subject, rooms, inactive })
+        let development: bool = c.query_opt("SELECT development FROM tenant WHERE id=$1", &[&tenant]).await.map_err(db)?.map(|r| r.get(0)).unwrap_or(false);
+        Ok(Ctx { tenant, subject, rooms, inactive, development })
     }
 
     /// Modules of the catalog that are neither default nor activated in the tenant.

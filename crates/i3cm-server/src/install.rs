@@ -128,6 +128,9 @@ pub async fn install(db_url: &str, base: &Path, dir: &Path, pkg_path: &Path, key
     let mut staged: Vec<(PathBuf, PathBuf, String)> = vec![];
     let mut stage = |name: String, data: &[u8]| -> Result<()> {
         let tmp = dir.join(format!(".{}.tmp", name.replace('/', "_")));
+        if let Some(parent) = dir.join(&name).parent() {
+            std::fs::create_dir_all(parent)?;
+        }
         std::fs::write(&tmp, data)?;
         staged.push((tmp, dir.join(&name), name));
         Ok(())
@@ -139,6 +142,10 @@ pub async fn install(db_url: &str, base: &Path, dir: &Path, pkg_path: &Path, key
         }
         for (name, data) in files.iter().filter(|(n, _)| n.starts_with("ui/")) {
             stage(name.clone(), data)?;
+        }
+        // sources (for checks of dependent modules): <dir>/src/<module>/i3cm/...
+        for (name, data) in files.iter().filter(|(n, _)| n.starts_with("src/")) {
+            stage(format!("src/{module}/i3cm/{}", &name[4..]), data)?;
         }
         Ok(())
     })();

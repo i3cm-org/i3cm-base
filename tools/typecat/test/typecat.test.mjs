@@ -191,3 +191,31 @@ test("imports types of another module of the run as @i3cm/<module>; consts share
   assert.deepEqual(extra.aspects.map((a) => a.name), ["extra:byLabel", "extra:flat"]);
   for (const a of extra.aspects) assert.ok(a.nodes["extra:Tag"].tabs.some((t) => t.label === "thing"));
 });
+
+test("check mode collects all issues with positions instead of stopping at the first", () => {
+  const dir = tmpTypes({
+    "modules/m/module.ts": mod("m"),
+    "modules/m/types.ts": `import { ns, indexed } from "../../lib";\n@ns("m") export class A {\n  @indexed ok!: string;\n  @wrong bad!: string;\n}\n@ns("m") export class B {\n  _reserved!: string;\n  fine!: string;\n}\nfunction wrong(_t: unknown, _k: string) {}\n`,
+  });
+  const issues = [];
+  const cat = buildCatalog(dir, { issues });
+  const ids = issues.map((i) => i.error_id).sort();
+  assert.deepEqual(ids, ["typecat.reserved_name", "typecat.unknown_decorator"]);
+  const deco = issues.find((i) => i.error_id === "typecat.unknown_decorator");
+  assert.equal(deco.line, 4);
+  assert.ok(deco.file.endsWith("modules/m/types.ts"));
+  // the rest of the build goes on: both classes are there, without the faulty attributes
+  assert.deepEqual(cat.types.find((t) => t.name === "m:A").attributes.map((a) => a.name), ["ok"]);
+  assert.deepEqual(cat.types.find((t) => t.name === "m:B").attributes.map((a) => a.name), ["fine"]);
+  assert.equal(cat.positions["type:m:B"].line, 6);
+});
+
+test("check mode reports TypeScript diagnostics with file, line and column", () => {
+  const dir = tmpTypes({ "modules/m/module.ts": mod("m"), "modules/m/types.ts": `import { ns } from "../../lib";\n@ns("m") export class A {\n  x!: Missing;\n}\n` });
+  const issues = [];
+  buildCatalog(dir, { issues });
+  const ts = issues.find((i) => i.source === "typescript");
+  assert.ok(ts, JSON.stringify(issues));
+  assert.equal(ts.line, 3);
+  assert.equal(ts.column, 7);
+});

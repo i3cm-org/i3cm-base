@@ -49,6 +49,8 @@ pub const ROUTES: &[(&str, &str, &str)] = &[
     ("get", "/v1/modules", "Installed modules, whether active in the tenant, their operations"),
     ("post", "/v1/modules/{m}/activate", "Activate an installed module in the tenant (tenant administrator)"),
     ("post", "/v1/modules/{m}/ops/{op}", "Run an operation of a module as one order"),
+    ("get", "/v1/modules/{m}/sources", "Sources of an installed module (i3cm/ files), if its package carries them"),
+    ("post", "/v1/catalog/check", "Development tenant: check module sources with typecat and the catalog checker; all issues with positions"),
     ("get", "/v1/metrics", "Request counter"),
     ("get", "/v1/aspects", "Aspects (views) and built-in views"),
     ("get", "/v1/aspects/{a}/children", "Children of a node (paging: after= or offset=)"),

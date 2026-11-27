@@ -108,7 +108,8 @@ schedule) with its code in Rust (`wit-bindgen`).
 `module.ts` declares the code:
 
 ```ts
-export const module = { name: "example", requires: ["base"] };      // mandatory: true for kernel-delivered modules
+export const module = { name: "example", requires: ["base"] };      // mandatory: true for kernel-delivered modules,
+                                                                    // developmentOnly: true for tools such as the studio
 export const carriers: CarrierDef[] = [ { name: "system", profiles: ["writer"] } ];
 export const operations: OperationDef[] = [ { name: "greet" }, { name: "stamp", impersonates: ["system"] } ];
 export const hooks: HookDef[] = [ { type: "example:Note", on: "create", phase: "before", op: "checkNote" } ];
@@ -149,6 +150,10 @@ or types of other modules). Types of modules not active in a tenant do not exist
 * Over HTTP: with `I3CM_OPERATOR_TOKEN` (at least 32 characters) and `--modules-dir`, the server
   offers `GET /v1/operator/registry` and `POST /v1/operator/modules/install` (`{"name", "version"?}`),
   authenticated with that secret, separate from tenant tokens. Off without the secret.
+
+Packages carry the module's sources (`src/`, the files under `i3cm/`); the installer puts them in
+`<modules-dir>/src/<module>/i3cm/`. They serve `GET /v1/modules/{name}/sources` and source checks
+of modules that depend on it (`POST /v1/catalog/check`, see api.md).
 
 Installed modules are in force after the next start of the main container. Mandatory modules of
 the image are bundled with `tools/bundle-modules.sh` (sources and refs in `deploy/modules/SOURCES`).

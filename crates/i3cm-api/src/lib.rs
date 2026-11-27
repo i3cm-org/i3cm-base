@@ -2,6 +2,7 @@
 //! the token determines tenant and `me`. Display names follow `Accept-Language`.
 
 pub mod describe;
+pub mod dev;
 use axum::body::Bytes;
 use axum::extract::{Path, Query, State};
 use axum::http::{header, HeaderMap, StatusCode};
@@ -168,6 +169,8 @@ pub fn router_with(store: Store, rt: Option<i3cm_wasm::Runtime>) -> Router {
         .route("/v1/modules", get(modules))
         .route("/v1/modules/{m}/activate", post(activate))
         .route("/v1/modules/{m}/ops/{op}", post(module_op))
+        .route("/v1/modules/{m}/sources", get(module_sources))
+        .route("/v1/catalog/check", post(catalog_check))
         .with_state(Mods { store: store.clone(), rt });
     base_router(store).merge(mods)
 }
@@ -260,7 +263,7 @@ async fn modules(State(m): State<Mods>, h: HeaderMap) -> R<Json<Value>> {
         .iter()
         .map(|x| {
             json!({
-                "name": x.name, "requires": x.requires, "mandatory": x.mandatory || x.name == "base",
+                "name": x.name, "requires": x.requires, "mandatory": x.mandatory || x.name == "base", "developmentOnly": x.development_only,
                 "active": !r.ctx.inactive.contains(&x.name),
                 "operations": x.operations.iter().map(|o| o.name.clone()).collect::<Vec<_>>(),
                 "code": m.rt.is_some() && !x.operations.is_empty(),
@@ -268,6 +271,36 @@ async fn modules(State(m): State<Mods>, h: HeaderMap) -> R<Json<Value>> {
         })
         .collect();
     Ok(Json(json!(list)))
+}
+
+/// Studio (DEC-136): check uploaded module sources; development tenants only, for guardians
+/// or whoever may write `studio:SourceFile`.
+async fn catalog_check(State(m): State<Mods>, h: HeaderMap, Json(b): Json<dev::CheckBody>) -> R<Json<Value>> {
+    let r = auth(&m.store, &h).await?;
+    if !r.ctx.development {
+        return Err(BaseError::invalid("check.not_development", "checking sources is only available in a development tenant").into());
+    }
+    let may = r.ctx.subject.guardian
+        || (!r.ctx.inactive.contains("studio") && r.ctx.subject.may(i3cm_core::Art::Write, "studio:SourceFile", &[r.ctx.rooms.root]));
+    if !may {
+        return Err(BaseError::not_found("rights.denied", "not allowed or not found").with("art", "write").with("type", "studio:SourceFile").into());
+    }
+    let installed: Vec<(String, Vec<String>)> = m.store.model.catalog.modules.iter().map(|x| (x.name.clone(), x.requires.clone())).collect();
+    Ok(Json(dev::check(b, &installed).await?))
+}
+
+/// Sources of an installed module (from its package), for modules active in the tenant or any
+/// installed module in a development tenant.
+async fn module_sources(State(m): State<Mods>, h: HeaderMap, Path(name): Path<String>) -> R<Json<Value>> {
+    let r = auth(&m.store, &h).await?;
+    let known = m.store.model.catalog.modules.iter().any(|x| x.name == name);
+    if !known || (r.ctx.inactive.contains(&name) && !r.ctx.development) {
+        return Err(BaseError::not_found("module.not_installed", "module is not installed").with("module", name).into());
+    }
+    match dev::read_sources(&name) {
+        Some(files) => Ok(Json(json!({ "module": name, "files": files }))),
+        None => Err(BaseError::not_found("module.no_sources", "the package of this module carries no sources").with("module", name).into()),
+    }
 }
 
 async fn activate(State(m): State<Mods>, h: HeaderMap, Path(name): Path<String>) -> R<Json<Value>> {
@@ -368,7 +401,11 @@ async fn put_text(State(s): State<Store>, h: HeaderMap, Path((id, tt)): Path<(Uu
 
 async fn me(State(s): State<Store>, h: HeaderMap) -> R<Json<Value>> {
     let r = auth(&s, &h).await?;
-    Ok(Json(serde_json::to_value(s.get_object(&r.ctx, r.ctx.me(), None, &r.lang).await?).unwrap_or_default()))
+    let mut v = serde_json::to_value(s.get_object(&r.ctx, r.ctx.me(), None, &r.lang).await?).unwrap_or_default();
+    if let Some(o) = v.as_object_mut() {
+        o.insert("_tenant".into(), json!({ "id": r.ctx.tenant, "development": r.ctx.development }));
+    }
+    Ok(Json(v))
 }
 
 async fn my_groups(State(s): State<Store>, h: HeaderMap) -> R<Json<Value>> {
