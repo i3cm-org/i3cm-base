@@ -108,6 +108,11 @@ impl Api {
         Self::send(self.req(m, path).query(q).body(data)).map(|_| ())
     }
 
+    /// Replace the content of an object (`PUT /v1/objects/{id}/content`).
+    pub fn put_content(&self, id: &str, data: Vec<u8>, media_type: &str, file_name: &str) -> Result<(), String> {
+        Self::send(self.req(reqwest::Method::PUT, &format!("/objects/{id}/content")).header(reqwest::header::CONTENT_TYPE, media_type).header("X-Filename", file_name).body(data)).map(|_| ())
+    }
+
     /// Write a file of a view node (one order on the server).
     pub fn put_file(&self, aspect: &str, node: &str, name: &str, data: Vec<u8>) -> Result<(), String> {
         self.put(reqwest::Method::PUT, &format!("/aspects/{aspect}/file"), &[("node", node), ("name", name)], data)
