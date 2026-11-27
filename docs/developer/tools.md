@@ -24,6 +24,11 @@ program says so on stderr (`i3cm: token from I3CM_TOKEN_FILE covers the one in â
 `i3cm config` prints every setting with its source (the token itself is never shown);
 `i3cm --version` prints the version and the source revision (also `GET /v1/version`).
 
+A token belongs to exactly one tenant. Besides `token`, tokens for further servers and tenants
+live in `tokens/<host>[:<port>]/<tenant>` in the same directory (directories 0700, files 0600;
+the port only if it is not the scheme's default). `i3cm studio register --token-file` stores
+them there (see below).
+
 ## Layout
 
 The mount (and the tree the tools see) has one directory per aspect, with its index beside it:
@@ -114,6 +119,29 @@ i3cm studio status        # per file: same, changed in tenant, changed on disk, 
 i3cm studio load          # make the tenant equal to the disk
 i3cm studio save          # make the disk equal to the tenant (only below i3cm/, never ops/)
 ```
+
+Each repository can name its own server and development tenant:
+
+```sh
+i3cm studio register --tenant acme-dev [--server https://dev.example.org] [--token-file token.txt]
+i3cm -C ~/src/my-module studio status     # -C <path> instead of cd, as with git (studio and scaffold)
+```
+
+`register` writes `.i3cm/studio.toml` in the repository with server and tenant (never a token;
+a `token` key there is refused) and adds `.i3cm/` to `.gitignore` if it is missing. Without
+`--server` it takes the server from `I3CM_SERVER` or `config.toml`. With `--token-file` it stores
+the token in `tokens/<host>/<tenant>`. When it has a token, it checks with `GET /v1/me` that the
+token belongs to the named tenant and that this is a development tenant; otherwise it writes
+nothing.
+
+`load`, `save` and `status` take server and tenant each from the environment (`I3CM_SERVER`,
+`I3CM_TENANT`), then `.i3cm/studio.toml`, then `config.toml`, with the usual notice on stderr
+when a value covers another. The token comes from `I3CM_TOKEN_FILE`, else from
+`tokens/<host>/<tenant>`, else from `token`, but only if server and tenant are the ones in
+`config.toml`. Before reading or writing, the commands check that the token's tenant
+(`_tenant.name` of `GET /v1/me`) is the configured one and a development tenant, and stop
+with exit code 3 otherwise. `status` starts with a line naming server and tenant and where they
+come from. In a repository with `.i3cm/studio.toml`, `i3cm config` shows these values.
 
 There is no merging; versions, branches and merges are git's. `load` stops (exit code 3) when it
 would throw away changes made in the tenant since the last load or save, `save` when it would

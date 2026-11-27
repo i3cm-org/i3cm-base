@@ -402,8 +402,9 @@ async fn put_text(State(s): State<Store>, h: HeaderMap, Path((id, tt)): Path<(Uu
 async fn me(State(s): State<Store>, h: HeaderMap) -> R<Json<Value>> {
     let r = auth(&s, &h).await?;
     let mut v = serde_json::to_value(s.get_object(&r.ctx, r.ctx.me(), None, &r.lang).await?).unwrap_or_default();
+    let name = s.tenant_name(r.ctx.tenant).await?;
     if let Some(o) = v.as_object_mut() {
-        o.insert("_tenant".into(), json!({ "id": r.ctx.tenant, "development": r.ctx.development }));
+        o.insert("_tenant".into(), json!({ "id": r.ctx.tenant, "name": name, "development": r.ctx.development }));
     }
     Ok(Json(v))
 }

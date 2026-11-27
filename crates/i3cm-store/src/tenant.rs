@@ -139,6 +139,16 @@ impl Store {
         Ok(TenantInit { tenant, root_room: root, admin_account: admin, admin_group: admins, token })
     }
 
+    /// Name of a tenant (`GET /v1/me` reports it so that tools can check where they write).
+    pub async fn tenant_name(&self, tenant: Uuid) -> Result<String> {
+        let c = self.client().await?;
+        c.query_opt("SELECT name FROM tenant WHERE id=$1", &[&tenant])
+            .await
+            .map_err(db)?
+            .map(|r| r.get(0))
+            .ok_or_else(|| BaseError::not_found("tenant.not_found", "unknown tenant"))
+    }
+
     pub async fn tenant_by_name(&self, name: &str) -> Result<Uuid> {
         let c = self.client().await?;
         c.query_opt("SELECT id FROM tenant WHERE name=$1", &[&name])

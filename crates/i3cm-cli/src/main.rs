@@ -12,6 +12,8 @@
 //! * `i3cm config`: every setting with its source. `i3cm --version`: version and revision.
 //! * `i3cm studio load|save|status [--force]`: the module repository's `i3cm/` and its copy in a
 //!   development tenant (no merging; refuses to throw away changes of the other side).
+//!   `i3cm studio register --tenant NAME`: server and tenant of this repository in
+//!   `.i3cm/studio.toml`. `i3cm -C <path> studio|scaffold …` starts in `<path>` (as git does).
 //! * `i3cm scaffold ops --lang rust | ui [--force]`: frames for the IDE in the module repository.
 
 use i3cm_cli::{api, config, fuse, scaffold, studio};
@@ -46,8 +48,9 @@ fn usage() -> i32 {
         "usage: i3cm links <dir>            create links for all tools and i3cm-* names\n       \
          i3cm init --server URL --tenant NAME [--token-file FILE] [--lang LANG]\n       \
          i3cm mount <mountpoint> [--ttl SECONDS]\n       \
-         i3cm studio load|save|status [--force]   module repository <-> development tenant\n       \
-         i3cm scaffold ops --lang rust | ui [--force]\n       \
+         i3cm [-C PATH] studio load|save|status [--force]   module repository <-> development tenant\n       \
+         i3cm [-C PATH] studio register --tenant NAME [--server URL] [--token-file FILE]\n       \
+         i3cm [-C PATH] scaffold ops --lang rust | ui [--force]\n       \
          i3cm <tool> args…                 tool on tree paths (tools: {})",
         TOOLS.join(" ")
     );
@@ -55,6 +58,28 @@ fn usage() -> i32 {
 }
 
 fn base(args: &[String]) -> i32 {
+    // `-C <path>` before the command, as git has it: each one relative to the one before.
+    let mut start = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+    let mut args = args;
+    let mut given = false;
+    while args.first().is_some_and(|a| a == "-C") {
+        let Some(p) = args.get(1) else {
+            return fail("i3cm", "-C needs a path");
+        };
+        start = start.join(p);
+        given = true;
+        args = &args[2..];
+    }
+    if given {
+        if !start.is_dir() {
+            return fail("i3cm", &format!("-C {}: not a directory", start.display()));
+        }
+        return match args.first().map(|s| s.as_str()) {
+            Some("studio") => studio_cmd(&args[1..], &start),
+            Some("scaffold") => scaffold_cmd(&args[1..], &start),
+            _ => fail("i3cm", "-C applies to studio and scaffold"),
+        };
+    }
     match args.first().map(|s| s.as_str()) {
         Some("links") if args.len() == 2 => links(&args[1]),
         Some("init") => init(&args[1..]),
@@ -64,10 +89,10 @@ fn base(args: &[String]) -> i32 {
             0
         }
         Some("cd") => cd(&args[1..]),
-        Some("studio") => studio_cmd(&args[1..]),
-        Some("scaffold") => scaffold_cmd(&args[1..]),
+        Some("studio") => studio_cmd(&args[1..], &start),
+        Some("scaffold") => scaffold_cmd(&args[1..], &start),
         Some("config") => {
-            for (k, v, src) in config::describe() {
+            for (k, v, src) in config::describe(studio::find_repo(&start).as_deref()) {
                 println!("{k:<7} {v:<40} {src}");
             }
             0
@@ -81,29 +106,142 @@ fn base(args: &[String]) -> i32 {
     }
 }
 
-/// `i3cm studio load|save|status [--force]` from the current directory (or below it).
-fn studio_cmd(args: &[String]) -> i32 {
+/// `i3cm studio load|save|status [--force]` from `here` (or below it); `register` apart.
+fn studio_cmd(args: &[String], here: &Path) -> i32 {
+    if args.first().is_some_and(|a| a == "register") {
+        return register(&args[1..], here);
+    }
     if let Some(bad) = args.iter().skip(1).find(|a| *a != "--force") {
         return fail("i3cm studio", &format!("unknown option {bad} (supported: --force)"));
     }
     let force = args.iter().any(|a| a == "--force");
-    let cfg = match config::load() {
+    let what = args.first().map(|s| s.as_str());
+    if !matches!(what, Some("load" | "save" | "status")) {
+        return fail("i3cm studio", "usage: i3cm studio load|save|status [--force] | register --tenant NAME [--server URL] [--token-file FILE]");
+    }
+    let repo = studio::find_repo(here);
+    let (cfg, origin) = match config::load_for(repo.as_deref()) {
         Ok(c) => c,
         Err(e) => return fail("i3cm studio", &e),
     };
+    if what == Some("status") {
+        println!("server {} (from {}), tenant {} (from {})", cfg.server, origin.server, cfg.tenant, origin.tenant);
+    }
     let api = api::Api::new(&cfg);
-    let here = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
-    let r = match args.first().map(|s| s.as_str()) {
-        Some("load") => studio::load(&api, &here, force),
-        Some("save") => studio::save(&api, &here, force),
-        Some("status") => studio::status(&api, &here),
-        _ => return fail("i3cm studio", "usage: i3cm studio load|save|status [--force]"),
+    // Before anything is read or written: the token's tenant must be the configured one.
+    match api.me() {
+        Ok(me) => {
+            if let Err(e) = studio::check_tenant(&me, &cfg.tenant) {
+                eprintln!("i3cm studio: stopped, {e} (token from {})", origin.token);
+                return 3;
+            }
+        }
+        Err(e) => return fail("i3cm studio", &format!("token from {} rejected by {}: {e}", origin.token, cfg.server)),
+    }
+    let r = match what {
+        Some("load") => studio::load(&api, here, force),
+        Some("save") => studio::save(&api, here, force),
+        _ => studio::status(&api, here),
     };
     r.unwrap_or_else(|e| fail("i3cm studio", &e))
 }
 
+/// `i3cm studio register --tenant NAME [--server URL] [--token-file FILE]`: server and tenant of
+/// the module repository in `.i3cm/studio.toml` (never the token), `.i3cm/` in `.gitignore`.
+fn register(args: &[String], here: &Path) -> i32 {
+    const NAME: &str = "i3cm studio register";
+    let mut rest = args.iter();
+    while let Some(a) = rest.next() {
+        match a.as_str() {
+            "--tenant" | "--server" | "--token-file" => {
+                if rest.next().is_none() {
+                    return fail(NAME, &format!("{a} needs a value"));
+                }
+            }
+            bad => return fail(NAME, &format!("unknown option {bad} (supported: --tenant, --server, --token-file)")),
+        }
+    }
+    let Some(tenant) = flag(args, "--tenant") else {
+        return fail(NAME, "usage: i3cm studio register --tenant NAME [--server URL] [--token-file FILE]");
+    };
+    if let Err(e) = config::check_tenant(tenant) {
+        return fail(NAME, &e);
+    }
+    let Some(repo) = studio::find_repo(here) else {
+        return fail(NAME, &format!("no i3cm/module.ts in {} or above", here.display()));
+    };
+    let user: config::Config = std::fs::read_to_string(config::path()).ok().and_then(|s| toml::from_str(&s).ok()).unwrap_or_default();
+    let server = flag(args, "--server").map(String::from).or_else(|| std::env::var("I3CM_SERVER").ok()).filter(|s| !s.is_empty()).or_else(|| Some(user.server.clone()).filter(|s| !s.is_empty()));
+    let Some(server) = server.map(|s| s.trim_end_matches('/').to_string()) else {
+        return fail(NAME, &format!("no server: give --server URL (or set it with i3cm-init; expected {})", config::path().display()));
+    };
+    if let Err(e) = config::host_of(&server) {
+        return fail(NAME, &e);
+    }
+    let given = match flag(args, "--token-file").map(|f| config::token_from(Some(f))) {
+        Some(Ok(t)) if t.is_empty() => return fail(NAME, "empty token"),
+        Some(Ok(t)) => Some(t),
+        Some(Err(e)) => return fail(NAME, &e),
+        None => None,
+    };
+    let token = given.clone().map(|t| (t, "--token-file".to_string())).or_else(|| match std::env::var("I3CM_TOKEN_FILE") {
+        Ok(f) => std::fs::read_to_string(&f).ok().map(|t| (t.trim().to_string(), format!("I3CM_TOKEN_FILE ({f})"))),
+        Err(_) => config::token_for(&server, tenant, &user),
+    });
+    if let Some((t, from)) = &token {
+        let cfg = config::Config { server: server.clone(), tenant: tenant.to_string(), token: t.clone(), lang: config::lang_from_env() };
+        match api::Api::new(&cfg).me() {
+            Ok(me) => {
+                if let Err(e) = studio::check_tenant(&me, tenant) {
+                    return fail(NAME, &format!("{e} (token from {from}); nothing written"));
+                }
+            }
+            Err(e) => return fail(NAME, &format!("token from {from} rejected by {server}: {e}; nothing written")),
+        }
+    }
+    if let Some(t) = &given {
+        match config::save_tenant_token(&server, tenant, t) {
+            Ok(p) => println!("{NAME}: token stored in {}", p.display()),
+            Err(e) => return fail(NAME, &e),
+        }
+    }
+    let file = config::repo_file(&repo);
+    let old = match config::read_repo(&repo) {
+        Ok(o) => o,
+        Err(e) => {
+            eprintln!("{NAME}: replacing an unreadable file: {e}");
+            None
+        }
+    };
+    let new = config::RepoConfig { server: Some(server.clone()), tenant: Some(tenant.to_string()) };
+    if let Some(o) = old.filter(|o| *o != new) {
+        println!("{NAME}: was {} (tenant {}), now {server} (tenant {tenant})", o.server.unwrap_or_default(), o.tenant.unwrap_or_default());
+    }
+    if let Err(e) = std::fs::create_dir_all(file.parent().unwrap()).map_err(|e| e.to_string()).and_then(|_| config::write_atomic(&file, &config::repo_text(&new), 0o644)) {
+        return fail(NAME, &format!("{}: {e}", file.display()));
+    }
+    let gi = repo.join(".gitignore");
+    let text = std::fs::read_to_string(&gi).unwrap_or_default();
+    if let Some(t) = studio::with_repo_dir_ignored(&text) {
+        if let Err(e) = config::write_atomic(&gi, &t, 0o644) {
+            return fail(NAME, &e);
+        }
+        println!("{NAME}: added .i3cm/ to {}", gi.display());
+    }
+    let tracked = std::process::Command::new("git").arg("-C").arg(&repo).args(["ls-files", "--error-unmatch", ".i3cm/studio.toml"]).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null()).status();
+    if tracked.is_ok_and(|s| s.success()) {
+        eprintln!("{NAME}: .i3cm/studio.toml is tracked by git; untrack it with: git -C {} rm --cached .i3cm/studio.toml", repo.display());
+    }
+    println!("{NAME}: {} -> {server} (tenant {tenant})", repo.display());
+    if token.is_none() {
+        let p = config::tenant_token_path(&server, tenant).map(|p| p.display().to_string()).unwrap_or_default();
+        eprintln!("{NAME}: no token for tenant {tenant} on this server yet; store it with --token-file FILE (it goes to {p})");
+    }
+    0
+}
+
 /// `i3cm scaffold ops --lang rust | ui [--force]` in the module repository.
-fn scaffold_cmd(args: &[String]) -> i32 {
+fn scaffold_cmd(args: &[String], here: &Path) -> i32 {
     let mut rest = args.iter().skip(1);
     while let Some(a) = rest.next() {
         match a.as_str() {
@@ -115,8 +253,7 @@ fn scaffold_cmd(args: &[String]) -> i32 {
         }
     }
     let force = args.iter().any(|a| a == "--force");
-    let here = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
-    let Some(repo) = studio::find_repo(&here) else {
+    let Some(repo) = studio::find_repo(here) else {
         return fail("i3cm scaffold", "no i3cm/module.ts here or above");
     };
     let module = std::fs::read_to_string(repo.join("i3cm/module.ts")).ok().and_then(|s| studio::module_name(&s));

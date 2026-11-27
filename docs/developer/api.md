@@ -49,7 +49,7 @@ back as `integrity.violated` with a list of violations.
 | `PUT`/`GET /v1/objects/{id}/content` | binary content (`Content-Type`, `X-Filename`) |
 | `PUT`/`GET /v1/objects/{id}/texts/{textType}` | texts, e.g. `base:mail.md` |
 | `POST /v1/references`, `DELETE /v1/references/{reference}/{id}` | link / unlink |
-| `GET /v1/me`, `GET /v1/me/groups` | me and my groups (resolved through subgroups); `GET /v1/me` carries `_tenant: {id, development}` |
+| `GET /v1/me`, `GET /v1/me/groups` | me and my groups (resolved through subgroups); `GET /v1/me` carries `_tenant: {id, name, development}` |
 | `GET /v1/groups/{id}/members` | members, `?transitive=true` |
 | `GET /v1/rooms` | module rooms by name and `root` |
 | `GET /v1/rooms/{id}/children`, `/objects`, `/path` | room tree |

@@ -109,6 +109,7 @@ fn development_only_modules_need_a_development_tenant() {
         let e = Env::new(false).await;
         let (code, v) = e.get("/v1/me").await;
         assert_eq!((code, v["_tenant"]["development"].as_bool()), (200, Some(false)), "{v}");
+        assert!(v["_tenant"]["name"].as_str().is_some_and(|n| n.starts_with("s-")), "the tenant's name: {v}");
         let (code, v) = e.post("/v1/modules/devonly/activate", json!({})).await;
         assert_eq!((code, v["error_id"].as_str()), (400, Some("module.development_only")), "{v}");
 

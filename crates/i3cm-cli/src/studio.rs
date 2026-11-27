@@ -268,6 +268,37 @@ fn fetch(api: &Api, name: &str) -> Result<Remote, String> {
     Ok(Remote { container: Some(id), files })
 }
 
+/// Whether a `.gitignore` already ignores `.i3cm/` (one of the four usual spellings on a line).
+pub fn ignores_repo_dir(gitignore: &str) -> bool {
+    gitignore.lines().any(|l| matches!(l.trim(), ".i3cm" | ".i3cm/" | "/.i3cm" | "/.i3cm/"))
+}
+
+/// The `.gitignore` with `.i3cm/` added, or `None` if it already ignores it.
+pub fn with_repo_dir_ignored(gitignore: &str) -> Option<String> {
+    if ignores_repo_dir(gitignore) {
+        return None;
+    }
+    let mut t = gitignore.to_string();
+    if !t.is_empty() && !t.ends_with('\n') {
+        t.push('\n');
+    }
+    t.push_str(".i3cm/\n");
+    Some(t)
+}
+
+/// Check the tenant behind the token (`GET /v1/me`): a development tenant, and the configured
+/// one when the server reports its name.
+pub fn check_tenant(me: &Value, tenant: &str) -> Result<(), String> {
+    let t = &me["_tenant"];
+    if let Some(name) = t["name"].as_str().filter(|n| *n != tenant) {
+        return Err(format!("the token belongs to tenant {name}, not to {tenant}"));
+    }
+    if t["development"].as_bool() != Some(true) {
+        return Err(format!("tenant {tenant} is not a development tenant"));
+    }
+    Ok(())
+}
+
 /// Repository, module name and the files on disk.
 /// Repository root, module name, files below `i3cm/`.
 type Local = (PathBuf, String, BTreeMap<String, Vec<u8>>);
@@ -544,6 +575,26 @@ mod tests {
         assert_eq!(files.keys().cloned().collect::<Vec<_>>(), ["module.ts", "types/a.ts"]);
         assert_eq!(find_repo(Path::new("/")), None);
         std::fs::remove_dir_all(&base).unwrap();
+    }
+
+    #[test]
+    fn gitignore_gets_the_repository_directory_once() {
+        assert_eq!(with_repo_dir_ignored("").as_deref(), Some(".i3cm/\n"));
+        assert_eq!(with_repo_dir_ignored("target/").as_deref(), Some("target/\n.i3cm/\n"));
+        assert_eq!(with_repo_dir_ignored("target/\n").as_deref(), Some("target/\n.i3cm/\n"));
+        for has in [".i3cm", ".i3cm/", "/.i3cm", "/.i3cm/", "x\n  .i3cm/  \ny"] {
+            assert_eq!(with_repo_dir_ignored(has), None, "{has:?}");
+        }
+        assert!(with_repo_dir_ignored("# .i3cm/\n").is_some(), "a comment does not count");
+    }
+
+    #[test]
+    fn the_tenant_behind_the_token() {
+        let me = |name: Option<&str>, dev: bool| json!({"_tenant": {"id": "x", "name": name, "development": dev}});
+        assert!(check_tenant(&me(Some("dev"), true), "dev").is_ok());
+        assert!(check_tenant(&me(Some("prod"), true), "dev").unwrap_err().contains("belongs to tenant prod"));
+        assert!(check_tenant(&me(Some("dev"), false), "dev").unwrap_err().contains("not a development tenant"));
+        assert!(check_tenant(&json!({"_tenant": {"development": true}}), "dev").is_ok(), "older servers report no name");
     }
 
     #[test]
