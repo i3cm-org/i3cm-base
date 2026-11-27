@@ -449,7 +449,7 @@ class BaseGridView extends HTMLElement {
 }
 customElements.define("base-grid-view", BaseGridView);
 
-// ---- module templates (DEC-127): one file per module, templates only, no code ----------------
+// ---- module templates: one HTML file per module; code goes into its components (ui/*.js) ---------
 const loadedModules = new Set();
 async function loadModule(ns) {
   if (loadedModules.has(ns)) return;
@@ -459,11 +459,11 @@ async function loadModule(ns) {
     if (!r.ok) return;
     const doc = new DOMParser().parseFromString(await r.text(), "text/html");
     for (const t of doc.querySelectorAll("template[data-aspect][data-type], template[data-page]")) {
-      // modules ship templates, never code (DEC-127): drop scripts, event handlers and javascript: links
-      for (const x of t.content.querySelectorAll("script, iframe, object, embed")) x.remove();
-      for (const x of t.content.querySelectorAll("*"))
-        for (const a of [...x.attributes])
-          if (/^on/i.test(a.name) || /^\s*javascript:/i.test(a.value)) x.removeAttribute(a.name);
+      // code belongs in the module's components (ui/*.js); code inside a snippet is allowed but strongly
+      // discouraged, because the snippet is cloned for every object: warn, keep it
+      const code = [...t.content.querySelectorAll("script, iframe, object, embed")].length +
+        [...t.content.querySelectorAll("*")].filter((x) => [...x.attributes].some((a) => /^on/i.test(a.name) || /^\s*javascript:/i.test(a.value))).length;
+      if (code) console.warn(`i3cm: modules/${ns}.html: ${code} element(s) with code in template ${t.dataset.page ?? `${t.dataset.aspect}/${t.dataset.type}`}; put code into a component (ui/*.js)`);
       $("#module-templates").append(document.importNode(t, true));
     }
   } catch {}

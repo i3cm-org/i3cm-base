@@ -4,7 +4,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { buildCatalog, copyUi } from "../typecat.mjs";
+import { buildCatalog, copyUi, checkUi } from "../typecat.mjs";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const typesDir = path.resolve(here, "../../../types");
@@ -218,4 +218,15 @@ test("check mode reports TypeScript diagnostics with file, line and column", () 
   assert.ok(ts, JSON.stringify(issues));
   assert.equal(ts.line, 3);
   assert.equal(ts.column, 7);
+});
+
+test("code inside UI template snippets is a warning, not an error", () => {
+  const repo = fs.mkdtempSync(path.join(os.tmpdir(), "typecat-ui-"));
+  fs.cpSync(demoRepo, repo, { recursive: true });
+  const f = path.join(repo, "i3cm/ui/demo.html");
+  fs.writeFileSync(f, fs.readFileSync(f, "utf8") + '\n<template data-page="demo"><button onclick="x()">x</button><script>y()</script></template>\n');
+  const issues = checkUi(buildCatalog(typesDir, { modules: [repo] }));
+  assert.equal(issues.length, 2);
+  assert.ok(issues.every((i) => i.severity === "warning" && i.error_id === "ui.inline_code" && i.file === "i3cm/ui/demo.html" && i.line > 0));
+  assert.deepEqual(checkUi(buildCatalog(typesDir, { modules: [demoRepo] })), [], "clean fixture has no warnings");
 });

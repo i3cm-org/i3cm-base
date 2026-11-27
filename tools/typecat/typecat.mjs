@@ -378,6 +378,28 @@ export function copyUi(catalog, outDir) {
   return copied;
 }
 
+// Code inside the template snippets of a module's UI files (i3cm/ui/*.html): <script>, on… handlers,
+// javascript: links. Allowed but strongly discouraged (snippets are cloned per object; code belongs in
+// the module's ui/*.js components), so these are warnings, never errors.
+export function checkUi(catalog) {
+  const issues = [];
+  for (const [module, dir] of catalog.uiDirs ?? []) {
+    for (const f of fs.readdirSync(dir).filter((f) => f.endsWith(".html")).sort()) {
+      const text = fs.readFileSync(path.join(dir, f), "utf8");
+      const rules = [[/<script\b/gi, "script element"], [/\son[a-z]+\s*=/gi, "event handler attribute"], [/javascript:/gi, "javascript: link"]];
+      for (const [re, what] of rules) {
+        for (const m of text.matchAll(re)) {
+          const line = text.slice(0, m.index).split("\n").length;
+          issues.push({ severity: "warning", source: "typecat", error_id: "ui.inline_code",
+            description: `${what} in a UI template snippet; put code into a component (ui/*.js)`,
+            params: { module, what }, file: `i3cm/ui/${f}`, line });
+        }
+      }
+    }
+  }
+  return issues;
+}
+
 // Names at a type: attributes, own reference ends and opposite ends of references pointing to it,
 // including those of its supertypes. Two equal names conflict when they come from the same module
 // or one of them from the base; names from unrelated modules are told apart by qualification.
@@ -484,7 +506,7 @@ if (import.meta.url === `file://${process.argv[1]}` || process.argv[1]?.endsWith
   if (checkMode) {
     const issues = [];
     let cat = null;
-    try { cat = buildCatalog(dir, { modules, issues }); } catch (e) {
+    try { cat = buildCatalog(dir, { modules, issues }); issues.push(...checkUi(cat)); } catch (e) {
       if (e instanceof CatError) issues.push({ severity: "error", source: "typecat", error_id: e.id, description: e.message, params: e.params });
       else issues.push({ severity: "error", source: "typecat", error_id: "typecat.internal", description: String(e?.message ?? e), params: {} });
     }
