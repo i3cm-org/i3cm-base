@@ -42,7 +42,7 @@ fn requests_grow_with_directories_not_files() {
     for read in [false, true] {
         let fs = driver(&env);
         let before = requests(&env);
-        let top = fs.lookup_name(1, "base:mailbox").unwrap();
+        let top = fs.lookup_name(1, "sample:mailbox").unwrap();
         let mut counts = (1, 0);
         walk(&fs, top.ino.0, read, &mut counts);
         let cost = requests(&env) - before;
@@ -96,11 +96,11 @@ fn the_driver_reproduces_the_api() {
     let env = env(2, 3);
     let fs = driver(&env);
     let root: Vec<String> = fs.entries(1).unwrap().into_iter().map(|e| e.0).collect();
-    for a in ["_id", "_type", "base:mailbox", "base:recipients"] {
+    for a in ["_id", "_type", "sample:mailbox", "sample:recipients"] {
         assert!(root.contains(&a.to_string()) && root.contains(&format!("{a}.md")), "{root:?}");
     }
     let mut seen = 0;
-    for (a, depth) in [("base:mailbox", 10), ("base:recipients", 10), ("_type", 3)] {
+    for (a, depth) in [("sample:mailbox", 10), ("sample:recipients", 10), ("_type", 3)] {
         let top = fs.lookup_name(1, a).unwrap();
         compare(&env, &fs, top.ino.0, a, "", depth, &mut seen);
         let idx = fs.lookup_name(1, &format!("{a}.md")).unwrap();
@@ -109,12 +109,12 @@ fn the_driver_reproduces_the_api() {
     println!("compared {seen} entries");
 
     // the same text in two views: same inode
-    let mb = fs.lookup_name(1, "base:mailbox").unwrap().ino.0;
+    let mb = fs.lookup_name(1, "sample:mailbox").unwrap().ino.0;
     let day = fs.lookup_name(mb, "2026-11-20").unwrap().ino.0;
     let (mail_name, _) = fs.entries(day).unwrap().into_iter().find(|e| !e.0.ends_with(".md")).unwrap();
     let mail = fs.lookup_name(day, &mail_name).unwrap().ino.0;
     let md = fs.lookup_name(mail, "mail.md").unwrap();
-    let rc = fs.lookup_name(1, "base:recipients").unwrap().ino.0;
+    let rc = fs.lookup_name(1, "sample:recipients").unwrap().ino.0;
     let same = fs.entries(rc).unwrap().into_iter().filter(|e| !e.0.ends_with(".md")).find_map(|(g, _)| {
         let gi = fs.lookup_name(rc, &g).unwrap().ino.0;
         let m = fs.lookup_name(gi, &mail_name).ok()?;
@@ -125,7 +125,7 @@ fn the_driver_reproduces_the_api() {
     // `_id` lists nothing but reaches every object
     let idr = fs.lookup_name(1, "_id").unwrap().ino.0;
     assert!(fs.entries(idr).unwrap().is_empty());
-    let id = rt().block_on(env.admin.aspect_entry("base:mailbox", &format!("o:{}", uuid_of(&env, &mail_name)), None)).unwrap().id.unwrap();
+    let id = rt().block_on(env.admin.aspect_entry("sample:mailbox", &format!("o:{}", uuid_of(&env, &mail_name)), None)).unwrap().id.unwrap();
     let obj = fs.lookup_name(idr, &id.to_string()).unwrap();
     let text = fs.lookup_name(obj.ino.0, "mail.md").unwrap();
     assert_eq!(text.ino, md.ino);
@@ -136,7 +136,7 @@ fn the_driver_reproduces_the_api() {
 
 /// Id of the mail with this display name (via the tool API).
 fn uuid_of(env: &Env, mail_name: &str) -> uuid::Uuid {
-    let v = rt().block_on(env.admin.tool_exec("/base:mailbox/2026-11-20", &["head", "-n", "2", &format!("{mail_name}.md")])).unwrap();
+    let v = rt().block_on(env.admin.tool_exec("/sample:mailbox/2026-11-20", &["head", "-n", "2", &format!("{mail_name}.md")])).unwrap();
     let line = v["stdout"].as_str().unwrap().lines().nth(1).unwrap().to_string();
     uuid::Uuid::parse_str(line.trim_start_matches("_id: \"").trim_end_matches('"')).unwrap()
 }

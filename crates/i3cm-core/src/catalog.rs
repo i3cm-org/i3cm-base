@@ -75,7 +75,7 @@ pub struct CarrierDef {
 /// A business aspect: traversal and display rules (views).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AspectDef {
-    /// Qualified name, e.g. `base:mailbox`.
+    /// Qualified name, e.g. `mail:mailbox`.
     pub name: String,
     pub entry: AspectEntry,
     pub nodes: BTreeMap<String, NodeDef>,

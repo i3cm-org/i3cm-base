@@ -61,7 +61,7 @@ pub struct Env {
 pub fn env(days: usize, mails: usize) -> Env {
     let url = db_url();
     rt().block_on(async move {
-        let model = i3cm_server::load_catalog(&i3cm_server::default_catalog()).unwrap();
+        let model = i3cm_server::load_catalog(&i3cm_server::test_catalog()).unwrap();
         let store = Store::connect(&url, model, 16).await.unwrap();
         let init = store.init_tenant(&format!("t-{}", Uuid::new_v4()), "admin").await.unwrap();
         let (addr, _task) = serve(store.clone(), "127.0.0.1:0".parse().unwrap()).await.unwrap();
@@ -72,18 +72,18 @@ pub fn env(days: usize, mails: usize) -> Env {
             for i in 0..mails {
                 let m = format!("m{i}");
                 let at = format!("2026-11-{:02}T{:02}:15:00Z", 20 + d, 8 + i % 10);
-                o.create(&m, None, json!({"base:Mail": {"receivedAt": at, "sender": format!("s{i}@example.org"), "subject": format!("Betreff {d}-{i}"), "recipients": [format!("r{}@example.org", i % 3)]}}));
+                o.create(&m, None, json!({"sample:Mail": {"receivedAt": at, "sender": format!("s{i}@example.org"), "subject": format!("Betreff {d}-{i}"), "recipients": [format!("r{}@example.org", i % 3)]}}));
                 for j in 0..2 {
                     let a = format!("a{i}-{j}");
-                    o.create(&a, None, json!({"base:MailAttachment": {"filename": format!("file{j}.pdf")}}));
-                    o.link("base:MailAttachment.mail", a.as_str(), m.as_str());
+                    o.create(&a, None, json!({"sample:MailAttachment": {"filename": format!("file{j}.pdf")}}));
+                    o.link("sample:MailAttachment.mail", a.as_str(), m.as_str());
                 }
             }
             let r = admin.order(&o).await.unwrap();
             for i in 0..mails {
                 let m = r.created[&format!("m{i}")];
                 admin.put_content(m, format!("From: s{i}\r\n\r\nHallo {d}-{i}").into_bytes(), "message/rfc822", None).await.unwrap();
-                admin.put_text(m, "base:mail.md", &format!("# Hallo\n\nRechnung {d}-{i}\n")).await.unwrap();
+                admin.put_text(m, "sample:mail.md", &format!("# Hallo\n\nRechnung {d}-{i}\n")).await.unwrap();
                 for j in 0..2 {
                     admin.put_content(r.created[&format!("a{i}-{j}")], format!("%PDF {d}-{i}-{j}").into_bytes(), "application/pdf", Some(&format!("file{j}.pdf"))).await.unwrap();
                 }

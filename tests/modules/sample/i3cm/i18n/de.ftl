@@ -1,0 +1,26 @@
+sample-Task-name = { $subject }
+sample-Task-description = Aufgabe ({ $status })
+sample-Document-name = { $title }
+sample-Document-description = Dokument
+sample-Mail-name = { $sender } - { $subject }
+    .fallback = { $sender } - { $subject } ({ TIME($receivedAt) })
+sample-Mail-description = Mail vom { $receivedAt }
+sample-MailAttachment-name = { $filename }
+sample-MailAttachment-description = Mail-Anhang
+sample-mailbox--sample-Mail-name = { $sender } - { $subject }
+    .fallback = { $sender } - { $subject } ({ TIME($receivedAt) })
+sample-mailbox--sample-Mail-description = Eingegangen am { $receivedAt }
+sample-mailbox--label-sender = Absender
+sample-mailbox--label-subject = Betreff
+sample-mailbox--label-received = Empfangen
+sample-mailbox--label-attachmentCount = Anzahl Anhänge
+sample-mailbox--label-attachments = Anhänge
+sample-mailbox--label-file = Datei
+sample-mailbox--label-added = Hinzugefügt
+sample-mailbox--label-reply = Antworten
+## Aspect recipients
+sample-mailbox--label-_name = Mail-Ablage
+sample-recipients--label-_name = Mails nach Empfänger
+sample-recipients--sample-Mail-name = { $sender } - { $subject }
+    .fallback = { $sender } - { $subject } ({ TIME($receivedAt) })
+sample-recipients--label-attachments = Anhänge

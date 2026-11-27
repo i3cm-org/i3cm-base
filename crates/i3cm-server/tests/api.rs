@@ -50,7 +50,7 @@ fn db_url() -> String {
 
 /// The shipped catalog plus a test module with a sub room and minus/block profiles.
 fn test_model() -> Model {
-    let json = std::fs::read_to_string(i3cm_server::default_catalog()).expect("run typecat first: catalog.json missing");
+    let json = std::fs::read_to_string(i3cm_server::test_catalog()).expect("run typecat first: catalog.json missing");
     let mut c: Catalog = serde_json::from_str(&json).unwrap();
     // rights paths: team leaders read and write the leave requests of their team members
     let ty = |name: &str, attrs: serde_json::Value, requires: &[&str]| {
@@ -72,11 +72,11 @@ fn test_model() -> Model {
     c.modules.push(
         serde_json::from_value(json!({
             "name": "t", "requires": ["base"], "rooms": ["tsub"], "i18n": {},
-            "aspects": [{"name": "t:mail-drop", "entry": {"type": "base:Mail", "groupBy": []},
-                "nodes": {"base:Mail": {"attributes": [], "subNodes": [{"label": "attachments", "path": "attachments", "folder": true, "dropType": "base:MailAttachment"}],
+            "aspects": [{"name": "t:mail-drop", "entry": {"type": "sample:Mail", "groupBy": []},
+                "nodes": {"sample:Mail": {"attributes": [], "subNodes": [{"label": "attachments", "path": "attachments", "folder": true, "dropType": "sample:MailAttachment"}],
                     "files": [{"name": "mail.md", "path": "_texts.`mail.md`"}, {"name": "mail.eml", "path": "_content"}], "tabs": [], "functions": [], "filesFirst": false}}},
-                {"name": "t:due-mine", "entry": {"type": "base:Task", "groupBy": [], "where": "due <= now() and status != 'done' and assignees = %me"},
-                "nodes": {"base:Task": {"attributes": [{"label": "subject", "path": "subject"}], "subNodes": [], "files": [], "tabs": [], "functions": [], "filesFirst": true}}}],
+                {"name": "t:due-mine", "entry": {"type": "sample:Task", "groupBy": [], "where": "due <= now() and status != 'done' and assignees = %me"},
+                "nodes": {"sample:Task": {"attributes": [{"label": "subject", "path": "subject"}], "subNodes": [], "files": [], "tabs": [], "functions": [], "filesFirst": true}}}],
             "profiles": [
                 {"name": "t:no-person-sub", "rights": [{"sign": "-", "art": ["read"], "types": ["base:Person"], "room": "tsub"}]},
                 {"name": "t:block-person", "rights": [{"sign": "block", "art": ["read"], "types": ["base:Person"], "room": "root"}]},
@@ -164,7 +164,7 @@ impl Env {
 
 #[test]
 fn catalog_checker_rejects_cycles() {
-    let json = std::fs::read_to_string(i3cm_server::default_catalog()).unwrap();
+    let json = std::fs::read_to_string(i3cm_server::test_catalog()).unwrap();
     assert!(Model::from_json(&json).is_ok());
     let mut c: serde_json::Value = serde_json::from_str(&json).unwrap();
     for t in c["types"].as_array_mut().unwrap() {
@@ -319,27 +319,27 @@ async fn parts_follow_the_whole() {
 async fn mail_with_attachments_content_and_texts() {
     let env = env().await;
     let mut o = Order::new();
-    o.create("m", None, json!({"base:Mail": {"receivedAt": "2026-11-24T08:15:00+01:00", "sender": "anna@example.org", "subject": "Angebot"}}));
+    o.create("m", None, json!({"sample:Mail": {"receivedAt": "2026-11-24T08:15:00+01:00", "sender": "anna@example.org", "subject": "Angebot"}}));
     for i in 0..2 {
         let a = format!("a{i}");
-        o.create(&a, None, json!({"base:MailAttachment": {"filename": format!("file{i}.pdf")}}));
-        o.link("base:MailAttachment.mail", a.as_str(), "m");
+        o.create(&a, None, json!({"sample:MailAttachment": {"filename": format!("file{i}.pdf")}}));
+        o.link("sample:MailAttachment.mail", a.as_str(), "m");
     }
     let r = env.admin.order(&o).await.unwrap();
     let m = r.created["m"];
     env.admin.put_content(m, b"From: anna@example.org\r\n\r\nHallo".to_vec(), "message/rfc822", Some("mail.eml")).await.unwrap();
     assert_eq!(env.admin.ends(m, "attachments", 10, 0).await.unwrap().len(), 2);
     assert!(env.admin.get_content(m).await.unwrap().ends_with(b"Hallo"));
-    env.admin.put_text(m, "base:mail.md", "Hallo").await.unwrap();
-    assert_eq!(env.admin.get_text(m, "base:mail.md").await.unwrap(), "Hallo");
+    env.admin.put_text(m, "sample:mail.md", "Hallo").await.unwrap();
+    assert_eq!(env.admin.get_text(m, "sample:mail.md").await.unwrap(), "Hallo");
     let view = env.admin.get_object(m, None).await.unwrap();
-    assert_eq!(view.texts, vec!["base:mail.md".to_string()]);
-    assert_eq!(view.display_name("base:Mail"), Some("anna@example.org - Angebot"));
+    assert_eq!(view.texts, vec!["sample:mail.md".to_string()]);
+    assert_eq!(view.display_name("sample:Mail"), Some("anna@example.org - Angebot"));
     let en = env.admin.clone().with_lang("en").get_object(m, None).await.unwrap();
     let de = env.admin.clone().with_lang("de-DE").get_object(m, None).await.unwrap();
     assert!(en.types[0].display_description.starts_with("Mail received"));
     assert!(de.types[0].display_description.starts_with("Mail vom"));
-    assert!(env.admin.put_text(m, "base:body.html", "<p>x</p>").await.unwrap() > 0);
+    assert!(env.admin.put_text(m, "sample:body.html", "<p>x</p>").await.unwrap() > 0);
     assert_eq!(env.admin.put_text(m, "base:nope", "x").await.unwrap_err().error_id(), Some("text.unknown_type"));
 }
 
@@ -417,12 +417,12 @@ async fn mailbox_aspect() {
         .enumerate()
     {
         let m = format!("m{i}");
-        o.create(&m, None, json!({"base:Mail": {"receivedAt": at, "sender": sender, "subject": subject}}));
+        o.create(&m, None, json!({"sample:Mail": {"receivedAt": at, "sender": sender, "subject": subject}}));
         if i == 0 {
             for j in 0..2 {
                 let a = format!("a{j}");
-                o.create(&a, None, json!({"base:MailAttachment": {"filename": format!("file{j}.pdf")}}));
-                o.link("base:MailAttachment.mail", a.as_str(), m.as_str());
+                o.create(&a, None, json!({"sample:MailAttachment": {"filename": format!("file{j}.pdf")}}));
+                o.link("sample:MailAttachment.mail", a.as_str(), m.as_str());
             }
         }
     }
@@ -430,26 +430,26 @@ async fn mailbox_aspect() {
     let m0 = r.created["m0"];
     env.admin.put_content(m0, b"From: anna\r\n\r\nHallo".to_vec(), "message/rfc822", None).await.unwrap();
     env.admin.put_content(r.created["a0"], b"%PDF-1".to_vec(), "application/pdf", Some("file0.pdf")).await.unwrap();
-    env.admin.put_text(m0, "base:mail.md", "# Hallo").await.unwrap();
+    env.admin.put_text(m0, "sample:mail.md", "# Hallo").await.unwrap();
 
     let de = env.admin.clone().with_lang("de");
-    let days = de.aspect_children("base:mailbox", "").await.unwrap();
+    let days = de.aspect_children("sample:mailbox", "").await.unwrap();
     assert_eq!(days.iter().map(|d| (d.display_name.as_str(), d.count)).collect::<Vec<_>>(), vec![("2026-11-24", Some(2)), ("2026-11-25", Some(1))]);
-    let mut mails = de.aspect_children("base:mailbox", &days[0].node).await.unwrap();
+    let mut mails = de.aspect_children("sample:mailbox", &days[0].node).await.unwrap();
     mails.sort_by(|a, b| a.display_name.cmp(&b.display_name)); // compared as a set (DEC-118)
     assert_eq!(mails.iter().map(|m| m.display_name.as_str()).collect::<Vec<_>>(), vec!["anna@example.org - Angebot", "ben@example.org - Rechnung"]);
-    let inside = de.aspect_children("base:mailbox", &mails[0].node).await.unwrap();
-    // order of the definition: the sub-node block comes before the files block in base:mailbox
+    let inside = de.aspect_children("sample:mailbox", &mails[0].node).await.unwrap();
+    // order of the definition: the sub-node block comes before the files block in sample:mailbox
     let names: Vec<(bool, &str)> = inside.iter().map(|n| (n.file, n.display_name.as_str())).collect();
     assert_eq!(names, vec![(false, "Anhänge"), (true, "mail.eml"), (true, "mail.md")]);
-    let atts = de.aspect_children("base:mailbox", &inside[0].node).await.unwrap();
+    let atts = de.aspect_children("sample:mailbox", &inside[0].node).await.unwrap();
     assert_eq!(atts.len(), 2);
-    let att_files = de.aspect_children("base:mailbox", &atts.iter().find(|a| a.display_name == "file0.pdf").unwrap().node).await.unwrap();
+    let att_files = de.aspect_children("sample:mailbox", &atts.iter().find(|a| a.display_name == "file0.pdf").unwrap().node).await.unwrap();
     assert_eq!(att_files[0].display_name, "file0.pdf");
-    assert_eq!(de.aspect_file("base:mailbox", &mails[0].node, "mail.md").await.unwrap(), b"# Hallo");
-    assert!(de.aspect_file("base:mailbox", &mails[0].node, "mail.eml").await.unwrap().ends_with(b"Hallo"));
+    assert_eq!(de.aspect_file("sample:mailbox", &mails[0].node, "mail.md").await.unwrap(), b"# Hallo");
+    assert!(de.aspect_file("sample:mailbox", &mails[0].node, "mail.eml").await.unwrap().ends_with(b"Hallo"));
 
-    let detail = de.aspect_node("base:mailbox", &mails[0].node).await.unwrap();
+    let detail = de.aspect_node("sample:mailbox", &mails[0].node).await.unwrap();
     assert_eq!(detail["node"]["displayDescription"].as_str().unwrap(), "Eingegangen am 2026-11-24T07:15:00+00:00", "aspect text overrides the global one");
     let labels: Vec<&str> = detail["attributes"].as_array().unwrap().iter().map(|a| a["label"].as_str().unwrap()).collect();
     assert_eq!(labels, vec!["Absender", "Betreff", "Empfangen", "Anzahl Anhänge"]);
@@ -474,23 +474,23 @@ async fn mailbox_aspect() {
 
     // without read rights the mailbox is empty
     let (_, lea) = env.person("lea", &[]).await;
-    assert!(lea.aspect_children("base:mailbox", "").await.unwrap().is_empty());
+    assert!(lea.aspect_children("sample:mailbox", "").await.unwrap().is_empty());
 }
 
 #[tokio::test]
 async fn builtin_views() {
     let env = env().await;
     let mut o = Order::new();
-    o.create("m", None, json!({"base:Mail": {"receivedAt": "2026-11-24T08:15:00+01:00", "sender": "anna@example.org", "subject": "Angebot"}}));
+    o.create("m", None, json!({"sample:Mail": {"receivedAt": "2026-11-24T08:15:00+01:00", "sender": "anna@example.org", "subject": "Angebot"}}));
     for j in 0..2 {
         let a = format!("a{j}");
-        o.create(&a, None, json!({"base:MailAttachment": {"filename": format!("file{j}.pdf")}}));
-        o.link("base:MailAttachment.mail", a.as_str(), "m");
+        o.create(&a, None, json!({"sample:MailAttachment": {"filename": format!("file{j}.pdf")}}));
+        o.link("sample:MailAttachment.mail", a.as_str(), "m");
     }
     let r = env.admin.order(&o).await.unwrap();
     let m = r.created["m"];
     env.admin.put_content(m, b"From: anna\r\n\r\nHallo".to_vec(), "message/rfc822", None).await.unwrap();
-    env.admin.put_text(m, "base:mail.md", "# Hallo").await.unwrap();
+    env.admin.put_text(m, "sample:mail.md", "# Hallo").await.unwrap();
 
     let de = env.admin.clone().with_lang("de");
     let list = de.aspects().await.unwrap();
@@ -499,9 +499,9 @@ async fn builtin_views() {
 
     // _type: types with counts, then objects, then files and filled ends
     let types = de.aspect_children("_type", "").await.unwrap();
-    let mail = types.iter().find(|t| t.display_name == "base:Mail").expect("type folder");
+    let mail = types.iter().find(|t| t.display_name == "sample:Mail").expect("type folder");
     assert_eq!(mail.count, Some(1));
-    assert_eq!(types.iter().find(|t| t.display_name == "base:MailAttachment").unwrap().count, Some(2));
+    assert_eq!(types.iter().find(|t| t.display_name == "sample:MailAttachment").unwrap().count, Some(2));
     let mails = de.aspect_children("_type", &mail.node).await.unwrap();
     assert_eq!(mails.len(), 1);
     let inside = de.aspect_children("_type", &mails[0].node).await.unwrap();
@@ -523,7 +523,7 @@ async fn builtin_views() {
 
     // without read rights nothing is visible
     let (_, lea) = env.person("lea", &[]).await;
-    assert!(lea.aspect_children("_type", "").await.unwrap().iter().all(|t| t.display_name != "base:Mail"));
+    assert!(lea.aspect_children("_type", "").await.unwrap().iter().all(|t| t.display_name != "sample:Mail"));
     assert!(lea.aspect_node("_id", &node).await.is_err());
 }
 
@@ -531,29 +531,29 @@ async fn builtin_views() {
 async fn multi_valued_group_by() {
     let env = env().await;
     let mut o = Order::new();
-    o.create("m1", None, json!({"base:Mail": {"receivedAt": "2026-11-24T08:00:00Z", "sender": "anna@example.org", "subject": "Angebot", "recipients": ["ben@example.org", "carla@example.org", "ben@example.org"]}}));
-    o.create("m2", None, json!({"base:Mail": {"receivedAt": "2026-11-24T09:00:00Z", "sender": "ben@example.org", "subject": "Frage", "recipients": ["carla@example.org"]}}));
-    o.create("m3", None, json!({"base:Mail": {"receivedAt": "2026-11-24T10:00:00Z", "sender": "carla@example.org", "subject": "Ohne"}}));
+    o.create("m1", None, json!({"sample:Mail": {"receivedAt": "2026-11-24T08:00:00Z", "sender": "anna@example.org", "subject": "Angebot", "recipients": ["ben@example.org", "carla@example.org", "ben@example.org"]}}));
+    o.create("m2", None, json!({"sample:Mail": {"receivedAt": "2026-11-24T09:00:00Z", "sender": "ben@example.org", "subject": "Frage", "recipients": ["carla@example.org"]}}));
+    o.create("m3", None, json!({"sample:Mail": {"receivedAt": "2026-11-24T10:00:00Z", "sender": "carla@example.org", "subject": "Ohne"}}));
     env.admin.order(&o).await.unwrap();
 
     let de = env.admin.clone().with_lang("de");
-    let groups = de.aspect_children("base:recipients", "").await.unwrap();
+    let groups = de.aspect_children("sample:recipients", "").await.unwrap();
     // the mail exists once but appears under each of its (distinct) recipients; counts are occurrences
     // the mail without recipients forms one group with the empty key, labelled "—" (0.6)
     assert_eq!(
         groups.iter().map(|g| (g.display_name.as_str(), g.count)).collect::<Vec<_>>(),
         vec![("—", Some(1)), ("ben@example.org", Some(1)), ("carla@example.org", Some(2))]
     );
-    let none = de.aspect_children("base:recipients", &groups[0].node).await.unwrap();
+    let none = de.aspect_children("sample:recipients", &groups[0].node).await.unwrap();
     assert_eq!(none.iter().map(|m| m.display_name.as_str()).collect::<Vec<_>>(), vec!["carla@example.org - Ohne"]);
     // grouping is paged like every listing (DEC-108)
-    let second = de.aspect_children_page("base:recipients", "", 2, 1).await.unwrap();
+    let second = de.aspect_children_page("sample:recipients", "", 2, 1).await.unwrap();
     assert_eq!(second.iter().map(|g| g.display_name.as_str()).collect::<Vec<_>>(), vec!["carla@example.org"]);
     let groups: Vec<_> = groups.into_iter().skip(1).collect();
-    let mut carla = de.aspect_children("base:recipients", &groups[1].node).await.unwrap();
+    let mut carla = de.aspect_children("sample:recipients", &groups[1].node).await.unwrap();
     carla.sort_by(|a, b| a.display_name.cmp(&b.display_name));
     assert_eq!(carla.iter().map(|m| m.display_name.as_str()).collect::<Vec<_>>(), vec!["anna@example.org - Angebot", "ben@example.org - Frage"]);
-    let ben = de.aspect_children("base:recipients", &groups[0].node).await.unwrap();
+    let ben = de.aspect_children("sample:recipients", &groups[0].node).await.unwrap();
     assert_eq!(ben[0].id, carla[0].id, "same object under both groups");
 }
 
@@ -609,18 +609,18 @@ async fn command_line_tokens_expire() {
 /// Mail with two attachments, content and a text (as in the mailbox test).
 async fn mail_fixture(env: &Env) -> Uuid {
     let mut o = Order::new();
-    o.create("m", None, json!({"base:Mail": {"receivedAt": "2026-11-24T08:15:00+01:00", "sender": "anna@example.org", "subject": "Angebot"}}));
-    o.create("n", None, json!({"base:Mail": {"receivedAt": "2026-11-25T09:00:00+01:00", "sender": "carla@example.org", "subject": "Termin"}}));
+    o.create("m", None, json!({"sample:Mail": {"receivedAt": "2026-11-24T08:15:00+01:00", "sender": "anna@example.org", "subject": "Angebot"}}));
+    o.create("n", None, json!({"sample:Mail": {"receivedAt": "2026-11-25T09:00:00+01:00", "sender": "carla@example.org", "subject": "Termin"}}));
     for j in 0..2 {
         let a = format!("a{j}");
-        o.create(&a, None, json!({"base:MailAttachment": {"filename": format!("file{j}.pdf")}}));
-        o.link("base:MailAttachment.mail", a.as_str(), "m");
+        o.create(&a, None, json!({"sample:MailAttachment": {"filename": format!("file{j}.pdf")}}));
+        o.link("sample:MailAttachment.mail", a.as_str(), "m");
     }
     let r = env.admin.order(&o).await.unwrap();
     let m = r.created["m"];
     env.admin.put_content(m, b"From: anna\r\n\r\nHallo".to_vec(), "message/rfc822", None).await.unwrap();
     env.admin.put_content(r.created["a0"], b"%PDF-1".to_vec(), "application/pdf", Some("file0.pdf")).await.unwrap();
-    env.admin.put_text(m, "base:mail.md", "# Hallo").await.unwrap();
+    env.admin.put_text(m, "sample:mail.md", "# Hallo").await.unwrap();
     m
 }
 
@@ -629,21 +629,21 @@ async fn index_and_file_metadata() {
     let env = env().await;
     let m = mail_fixture(&env).await;
     let de = env.admin.clone().with_lang("de");
-    let days = de.aspect_children("base:mailbox", "").await.unwrap();
+    let days = de.aspect_children("sample:mailbox", "").await.unwrap();
     assert_eq!(days[0].name, "2026-11-24");
     assert_eq!(days[0].size, Some("# 2026-11-24\n".len() as u64));
-    let mail = de.aspect_children("base:mailbox", &days[0].node).await.unwrap().remove(0);
-    let idx = de.aspect_index("base:mailbox", &mail.node, None).await.unwrap();
-    assert!(idx.starts_with(&format!("---\n_id: \"{m}\"\n_type: [\"base:Mail\"]\n")), "{idx}");
+    let mail = de.aspect_children("sample:mailbox", &days[0].node).await.unwrap().remove(0);
+    let idx = de.aspect_index("sample:mailbox", &mail.node, None).await.unwrap();
+    assert!(idx.starts_with(&format!("---\n_id: \"{m}\"\n_type: [\"sample:Mail\"]\n")), "{idx}");
     assert!(idx.contains("sender: \"anna@example.org\"\n"), "{idx}");
     assert!(idx.contains("---\n# anna@example.org - Angebot\n"), "{idx}");
     assert!(idx.contains("## Anhänge\n\n- [[anna@example.org - Angebot/Anhänge/file0.pdf|file0.pdf]]\n"), "{idx}");
     assert_eq!(mail.size, Some(idx.len() as u64), "a node's size is the size of its index");
-    let entry = de.aspect_entry("base:mailbox", &mail.node, None).await.unwrap();
+    let entry = de.aspect_entry("sample:mailbox", &mail.node, None).await.unwrap();
     assert_eq!((entry.size, entry.ino, entry.name.as_str()), (mail.size, mail.ino, "anna@example.org - Angebot"));
     assert!(mail.changed_at.is_some());
 
-    let inside = de.aspect_children("base:mailbox", &mail.node).await.unwrap();
+    let inside = de.aspect_children("sample:mailbox", &mail.node).await.unwrap();
     let md = inside.iter().find(|n| n.name == "mail.md").unwrap();
     assert_eq!(md.size, Some(7));
     assert_eq!(inside.iter().find(|n| n.name == "mail.eml").unwrap().size, Some(19));
@@ -667,20 +667,20 @@ async fn tools_over_the_api() {
             (v["stdout"].as_str().unwrap().to_string(), v["stderr"].as_str().unwrap().to_string(), v["status"].as_i64().unwrap())
         }
     };
-    let mail = "/base:mailbox/2026-11-24/anna@example.org - Angebot";
+    let mail = "/sample:mailbox/2026-11-24/anna@example.org - Angebot";
     let root = sh("/", vec!["ls", "/"]).await.0;
-    assert!(root.contains("_id\n_id.md\n_type\n_type.md\n") && root.contains("base:mailbox\nbase:mailbox.md\n"), "{root}");
-    assert_eq!(sh("/", vec!["ls", "/base:mailbox"]).await.0, "2026-11-24\n2026-11-24.md\n2026-11-25\n2026-11-25.md\n");
-    assert_eq!(sh("/base:mailbox/2026-11-24", vec!["cat", "anna@example.org - Angebot/mail.md"]).await.0, "# Hallo");
+    assert!(root.contains("_id\n_id.md\n_type\n_type.md\n") && root.contains("sample:mailbox\nsample:mailbox.md\n"), "{root}");
+    assert_eq!(sh("/", vec!["ls", "/sample:mailbox"]).await.0, "2026-11-24\n2026-11-24.md\n2026-11-25\n2026-11-25.md\n");
+    assert_eq!(sh("/sample:mailbox/2026-11-24", vec!["cat", "anna@example.org - Angebot/mail.md"]).await.0, "# Hallo");
     // grep -r searches texts and indexes, not binary content (mail.eml also contains "Hallo")
-    assert_eq!(sh("/", vec!["grep", "-r", "Hallo", "/base:mailbox"]).await.0, format!("{mail}/mail.md:# Hallo\n"));
-    assert_eq!(sh("/", vec!["grep", "-rlF", "subject: \"Angebot", "/base:mailbox"]).await.0, format!("{mail}.md\n"));
+    assert_eq!(sh("/", vec!["grep", "-r", "Hallo", "/sample:mailbox"]).await.0, format!("{mail}/mail.md:# Hallo\n"));
+    assert_eq!(sh("/", vec!["grep", "-rlF", "subject: \"Angebot", "/sample:mailbox"]).await.0, format!("{mail}.md\n"));
     // attachments link back to their mail by id
-    assert_eq!(sh("/", vec!["grep", "-rlF", "Angebot]]", "/base:mailbox"]).await.0.lines().count(), 2);
+    assert_eq!(sh("/", vec!["grep", "-rlF", "Angebot]]", "/sample:mailbox"]).await.0.lines().count(), 2);
     assert_eq!(sh("/", vec!["grep", "-c", "Hallo", &*Box::leak(format!("{mail}/mail.eml").into_boxed_str())]).await.0, "1\n", "named files are searched");
-    let pdfs = sh("/base:mailbox", vec!["find", ".", "-name", "*.pdf", "-type", "f"]).await.0;
+    let pdfs = sh("/sample:mailbox", vec!["find", ".", "-name", "*.pdf", "-type", "f"]).await.0;
     assert_eq!(pdfs, "./2026-11-24/anna@example.org - Angebot/Anhänge/file0.pdf/file0.pdf\n");
-    assert_eq!(sh("/base:mailbox", vec!["find", ".", "-name", "mail.md", "-exec", "grep", "-l", "Hallo", "{}", "+"]).await.0, "./2026-11-24/anna@example.org - Angebot/mail.md\n");
+    assert_eq!(sh("/sample:mailbox", vec!["find", ".", "-name", "mail.md", "-exec", "grep", "-l", "Hallo", "{}", "+"]).await.0, "./2026-11-24/anna@example.org - Angebot/mail.md\n");
     assert_eq!(sh(mail_static(), vec!["wc", "-c", "mail.md"]).await.0, "7 mail.md\n");
     assert_eq!(sh(mail_static(), vec!["head", "-n", "1", "../anna@example.org - Angebot.md"]).await.0, "---\n");
     assert!(sh(mail_static(), vec!["stat", "mail.md"]).await.0.contains("Links: 2"));
@@ -692,7 +692,7 @@ async fn tools_over_the_api() {
     assert_eq!((e.status(), e.error_id()), (Some(400), Some("tool.unknown_option")));
     assert!(e.to_string().contains("\"-r\""), "the error lists the supported options: {e}");
 
-    let v = de.tool("grep", &json!({"cwd": "/base:mailbox", "paths": ["."], "options": {"recursive": true, "patterns": ["Hallo"], "lineNumber": true}})).await.unwrap();
+    let v = de.tool("grep", &json!({"cwd": "/sample:mailbox", "paths": ["."], "options": {"recursive": true, "patterns": ["Hallo"], "lineNumber": true}})).await.unwrap();
     assert_eq!(v["records"], json!([{"kind": "match", "path": "./2026-11-24/anna@example.org - Angebot/mail.md", "line": 1, "text": "# Hallo"}]));
     assert_eq!(de.tool("grep", &json!({"paths": ["/"], "options": {"long": true, "patterns": ["x"]}})).await.unwrap_err().error_id(), Some("tool.unknown_option"));
 
@@ -703,7 +703,7 @@ async fn tools_over_the_api() {
 
     // without read rights there is nothing to find
     let (_, lea) = env.person("lea", &[]).await;
-    let v = lea.tool_exec("/", &["grep", "-r", "Hallo", "/base:mailbox"]).await.unwrap();
+    let v = lea.tool_exec("/", &["grep", "-r", "Hallo", "/sample:mailbox"]).await.unwrap();
     assert_eq!((v["stdout"].as_str().unwrap(), v["status"].as_i64().unwrap()), ("", 1));
 }
 
@@ -714,16 +714,16 @@ async fn equal_names_use_the_fallback_then_the_id() {
     let mut o = Order::new();
     // two mails with equal sender and subject at different times, two more at the same time
     for (k, at) in [("a", "08:15"), ("b", "09:30"), ("c", "10:00"), ("d", "10:00")] {
-        o.create(k, None, json!({"base:Mail": {"receivedAt": format!("2026-11-24T{at}:00+01:00"), "sender": "anna@example.org", "subject": "Angebot"}}));
+        o.create(k, None, json!({"sample:Mail": {"receivedAt": format!("2026-11-24T{at}:00+01:00"), "sender": "anna@example.org", "subject": "Angebot"}}));
     }
-    o.create("x", None, json!({"base:MailAttachment": {"filename": "file.pdf"}}));
-    o.link("base:MailAttachment.mail", "x", "d");
+    o.create("x", None, json!({"sample:MailAttachment": {"filename": "file.pdf"}}));
+    o.link("sample:MailAttachment.mail", "x", "d");
     let r = env.admin.order(&o).await.unwrap();
     let ls = |cwd: &'static str| {
         let de = de.clone();
         async move { de.tool_exec(cwd, &["ls", "."]).await.unwrap()["stdout"].as_str().unwrap().to_string() }
     };
-    let day = ls("/base:mailbox/2026-11-24").await;
+    let day = ls("/sample:mailbox/2026-11-24").await;
     let dirs: Vec<&str> = day.lines().filter(|l| !l.ends_with(".md")).collect();
     assert_eq!(dirs.len(), 4, "{day}");
     assert!(dirs.iter().any(|d| d.starts_with("anna@example.org - Angebot (07:15)")), "fallback with the time: {day}");
@@ -738,7 +738,7 @@ async fn equal_names_use_the_fallback_then_the_id() {
     let id_of = |name: String| {
         let de = de.clone();
         async move {
-            let p = format!("/base:mailbox/2026-11-24/{name}.md");
+            let p = format!("/sample:mailbox/2026-11-24/{name}.md");
             let v = de.tool_exec("/", &["head", "-n", "2", &p]).await.unwrap();
             v["stdout"].as_str().unwrap().lines().nth(1).unwrap().trim_start_matches("_id: ").trim_matches('"').parse::<Uuid>().unwrap()
         }
@@ -746,51 +746,51 @@ async fn equal_names_use_the_fallback_then_the_id() {
     assert_eq!(id_of(plain.clone()).await, first);
     assert_eq!(id_of(numbered.clone()).await, second);
     // the index of the attachment links to exactly its mail's entry
-    let att = de.aspect_children("base:mailbox", &format!("f:{d}:attachments")).await.unwrap();
-    let idx = de.aspect_index("base:mailbox", &att[0].node, Some("file.pdf")).await.unwrap();
+    let att = de.aspect_children("sample:mailbox", &format!("f:{d}:attachments")).await.unwrap();
+    let idx = de.aspect_index("sample:mailbox", &att[0].node, Some("file.pdf")).await.unwrap();
     let mail_name = if d == first { &plain } else { &numbered };
     assert!(!idx.is_empty());
-    let mail_idx = de.aspect_index("base:mailbox", &format!("o:{d}"), Some(mail_name)).await.unwrap();
+    let mail_idx = de.aspect_index("sample:mailbox", &format!("o:{d}"), Some(mail_name)).await.unwrap();
     assert!(mail_idx.contains(&format!("[[{mail_name}/Anhänge/file.pdf|")), "{mail_idx}");
     // without a collision the plain name stays
-    assert!(ls("/base:mailbox").await.contains("2026-11-24\n"));
+    assert!(ls("/sample:mailbox").await.contains("2026-11-24\n"));
 }
 
 fn mail_static() -> &'static str {
-    "/base:mailbox/2026-11-24/anna@example.org - Angebot"
+    "/sample:mailbox/2026-11-24/anna@example.org - Angebot"
 }
 
 #[tokio::test]
 async fn tab_paging_sorting_and_export() {
     let env = env().await;
     let mut o = Order::new();
-    o.create("m", None, json!({"base:Mail": {"receivedAt": "2026-11-24T08:15:00+01:00", "sender": "anna@example.org", "subject": "Angebot"}}));
+    o.create("m", None, json!({"sample:Mail": {"receivedAt": "2026-11-24T08:15:00+01:00", "sender": "anna@example.org", "subject": "Angebot"}}));
     for (j, f) in ["b.pdf", "a, \"quoted\".pdf", "c.pdf"].iter().enumerate() {
         let a = format!("a{j}");
-        o.create(&a, None, json!({"base:MailAttachment": {"filename": f}}));
-        o.link("base:MailAttachment.mail", a.as_str(), "m");
+        o.create(&a, None, json!({"sample:MailAttachment": {"filename": f}}));
+        o.link("sample:MailAttachment.mail", a.as_str(), "m");
     }
     let m = env.admin.order(&o).await.unwrap().created["m"];
     let node = format!("o:{m}");
-    let page = env.admin.aspect_tab("base:mailbox", &node, "attachments", &[("sort", "0"), ("limit", "2")]).await.unwrap();
+    let page = env.admin.aspect_tab("sample:mailbox", &node, "attachments", &[("sort", "0"), ("limit", "2")]).await.unwrap();
     assert_eq!(page["total"], 3);
     let names: Vec<_> = page["rows"].as_array().unwrap().iter().map(|r| r["cells"][0][0].as_str().unwrap().to_string()).collect();
     assert_eq!(names, vec!["a, \"quoted\".pdf", "b.pdf"]);
-    assert_eq!(page["rows"][0]["type"], "base:MailAttachment");
-    let last = env.admin.aspect_tab("base:mailbox", &node, "attachments", &[("sort", "0"), ("desc", "true"), ("offset", "2")]).await.unwrap();
+    assert_eq!(page["rows"][0]["type"], "sample:MailAttachment");
+    let last = env.admin.aspect_tab("sample:mailbox", &node, "attachments", &[("sort", "0"), ("desc", "true"), ("offset", "2")]).await.unwrap();
     assert_eq!(last["rows"][0]["cells"][0][0], "a, \"quoted\".pdf");
     // export: every row, not only a page
-    let (csv, ct, cd) = env.admin.aspect_tab_export("base:mailbox", &node, "attachments", "csv").await.unwrap();
+    let (csv, ct, cd) = env.admin.aspect_tab_export("sample:mailbox", &node, "attachments", "csv").await.unwrap();
     assert!(ct.starts_with("text/csv") && cd.contains(".csv"));
     let csv = String::from_utf8(csv).unwrap();
     let lines: Vec<_> = csv.trim_start_matches('\u{feff}').lines().collect();
     assert_eq!(lines.len(), 4, "{csv}");
     assert_eq!(lines[0], "File,Added");
     assert!(lines.iter().any(|l| l.starts_with("\"a, \"\"quoted\"\".pdf\",")), "{csv}");
-    let (xlsx, ct, _) = env.admin.aspect_tab_export("base:mailbox", &node, "attachments", "xlsx").await.unwrap();
+    let (xlsx, ct, _) = env.admin.aspect_tab_export("sample:mailbox", &node, "attachments", "xlsx").await.unwrap();
     assert!(ct.contains("spreadsheetml") && xlsx.starts_with(b"PK"));
-    assert_eq!(env.admin.aspect_tab_export("base:mailbox", &node, "attachments", "pdf").await.unwrap_err().status(), Some(400));
-    assert_eq!(env.admin.aspect_tab("base:mailbox", &node, "nope", &[]).await.unwrap_err().status(), Some(404));
+    assert_eq!(env.admin.aspect_tab_export("sample:mailbox", &node, "attachments", "pdf").await.unwrap_err().status(), Some(400));
+    assert_eq!(env.admin.aspect_tab("sample:mailbox", &node, "nope", &[]).await.unwrap_err().status(), Some(404));
 }
 
 
@@ -843,7 +843,7 @@ async fn rights_path_team_leader_sees_team_requests() {
 
 #[test]
 fn rights_path_checker_limits() {
-    let json = std::fs::read_to_string(i3cm_server::default_catalog()).unwrap();
+    let json = std::fs::read_to_string(i3cm_server::test_catalog()).unwrap();
     let base: Catalog = serde_json::from_str(&json).unwrap();
     let with = |when: &str, sign: &str, types: &str| {
         let mut m = test_model().catalog.clone();
@@ -872,13 +872,13 @@ async fn view_filter_due_and_mine() {
     let tasks = [("past-mine", "2020-01-01T00:00:00Z", "open", true), ("future-mine", "2099-01-01T00:00:00Z", "open", true),
                  ("past-done", "2020-01-01T00:00:00Z", "done", true), ("past-other", "2020-01-01T00:00:00Z", "open", false)];
     for (k, due, st, mine) in tasks {
-        o.create(k, None, json!({"base:Task": {"subject": k, "due": due, "status": st}}));
+        o.create(k, None, json!({"sample:Task": {"subject": k, "due": due, "status": st}}));
         if mine {
-            o.link("base:Task.assignees", k, me);
+            o.link("sample:Task.assignees", k, me);
         }
     }
-    o.create("via-group", None, json!({"base:Task": {"subject": "via-group", "due": "2020-01-02T00:00:00Z", "status": "open"}}));
-    o.link("base:Task.assignees", "via-group", team);
+    o.create("via-group", None, json!({"sample:Task": {"subject": "via-group", "due": "2020-01-02T00:00:00Z", "status": "open"}}));
+    o.link("sample:Task.assignees", "via-group", team);
     env.admin.order(&o).await.unwrap();
     env.admin.assign("base:reader", me).await.unwrap();
     let kids = cme.aspect_children("t:due-mine", "").await.unwrap();
@@ -896,9 +896,9 @@ async fn view_filter_due_and_mine() {
 async fn write_through_views() {
     let env = env().await;
     let mut o = Order::new();
-    o.create("m", None, json!({"base:Mail": {"receivedAt": "2026-11-24T08:15:00Z", "sender": "anna@example.org", "subject": "Angebot"}}));
+    o.create("m", None, json!({"sample:Mail": {"receivedAt": "2026-11-24T08:15:00Z", "sender": "anna@example.org", "subject": "Angebot"}}));
     let m = env.admin.order(&o).await.unwrap().created["m"];
-    env.admin.put_text(m, "base:mail.md", "# Hallo").await.unwrap();
+    env.admin.put_text(m, "sample:mail.md", "# Hallo").await.unwrap();
     env.admin.put_content(m, b"From: anna".to_vec(), "message/rfc822", None).await.unwrap();
     let node = format!("o:{m}");
     // text and content
@@ -911,7 +911,7 @@ async fn write_through_views() {
     let changed = idx.replace("\"subject\": \"Angebot\"", "x").replace("subject: \"Angebot\"", "subject: \"Auftrag\"");
     assert_ne!(idx, changed);
     env.admin.put_aspect_index("t:mail-drop", &node, &changed).await.unwrap();
-    assert_eq!(env.admin.get_object(m, None).await.unwrap().parts.iter().find(|t| t.type_name == "base:Mail").unwrap().attributes["subject"], json!("Auftrag"));
+    assert_eq!(env.admin.get_object(m, None).await.unwrap().parts.iter().find(|t| t.type_name == "sample:Mail").unwrap().attributes["subject"], json!("Auftrag"));
     // an invalid value fails as a whole, nothing is stored
     let bad = changed.replace("receivedAt: \"", "receivedAt: \"x");
     assert!(env.admin.put_aspect_index("t:mail-drop", &node, &bad).await.is_err());
@@ -931,12 +931,12 @@ async fn write_through_views() {
 async fn sed_in_place_is_one_order() {
     let env = env().await;
     let mut o = Order::new();
-    o.create("m1", None, json!({"base:Mail": {"receivedAt": "2026-11-24T08:15:00Z", "sender": "anna@example.org", "subject": "Angebot"}}));
-    o.create("m2", None, json!({"base:Mail": {"receivedAt": "2026-11-24T09:15:00Z", "sender": "ben@example.org", "subject": "Hi there"}}));
+    o.create("m1", None, json!({"sample:Mail": {"receivedAt": "2026-11-24T08:15:00Z", "sender": "anna@example.org", "subject": "Angebot"}}));
+    o.create("m2", None, json!({"sample:Mail": {"receivedAt": "2026-11-24T09:15:00Z", "sender": "ben@example.org", "subject": "Hi there"}}));
     let r = env.admin.order(&o).await.unwrap();
     let (m1, m2) = (r.created["m1"], r.created["m2"]);
     for m in [m1, m2] {
-        env.admin.put_text(m, "base:mail.md", "# Hallo Welt").await.unwrap();
+        env.admin.put_text(m, "sample:mail.md", "# Hallo Welt").await.unwrap();
     }
     let ls = env.admin.tool_exec("/", &["ls", &format!("/_id/{m1}")]).await.unwrap();
     assert!(ls["stdout"].as_str().unwrap().contains("mail.md"), "{ls}");
@@ -944,12 +944,12 @@ async fn sed_in_place_is_one_order() {
     let res = env.admin.tool_exec("/", &["sed", "-i", "s/Hallo/Hi/", &format!("/_id/{m1}/mail.md"), &format!("/_id/{m2}/mail.md")]).await.unwrap();
     assert_eq!(res["status"], json!(0), "{res}");
     for m in [m1, m2] {
-        assert_eq!(env.admin.get_text(m, "base:mail.md").await.unwrap(), "# Hi Welt");
+        assert_eq!(env.admin.get_text(m, "sample:mail.md").await.unwrap(), "# Hi Welt");
     }
     // a text plus an index whose body would change: rejected as a whole, nothing written
     let res = env.admin.tool_exec("/", &["sed", "-i", "s/Hi/Ho/", &format!("/_id/{m1}/mail.md"), &format!("/_id/{m2}.md")]).await.unwrap();
     assert_ne!(res["status"], json!(0), "{res}");
-    assert_eq!(env.admin.get_text(m1, "base:mail.md").await.unwrap(), "# Hi Welt");
+    assert_eq!(env.admin.get_text(m1, "sample:mail.md").await.unwrap(), "# Hi Welt");
     // without -i: output only
     let res = env.admin.tool_exec("/", &["sed", "s/Hi/Ho/", &format!("/_id/{m1}/mail.md")]).await.unwrap();
     assert_eq!(res["stdout"], json!("# Ho Welt"));
@@ -968,9 +968,9 @@ async fn self_description_version_and_paths() {
     assert!(api["paths"]["/v1/aspects/{a}/path"]["get"].is_object());
     // path of a mail in the mailbox: day group, then the mail
     let mut o = Order::new();
-    o.create("m", None, json!({"base:Mail": {"receivedAt": "2026-11-24T08:15:00Z", "sender": "anna@example.org", "subject": "Angebot"}}));
+    o.create("m", None, json!({"sample:Mail": {"receivedAt": "2026-11-24T08:15:00Z", "sender": "anna@example.org", "subject": "Angebot"}}));
     let m = env.admin.order(&o).await.unwrap().created["m"];
-    let chain: Value = env.admin.get_q_value("/aspects/base:mailbox/path", &[("node", &format!("o:{m}"))]).await.unwrap();
+    let chain: Value = env.admin.get_q_value("/aspects/sample:mailbox/path", &[("node", &format!("o:{m}"))]).await.unwrap();
     let nodes: Vec<&str> = chain.as_array().unwrap().iter().map(|n| n["node"].as_str().unwrap()).collect();
     assert_eq!(nodes, vec!["g:2026-11-24".to_string(), format!("o:{m}")]);
 }

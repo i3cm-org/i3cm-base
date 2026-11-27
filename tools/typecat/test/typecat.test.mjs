@@ -26,15 +26,17 @@ test("builds the catalog of the shipped types", () => {
   const cat = buildCatalog(typesDir);
   assert.equal(cat.format, 1);
   const names = cat.types.map((t) => t.name);
-  for (const n of ["base:Person", "base:PersonAccount", "base:Mail", "fibu:JournalEntry"]) assert.ok(names.includes(n), n);
+  for (const n of ["base:Person", "base:PersonAccount", "fibu:JournalEntry"]) assert.ok(names.includes(n), n);
+  assert.ok(!names.includes("base:Mail"), "business types live in modules (DEC-138)");
   const pa = cat.types.find((t) => t.name === "base:PersonAccount");
   assert.equal(pa.extends, "base:Account");
   assert.deepEqual(pa.requires, { mode: "any", types: ["base:Person"] });
   const line = cat.references.find((r) => r.name === "fibu:JournalLine.entry");
   assert.equal(line.partOf, true);
   assert.deepEqual([line.target.end, line.target.min, line.target.max], ["lines", 1, null]);
-  assert.ok(cat.modules.find((m) => m.name === "base").i18n.de.includes("base-Mail-name"));
-  assert.ok(cat.textTypes.some((t) => t.name === "base:mail.md"));
+  assert.ok(cat.modules.find((m) => m.name === "base").i18n.de.includes("base-Person-name"));
+  const sample = buildCatalog(typesDir, { modules: [path.resolve(here, "../../../tests/modules/sample")] });
+  assert.ok(sample.textTypes.some((t) => t.name === "sample:mail.md"));
 });
 
 test("rejects plain number attributes", () => {

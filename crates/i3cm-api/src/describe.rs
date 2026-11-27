@@ -126,7 +126,7 @@ of attributes and references as `[[links]]`.
 The same tree is available to Unix tools. Without installing anything, send a shell command:
 
     curl -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
-      -d '{"cwd": "/", "argv": ["grep", "-rn", "invoice", "/base:mailbox"]}' $SERVER/v1/tools/exec
+      -d '{"cwd": "/", "argv": ["grep", "-rn", "invoice", "/mail:mailbox"]}' $SERVER/v1/tools/exec
 
 The answer carries `stdout`, `stderr` and `status` as the real tool would print them.
 Tools: ls, cat, head, tail, wc, stat, grep (-r -i -n -l -c -v -w -F -E -e -A -B -C), find

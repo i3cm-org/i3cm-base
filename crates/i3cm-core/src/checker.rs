@@ -186,7 +186,8 @@ fn check_path(m: &Model, aspect: &str, focus: Option<&str>, path: &str) -> Resul
     let e = parse(path).map_err(|e| e.with("aspect", aspect))?;
     check_profile(&e, VIEW_FUNCTIONS, path).map_err(|e| e.with("aspect", aspect))?;
     if let (Some(t), Some(n)) = (focus, first_name(&e)) {
-        let set: BTreeSet<String> = [t.to_string()].into();
+        // the type, its supertypes and guaranteed host types (`@requires`): their reference ends count too
+        let set: BTreeSet<String> = m.path_types(t).iter().map(|d| d.name.clone()).collect();
         let known = PATH_RESERVED.contains(&n)
             || m.path_defining_type(t, n).is_some()
             || m.end_by_name(&set, n).is_some()

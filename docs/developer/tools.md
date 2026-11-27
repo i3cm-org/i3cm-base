@@ -30,10 +30,10 @@ The mount (and the tree the tools see) has one directory per aspect, with its in
 
 ```
 /_id/<uuid>/…            every object by its id (the directory lists nothing)
-/_type/base:Mail/…        objects by type
-/base:mailbox/2026-11-24/anna@example.org - Angebot/
+/_type/mail:Mail/…        objects by type
+/mail:mailbox/2026-11-24/anna@example.org - Angebot/
                           mail.eml  mail.md  Anhänge/
-/base:mailbox/2026-11-24/anna@example.org - Angebot.md     the object file (index)
+/mail:mailbox/2026-11-24/anna@example.org - Angebot.md     the object file (index)
 ```
 
 A node of an aspect is a directory `<name>/` with its index `<name>.md` beside it; a file is a
@@ -72,7 +72,7 @@ first in `PATH`), they check whether the paths lie in a i3cm mount (file system 
 * both mixed: error.
 
 As `i3cm-<tool>` (or `i3cm <tool>`) they work without a mount on tree paths such as
-`/base:mailbox/2026-11-24`, relative to the working path: `I3CM_PWD`, else the path set with
+`/mail:mailbox/2026-11-24`, relative to the working path: `I3CM_PWD`, else the path set with
 `i3cm-cd <path>` for this shell session (kept in `$XDG_STATE_HOME/i3cm/pwd-<session>`), else
 `/`; for example in containers without FUSE.
 
@@ -106,8 +106,8 @@ is not supported; `grep` without files hands over to the system tool.
 The tools are reachable without the program:
 
 ```
-POST /v1/tools/grep   {"cwd": "/base:mailbox", "paths": ["."], "options": {"recursive": true, "patterns": ["Rechnung"], "lineNumber": true}}
-POST /v1/tools/exec   {"cwd": "/base:mailbox", "argv": ["grep", "-rn", "Rechnung", "."]}
+POST /v1/tools/grep   {"cwd": "/mail:mailbox", "paths": ["."], "options": {"recursive": true, "patterns": ["Rechnung"], "lineNumber": true}}
+POST /v1/tools/exec   {"cwd": "/mail:mailbox", "argv": ["grep", "-rn", "Rechnung", "."]}
 ```
 
 Both answer `{"status": 0, "records": [...]}` with records such as

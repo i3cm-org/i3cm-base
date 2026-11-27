@@ -3,7 +3,7 @@
 //! * `grep`, `ls`, `cat`, … (via links first in `PATH`): on paths in a i3cm mount the tool
 //!   calls the server directly; on other paths it hands over to the next program of that name
 //!   in `PATH`.
-//! * `i3cm-grep`, `i3cm-ls`, …: without a mount, on tree paths (`/base:mailbox/…`), relative
+//! * `i3cm-grep`, `i3cm-ls`, …: without a mount, on tree paths (`/mail:mailbox/…`), relative
 //!   to `I3CM_PWD` (default `/`).
 //! * `i3cm-init`: store server, tenant and token. `i3cm-mount`: mount read-only (FUSE).
 //! * `i3cm links <dir>`: create the links for all names in `<dir>`.

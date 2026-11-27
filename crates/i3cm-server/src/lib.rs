@@ -23,6 +23,32 @@ pub fn default_catalog() -> PathBuf {
     std::env::var("I3CM_CATALOG").map(PathBuf::from).unwrap_or_else(|_| PathBuf::from(concat!(env!("CARGO_MANIFEST_DIR"), "/../../catalog.json")))
 }
 
+/// Catalog for the kernel's own tests: the kernel types plus the test module
+/// `tests/modules/sample` (mail, documents, tasks). Built once per process with typecat.
+pub fn test_catalog() -> PathBuf {
+    static CAT: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
+    CAT.get_or_init(|| {
+        let root = PathBuf::from(concat!(env!("CARGO_MANIFEST_DIR"), "/../.."));
+        if let Ok(p) = std::env::var("I3CM_TEST_CATALOG") {
+            return PathBuf::from(p);
+        }
+        let out = std::env::temp_dir().join(format!("i3cm-test-catalog-{}.json", std::process::id()));
+        let st = std::process::Command::new("node")
+            .arg(root.join("tools/typecat/typecat.mjs"))
+            .arg(root.join("types"))
+            .arg("--module")
+            .arg(root.join("tests/modules/sample"))
+            .arg("--out")
+            .arg(&out)
+            .stdout(std::process::Stdio::null())
+            .status()
+            .expect("node (typecat) for the test catalog");
+        assert!(st.success(), "typecat failed for the test catalog");
+        out
+    })
+    .clone()
+}
+
 /// A PostgreSQL server run as a child process; stopped on drop of the handle owner.
 pub struct EmbeddedDb {
     pub pg: PostgreSQL,

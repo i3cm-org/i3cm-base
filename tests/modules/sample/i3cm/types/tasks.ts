@@ -1,7 +1,7 @@
-import { ns, indexed, Ref, Text, DateTime, Enum, AnyObject } from "../lib";
-import { Carrier, Person } from "./parties";
+import { ns, indexed, Ref, Text, DateTime, Enum, AnyObject } from "@i3cm/lib";
+import { Carrier, Person } from "@i3cm/base";
 
-@ns("base")
+@ns("sample")
 export class Task {
   @indexed subject!: string;
   description?: Text<"MD" | "HTML">;

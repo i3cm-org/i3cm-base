@@ -78,9 +78,9 @@ order of keys is the display order, also between the `subNodes` and `files` bloc
 
 ```ts
 export const mailbox = aspect("mailbox", {
-  entry: { type: "base:Mail", groupBy: ["receivedAt.toString().substring(0, 10)"] },
+  entry: { type: "mail:Mail", groupBy: ["receivedAt.toString().substring(0, 10)"] },
   nodes: {
-    "base:Mail": {
+    "mail:Mail": {
       attributes: { sender: "sender", attachmentCount: "attachments.count()" },
       subNodes: { attachments: { path: "attachments", folder: true } },
       files: { "mail.eml": "_content", "mail.md": "_texts.`mail.md`" },
@@ -97,7 +97,7 @@ A name rule may carry a fallback as the Fluent attribute `.fallback`; it applies
 directory collide (otherwise ` ~2`, ` ~3` in id order):
 
 ```ftl
-base-mailbox--base-Mail-name = { $sender } - { $subject }
+mail-mailbox--mail-Mail-name = { $sender } - { $subject }
     .fallback = { $sender } - { $subject } ({ $receivedAt })
 ```
 

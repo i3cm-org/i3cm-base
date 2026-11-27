@@ -61,7 +61,7 @@ fn requests_grow_with_directories_not_files() {
         ("cat all files", "find '{}' -type f -exec cat {{}} + >/dev/null; find '{}' -printf '%y\\n'"),
     ] {
         let (mp, child) = mount(&env, "mnt", "600");
-        let dir = mp.join("base:mailbox");
+        let dir = mp.join("sample:mailbox");
         let before = requests(&env);
         let out = sh(&cmd.replace("'{}'", &format!("'{}'", dir.display())).replace("{{}}", "{}"));
         let cost = requests(&env) - before;
@@ -127,33 +127,33 @@ fn the_driver_reproduces_the_api() {
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         let mut root: Vec<String> = std::fs::read_dir(&mp).unwrap().map(|e| e.unwrap().file_name().to_string_lossy().into_owned()).collect();
         root.sort();
-        for a in ["_id", "_type", "base:mailbox", "base:recipients"] {
+        for a in ["_id", "_type", "sample:mailbox", "sample:recipients"] {
             assert!(root.contains(&a.to_string()) && root.contains(&format!("{a}.md")), "{root:?}");
         }
         let mut seen = 0;
-        compare(&env, "base:mailbox", "", &mp.join("base:mailbox"), 10, &mut seen);
-        compare(&env, "base:recipients", "", &mp.join("base:recipients"), 10, &mut seen);
+        compare(&env, "sample:mailbox", "", &mp.join("sample:mailbox"), 10, &mut seen);
+        compare(&env, "sample:recipients", "", &mp.join("sample:recipients"), 10, &mut seen);
         compare(&env, "_type", "", &mp.join("_type"), 3, &mut seen);
         println!("compared {seen} entries");
 
         // equal content, equal inode: the text of a mail in two views (du and tar count it once)
-        let day = mp.join("base:mailbox/2026-11-20");
+        let day = mp.join("sample:mailbox/2026-11-20");
         let mail = std::fs::read_dir(&day).unwrap().map(|e| e.unwrap().path()).find(|p| p.is_dir()).unwrap();
         let name = mail.file_name().unwrap().to_string_lossy().into_owned();
-        let other = std::fs::read_dir(mp.join("base:recipients")).unwrap().map(|e| e.unwrap().path()).filter(|p| p.is_dir()).map(|g| g.join(&name)).find(|p| p.exists()).unwrap();
+        let other = std::fs::read_dir(mp.join("sample:recipients")).unwrap().map(|e| e.unwrap().path()).filter(|p| p.is_dir()).map(|g| g.join(&name)).find(|p| p.exists()).unwrap();
         assert_eq!(std::fs::metadata(mail.join("mail.md")).unwrap().ino(), std::fs::metadata(other.join("mail.md")).unwrap().ino());
-        let found = sh(&format!("find '{}' -samefile '{}'", mp.join("base:recipients").display(), mail.join("mail.md").display()));
+        let found = sh(&format!("find '{}' -samefile '{}'", mp.join("sample:recipients").display(), mail.join("mail.md").display()));
         assert_eq!(found.lines().count(), 1, "{found}");
 
         // an object by its id
-        let id = rt().block_on(env.admin.aspect_children("base:mailbox", &rt().block_on(env.admin.aspect_children("base:mailbox", "")).unwrap()[0].node)).unwrap()[0].id.unwrap();
+        let id = rt().block_on(env.admin.aspect_children("sample:mailbox", &rt().block_on(env.admin.aspect_children("sample:mailbox", "")).unwrap()[0].node)).unwrap()[0].id.unwrap();
         assert!(std::fs::read_to_string(mp.join(format!("_id/{id}/mail.md"))).unwrap().starts_with("# Hallo"));
         assert!(std::fs::read_to_string(mp.join(format!("_id/{id}.md"))).unwrap().contains(&format!("_id: \"{id}\"")));
 
         // our tools on the mount go to the server directly: one request per call
         let path = format!("{}:/usr/bin:/bin", env.home.join("bin").display());
         let before = requests(&env);
-        let out = env.run("grep", &["-rl", "Rechnung 1-2", mp.join("base:mailbox").to_str().unwrap()], &[("PATH", &path)], None);
+        let out = env.run("grep", &["-rl", "Rechnung 1-2", mp.join("sample:mailbox").to_str().unwrap()], &[("PATH", &path)], None);
         assert_eq!(requests(&env) - before, 1);
         assert_eq!(text(&out).lines().count(), 1, "{out:?}");
         assert!(text(&out).starts_with(mp.to_str().unwrap()), "paths are shown as given: {out:?}");
@@ -184,16 +184,16 @@ fn writing_through_the_mount() {
     env.init();
     let (mp, child) = mount(&env, "mnt3", "1");
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        let day = mp.join("base:mailbox/2026-11-20");
+        let day = mp.join("sample:mailbox/2026-11-20");
         let mut mails: Vec<PathBuf> = std::fs::read_dir(&day).unwrap().map(|e| e.unwrap().path()).filter(|p| p.is_dir()).collect();
         mails.sort();
         let mail = mails[0].clone();
         let name = mail.file_name().unwrap().to_string_lossy().into_owned();
-        let node = rt().block_on(env.admin.aspect_children("base:mailbox", &rt().block_on(env.admin.aspect_children("base:mailbox", "")).unwrap()[0].node)).unwrap();
+        let node = rt().block_on(env.admin.aspect_children("sample:mailbox", &rt().block_on(env.admin.aspect_children("sample:mailbox", "")).unwrap()[0].node)).unwrap();
         let id = node.iter().find(|n| n.name == name).unwrap().id.unwrap();
         // a text
         std::fs::write(mail.join("mail.md"), b"# Neu\n").unwrap();
-        assert_eq!(rt().block_on(env.admin.get_text(id, "base:mail.md")).unwrap(), "# Neu\n");
+        assert_eq!(rt().block_on(env.admin.get_text(id, "sample:mail.md")).unwrap(), "# Neu\n");
         assert_eq!(std::fs::read_to_string(mail.join("mail.md")).unwrap(), "# Neu\n");
         // the front matter of the index
         let idx = day.join(format!("{name}.md"));
@@ -201,7 +201,7 @@ fn writing_through_the_mount() {
         let line = s.lines().find(|l| l.starts_with("subject: ")).unwrap().to_string();
         std::fs::write(&idx, s.replace(&line, "subject: \"Geaendert\"")).unwrap();
         let obj = rt().block_on(env.admin.get_object(id, None)).unwrap();
-        assert_eq!(obj.parts.iter().find(|p| p.type_name == "base:Mail").unwrap().attributes["subject"], serde_json::json!("Geaendert"));
+        assert_eq!(obj.parts.iter().find(|p| p.type_name == "sample:Mail").unwrap().attributes["subject"], serde_json::json!("Geaendert"));
         // a rejected write: I/O error, message in /.i3cm-errors, nothing stored
         let idx2 = std::fs::read_dir(&day).unwrap().map(|e| e.unwrap().path()).find(|p| p.extension().map(|e| e == "md").unwrap_or(false) && p.to_string_lossy().contains("Geaendert")).unwrap();
         let s2 = std::fs::read_to_string(&idx2).unwrap();
@@ -226,7 +226,7 @@ fn writing_through_the_mount() {
         let path = format!("{}:/usr/bin:/bin", env.home.join("bin").display());
         let out = env.run("sed", &["-i", "s/Neu/Neuer/", mail.join("mail.md").to_str().unwrap()], &[("PATH", &path)], None);
         assert!(out.status.success(), "{out:?}");
-        assert_eq!(rt().block_on(env.admin.get_text(id, "base:mail.md")).unwrap(), "# Neuer\n");
+        assert_eq!(rt().block_on(env.admin.get_text(id, "sample:mail.md")).unwrap(), "# Neuer\n");
     }));
     umount(&mp, child);
     if let Err(e) = result {

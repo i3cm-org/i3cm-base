@@ -12,34 +12,8 @@ base-GroupMembership-name = Gruppenzugehörigkeit
 base-GroupMembership-description = Zugehörigkeit zu einer Gruppe
 base-Room-name = Raum { $name }
 base-Room-description = Raum
-base-Task-name = { $subject }
-base-Task-description = Aufgabe ({ $status })
-base-Document-name = { $title }
-base-Document-description = Dokument
-base-Mail-name = { $sender } - { $subject }
-    .fallback = { $sender } - { $subject } ({ TIME($receivedAt) })
-base-Mail-description = Mail vom { $receivedAt }
-base-MailAttachment-name = { $filename }
-base-MailAttachment-description = Mail-Anhang
-base-mailbox--base-Mail-name = { $sender } - { $subject }
-    .fallback = { $sender } - { $subject } ({ TIME($receivedAt) })
-base-mailbox--base-Mail-description = Eingegangen am { $receivedAt }
-base-mailbox--label-sender = Absender
-base-mailbox--label-subject = Betreff
-base-mailbox--label-received = Empfangen
-base-mailbox--label-attachmentCount = Anzahl Anhänge
-base-mailbox--label-attachments = Anhänge
-base-mailbox--label-file = Datei
-base-mailbox--label-added = Hinzugefügt
-base-mailbox--label-reply = Antworten
 
 ## Built-in views
 base--label-_id = Nach Kennung
 base--label-_type = Nach Typ
 
-## Aspect recipients
-base-mailbox--label-_name = Mail-Ablage
-base-recipients--label-_name = Mails nach Empfänger
-base-recipients--base-Mail-name = { $sender } - { $subject }
-    .fallback = { $sender } - { $subject } ({ TIME($receivedAt) })
-base-recipients--label-attachments = Anhänge
