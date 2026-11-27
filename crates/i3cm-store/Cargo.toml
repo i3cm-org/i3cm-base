@@ -10,6 +10,7 @@ i3cm-core = { version = "0.6.0", path = "../i3cm-core" }
 i3cm-tools = { version = "0.6.0", path = "../i3cm-tools" }
 chrono = { version = "0.4.45", features = ["serde"] }
 deadpool-postgres = "0.14.2"
+base64 = "0.22.1"
 hex = "0.4.3"
 rust_decimal = { version = "1.43.0", features = ["db-tokio-postgres"] }
 serde = { version = "1.0.229", features = ["derive"] }

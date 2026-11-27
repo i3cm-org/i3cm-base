@@ -984,3 +984,28 @@ async fn unused_tokens_lapse() {
     c.execute("UPDATE token SET last_used = now() - interval '91 days' WHERE account=$1", &[&p]).await.unwrap();
     assert_eq!(cp.me().await.unwrap_err().error_id(), Some("auth.unused_token"));
 }
+
+#[tokio::test]
+async fn structure_content_and_texts_in_one_order() {
+    let env = env().await;
+    let mut o = Order::new();
+    o.create("d", None, json!({"sample:Document": {"title": "Notes"}}));
+    o.content("d", b"hello world", "text/plain", Some("notes.txt"));
+    o.text("d", "sample:plain", "hello world");
+    let d = env.admin.order(&o).await.unwrap().created["d"];
+    assert_eq!(env.admin.get_content(d).await.unwrap(), b"hello world".to_vec());
+    assert_eq!(env.admin.get_text(d, "sample:plain").await.unwrap(), "hello world");
+
+    // all or nothing: a bad text type rolls back the object and its content
+    let before = env.admin.list("sample:Document", &ListQuery::default()).await.unwrap().len();
+    let mut o = Order::new();
+    o.create("e", None, json!({"sample:Document": {"title": "Broken"}}));
+    o.content("e", b"x", "text/plain", None);
+    o.text("e", "sample:nope", "x");
+    assert_eq!(env.admin.order(&o).await.unwrap_err().error_id(), Some("text.unknown_type"));
+    assert_eq!(env.admin.list("sample:Document", &ListQuery::default()).await.unwrap().len(), before);
+
+    let mut o = Order::new();
+    o.ops.push(json!({"op": "content", "id": d.to_string(), "mediaType": "text/plain", "base64": "%%%"}));
+    assert_eq!(env.admin.order(&o).await.unwrap_err().error_id(), Some("content.bad_base64"));
+}

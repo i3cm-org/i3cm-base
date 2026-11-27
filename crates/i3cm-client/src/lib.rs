@@ -111,6 +111,18 @@ impl Order {
         self.ops.push(json!({"op": "unlink", "reference": reference, "id": link}));
         self
     }
+    /// New content of an object, in the same order as structure changes.
+    pub fn content(&mut self, id: impl IdRef, data: &[u8], media_type: &str, filename: Option<&str>) -> &mut Self {
+        use base64::Engine as _;
+        let b64 = base64::engine::general_purpose::STANDARD.encode(data);
+        self.ops.push(json!({"op": "content", "id": id.id_ref(), "mediaType": media_type, "filename": filename, "base64": b64}));
+        self
+    }
+    /// New version of a text of an object.
+    pub fn text(&mut self, id: impl IdRef, text_type: &str, content: &str) -> &mut Self {
+        self.ops.push(json!({"op": "text", "id": id.id_ref(), "textType": text_type, "content": content}));
+        self
+    }
 }
 
 #[derive(Debug, Clone, Deserialize)]

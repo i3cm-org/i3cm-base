@@ -23,9 +23,14 @@ and rolls back. Object ids are UUIDs or the `ref` of an object created earlier i
   {"op": "detach", "id": "<id>", "type": "base:PersonAccount"},
   {"op": "move", "id": "<id>", "room": "<room id>"},
   {"op": "unlink", "reference": "fibu:JournalLine.account", "id": "<link id>"},
+  {"op": "content", "id": "e", "mediaType": "application/pdf", "filename": "r-1.pdf", "base64": "<data>"},
+  {"op": "text", "id": "e", "textType": "dms:plain", "content": "..."},
   {"op": "delete", "id": "<id>"}
 ]}
 ```
+
+`content` and `text` write the content (base64) and a text of an object in the same order as the
+structure, so that both are stored or neither. Hooks of modules do not run for them.
 
 Response: `{"txn": 123, "dry_run": false, "created": {"e": "<id>", ...}, "links": [...]}`.
 Integrity violations (preconditions, cardinalities, references needing a detached type) come

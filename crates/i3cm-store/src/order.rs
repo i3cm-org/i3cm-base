@@ -59,6 +59,22 @@ pub enum Op {
         rank: Option<i32>,
     },
     Unlink { reference: String, id: Uuid },
+    /// New content version of an object (base64), in the same order as structure changes.
+    Content {
+        id: String,
+        #[serde(rename = "mediaType")]
+        media_type: String,
+        #[serde(default)]
+        filename: Option<String>,
+        base64: String,
+    },
+    /// New version of a text of an object.
+    Text {
+        id: String,
+        #[serde(rename = "textType")]
+        text_type: String,
+        content: String,
+    },
     /// Internal (writing files through views, `sed -i`): new content version from a stored blob.
     #[serde(skip_deserializing)]
     SetContent { id: String, sha256: String, media_type: String, size: i64, filename: Option<String> },
@@ -344,6 +360,30 @@ impl Exec<'_> {
         Ok(out)
     }
 
+    /// New content version of an object from a stored blob.
+    async fn set_content(&mut self, id: &str, sha256: &String, media_type: &String, size: i64, filename: &Option<String>) -> Result<()> {
+        let tenant = self.ctx.tenant;
+        let id = self.resolve(id)?;
+        let (_, path) = self.live(id).await?;
+        let set = types_of(self.tx, tenant, id, None).await?;
+        let tables = self.m.table_types(&set.keys().cloned().collect());
+        let t = tables.into_iter().find(|t| self.m.type_def(t).map(|d| d.content.is_some()).unwrap_or(false))
+            .ok_or_else(|| BaseError::invalid("type.no_such_part", "the object has no type with content"))?;
+        if !self.new_objects.contains(&id) {
+            self.check_on(Art::Write, &t, &path, id).await?;
+        }
+        self.tx.execute("UPDATE content SET valid_to=$3 WHERE tenant_id=$1 AND object_id=$2 AND valid_to IS NULL", &[&tenant, &id, &self.txn]).await.map_err(db)?;
+        self.tx
+            .execute(
+                "INSERT INTO content (tenant_id, object_id, sha256, media_type, size, filename, valid_from) VALUES ($1,$2,$3,$4,$5,$6,$7)",
+                &[&tenant, &id, sha256, media_type, &size, filename, &self.txn],
+            )
+            .await
+            .map_err(db)?;
+        self.touched.insert(id);
+        Ok(())
+    }
+
     pub(crate) async fn apply(&mut self, op: &Op) -> Result<()> {
         let tenant = self.tenant();
         match op {
@@ -561,27 +601,20 @@ impl Exec<'_> {
                 self.touched.insert(a);
                 self.touched.insert(b);
             }
-            Op::SetContent { id, sha256, media_type, size, filename } => {
-                let id = self.resolve(id)?;
-                let (_, path) = self.live(id).await?;
-                let set = types_of(self.tx, tenant, id, None).await?;
-                let tables = self.m.table_types(&set.keys().cloned().collect());
-                let t = tables.into_iter().find(|t| self.m.type_def(t).map(|d| d.content.is_some()).unwrap_or(false))
-                    .ok_or_else(|| BaseError::invalid("type.no_such_part", "the object has no type with content"))?;
-                if !self.new_objects.contains(&id) {
-                    self.check_on(Art::Write, &t, &path, id).await?;
-                }
-                self.tx.execute("UPDATE content SET valid_to=$3 WHERE tenant_id=$1 AND object_id=$2 AND valid_to IS NULL", &[&tenant, &id, &self.txn]).await.map_err(db)?;
-                self.tx
-                    .execute(
-                        "INSERT INTO content (tenant_id, object_id, sha256, media_type, size, filename, valid_from) VALUES ($1,$2,$3,$4,$5,$6,$7)",
-                        &[&tenant, &id, sha256, media_type, size, filename, &self.txn],
-                    )
-                    .await
-                    .map_err(db)?;
-                self.touched.insert(id);
+            Op::Content { id, media_type, filename, base64 } => {
+                use base64::Engine as _;
+                let data = base64::engine::general_purpose::STANDARD
+                    .decode(base64.as_bytes())
+                    .map_err(|_| BaseError::invalid("content.bad_base64", "content is not valid base64"))?;
+                let sha = hex::encode(<sha2::Sha256 as sha2::Digest>::digest(&data));
+                self.tx.execute("INSERT INTO blob (sha256, data) VALUES ($1,$2) ON CONFLICT DO NOTHING", &[&sha, &data]).await.map_err(db)?;
+                let size = data.len() as i64;
+                self.set_content(id, &sha, media_type, size, filename).await?;
             }
-            Op::SetText { id, text_type, content } => {
+            Op::SetContent { id, sha256, media_type, size, filename } => {
+                self.set_content(id, sha256, media_type, *size, filename).await?;
+            }
+            Op::Text { id, text_type, content } | Op::SetText { id, text_type, content } => {
                 let id = self.resolve(id)?;
                 let def = self.m.text_type(text_type).ok_or_else(|| BaseError::invalid("text.unknown_type", "unknown text type").with("textType", text_type.clone()))?.clone();
                 let (_, path) = self.live(id).await?;
