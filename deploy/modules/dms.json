@@ -356,7 +356,8 @@
    "hooks": [],
    "schedules": [],
    "carriers": [],
-   "mandatory": true
+   "mandatory": true,
+   "developmentOnly": false
   }
  ],
  "types": [
