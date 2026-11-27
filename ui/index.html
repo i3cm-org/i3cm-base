@@ -458,7 +458,14 @@ async function loadModule(ns) {
     const r = await fetch(`modules/${encodeURIComponent(ns)}.html`, { cache: "no-cache" });
     if (!r.ok) return;
     const doc = new DOMParser().parseFromString(await r.text(), "text/html");
-    for (const t of doc.querySelectorAll("template[data-aspect][data-type], template[data-page]")) $("#module-templates").append(document.importNode(t, true));
+    for (const t of doc.querySelectorAll("template[data-aspect][data-type], template[data-page]")) {
+      // modules ship templates, never code (DEC-127): drop scripts, event handlers and javascript: links
+      for (const x of t.content.querySelectorAll("script, iframe, object, embed")) x.remove();
+      for (const x of t.content.querySelectorAll("*"))
+        for (const a of [...x.attributes])
+          if (/^on/i.test(a.name) || /^\s*javascript:/i.test(a.value)) x.removeAttribute(a.name);
+      $("#module-templates").append(document.importNode(t, true));
+    }
   } catch {}
 }
 /** Fill a module template: `data-attr` takes the attribute values by key, `data-field` a field of the node. */

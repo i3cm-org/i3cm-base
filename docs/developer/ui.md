@@ -43,7 +43,8 @@ The frame fills `data-attr="<key>"` with the values of the aspect attribute `<ke
 Besides templates for nodes, a module file may hold **one page template**
 `<template data-page="<ns>" data-title="…">`. The frame shows a button with the title in the
 header and, when it is pressed (address `#p=<ns>`), the page instead of tree and detail pane.
-The page consists of frame components only; the frame hands every element that has an `api`
+The page consists of frame components only (the frame drops `<script>`, `<iframe>`, `<object>`,
+`<embed>`, event attributes and `javascript:` links from module templates); the frame hands every element that has an `api`
 property its authenticated `fetch`, so all data still comes from the public API. A page is
 offered when its module has at least one aspect in the tenant (inactive modules have none).
 
