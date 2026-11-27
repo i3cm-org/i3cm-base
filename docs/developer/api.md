@@ -60,6 +60,8 @@ back as `integrity.violated` with a list of violations.
 | `POST /v1/tokens` | `{"account": "<id>", "label": "...", "ttl": 90}` issues a token; see Tokens |
 | `GET /v1/tokens`, `DELETE /v1/tokens/{id}` | list (without secrets), revoke |
 | `GET /v1/metrics` | requests served by this server process |
+| `GET /health` | liveness, no token |
+| `GET /v1/version` | version and source revision, no token |
 | `GET /v1/objects/{id}/eval?expr=` | evaluate a path (FHIRPath, profile views) on an object |
 | `GET /v1/aspects` | aspects |
 | `GET /v1/aspects/{aspect}/children?node=&after=&limit=` | children of a node; empty `node` is the entry; every listing is paged by key (`after` = last node id of the previous page; `offset` still works for short lists) |
@@ -189,3 +191,9 @@ checker. The answer lists every issue, not only the first:
 `i3cm-server catalog check [catalog.json]` runs the same checker on a catalog without a database
 (exit 1 on an error).
 
+## Operator surface
+
+Separate from tenant tokens and off by default: with `I3CM_OPERATOR_TOKEN` (at least 32
+characters) and a modules directory, the server also offers `GET /v1/operator/registry` and
+`POST /v1/operator/modules/install` (`{"name", "version"?}`), authenticated with that secret.
+See [modules.md](modules.md) and the operator documentation.

@@ -14,7 +14,7 @@ type compiler `typecat` reads it next to the kernel's own types and produces one
     i18n/de.ftl        display texts, one file per language
     i18n/en.ftl
     ui/<ns>.html       <template> elements for the UI frame (see ui.md)
-  ops/                 code for operations and hooks (later, WebAssembly)
+  ops/                 code for operations, hooks and schedules (WebAssembly component)
 ```
 
 Files may sit in any subdirectory below `i3cm/`; a file belongs to the nearest directory above it that
@@ -44,11 +44,11 @@ module name given twice stops with `typecat.duplicate_module`.
 
 ## Building against the kernel
 
-With a checkout of the kernel (`i3cm-org/i3cm-base`) at `$I3CM_BASE`:
+With a checkout of the kernel (`i3cm-org/i3cm-base`) at `$KERNEL`:
 
 ```sh
-cd $I3CM_BASE/tools/typecat && npm ci            # once
-cd $I3CM_BASE
+cd $KERNEL/tools/typecat && npm ci            # once
+cd $KERNEL
 node tools/typecat/typecat.mjs types --module /path/to/i3cm-tasks --out catalog.json
 # several modules: repeat --module, or
 I3CM_MODULES=/path/to/i3cm-dms:/path/to/i3cm-mail make catalog
@@ -130,6 +130,47 @@ cd ops && cargo build --release --target wasm32-wasip2
 mkdir -p ../modules && cp target/wasm32-wasip2/release/<crate>.wasm ../modules/<module>.wasm
 i3cm-server serve --modules-dir ../modules
 ```
+
+## Packaging and signing
+
+A module is delivered as a signed package, built by `tools/typecat/pack.mjs` of the kernel:
+
+```sh
+node $KERNEL/tools/typecat/pack.mjs keygen keys/        # once: keys/signing.pem (secret), keys/signing.pub (hex)
+node $KERNEL/tools/typecat/pack.mjs $KERNEL/types . \
+     --wasm ops/target/wasm32-wasip2/release/<crate>.wasm --version 1.2.0 --out dist \
+     [--module <repo of a required module>]... [--key keys/signing.pem | I3CM_SIGNING_KEY]
+```
+
+`dist/` then holds:
+
+| File | Content |
+|---|---|
+| `<name>-<version>.tar.gz` | `module.json` (the module's part of the catalog), `module.wasm`, `i18n/*.ftl`, `ui/*.html`, `src/` (the sources under `i3cm/`), `SHA256SUMS`; reproducible (file times 0) |
+| `<name>-<version>.tar.gz.sig` | ed25519 signature over the SHA-256 of the package, hex |
+| `<name>-<version>.json` | the registry entry for this package |
+
+A module without code packs without `--wasm`. The release workflow of
+`examples/example-module/.github/workflows/release.yml` packs and attaches the files to a GitHub
+release on every tag `v*`; it needs the secrets `I3CM_SIGNING_KEY` and, while the kernel
+repository is private, `I3CM_BASE_TOKEN`.
+
+## Registry
+
+The registry (`i3cm-org/i3cm-registry`, file `registry.json`) only locates packages; trust comes
+from the operator's keys, never from the registry:
+
+```json
+{ "modules": [
+  { "name": "example", "version": "0.6.0", "requires": ["base"],
+    "sha256": "<hex of the package>",
+    "package": "https://github.com/i3cm-org/i3cm-example-module/releases/download/v0.6.0/example-0.6.0.tar.gz",
+    "signature": "https://…/example-0.6.0.tar.gz.sig",
+    "key": "<hex public key, informative>" } ] }
+```
+
+`package` and `signature` are URLs or file paths. The installer refuses a package whose checksum
+differs from the entry or whose signature matches none of the operator's trusted keys.
 
 ## Activation
 

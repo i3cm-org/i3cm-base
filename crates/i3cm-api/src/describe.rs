@@ -145,7 +145,8 @@ etc. work on tree paths without a mount (working path: `i3cm-cd PATH` or `I3CM_P
 Every write is one order: rights, required attributes and checks apply, all or nothing.
 
 * Orders: `POST /v1/orders` with operations create, update, attach, detach, delete, move,
-  link, unlink; objects created in the same order are referenced by their `ref`.
+  link, unlink, content (binary content, base64) and text; objects created in the same order
+  are referenced by their `ref`.
 * Through views and files (also in a mount):
   - a file of a node (`PUT /v1/aspects/{a}/file?node=&name=`) writes the content or text
     behind it;
@@ -162,6 +163,14 @@ Every write is one order: rights, required attributes and checks apply, all or n
 
 You see and change only what the profiles of your account (and its groups) allow. Objects
 you may not read do not exist for you: the answer is `not found`, never `forbidden`.
+
+## 6. Modules
+
+Business types come from modules. `GET /v1/modules` lists the installed ones, whether they are
+active in your tenant and their operations; `POST /v1/modules/{name}/ops/{op}` runs an
+operation as one order. Types and views of modules not active in your tenant do not exist
+for you. In a development tenant, `POST /v1/catalog/check` checks module sources and lists
+every issue with file, line and column.
 "#;
 
 /// The guide as a skill: a zip with `i3cm/SKILL.md` (stored, no compression).
