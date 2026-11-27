@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { fromCheckApi, fromTypecat, relativeFile, sortIssues, summary, modeOf } from "../lib/issues.js";
+import { fromCheckApi, fromTypecat, relativeFile, sortIssues, summary, modeOf, splitFile, positionOf } from "../lib/issues.js";
 
 test("TypeScript errors from typecat carry file and line", () => {
   const list = fromTypecat({ error_id: "typecat.compile_error", description: "TypeScript reported errors",
@@ -20,11 +20,25 @@ test("other typecat errors become one issue", () => {
 
 test("issues of the check API", () => {
   const i = fromCheckApi({ severity: "warning", source: "checker", error_id: "types.no_backfill", description: "d",
-    params: { attr: "a" }, file: "types/loan.ts", line: 3, column: 5 });
+    params: { attr: "a" }, file: "lend:i3cm/types/loan.ts", line: 3, column: 5 }, "lend");
   assert.equal(i.errorId, "types.no_backfill");
+  assert.equal(i.file, "types/loan.ts");
   assert.equal(i.line, 3);
   assert.equal(i.column, 5);
+  assert.equal(fromCheckApi({ file: "kernel:types/base/person.ts" }, "lend").file, "kernel:types/base/person.ts");
+  assert.equal(fromCheckApi({ file: "dms:i3cm/types/d.ts" }, "lend").file, "dms:types/d.ts");
   assert.equal(fromCheckApi({}).severity, "error");
+  assert.equal(fromCheckApi({}).file, null);
+});
+
+test("file names and positions of the check API", () => {
+  assert.deepEqual(splitFile("lend:i3cm/module.ts"), { module: "lend", path: "module.ts" });
+  assert.deepEqual(splitFile("types/a.ts"), { module: null, path: "types/a.ts" });
+  const positions = { "type:lend:Loan": { file: "lend:i3cm/types/loan.ts", line: 4, column: 1 },
+    "type:base:Person": { file: "kernel:types/base/person.ts", line: 2, column: 1 } };
+  assert.deepEqual(positionOf(positions, "type", "lend:Loan", "lend"), { file: "types/loan.ts", line: 4, column: 1 });
+  assert.equal(positionOf(positions, "type", "base:Person", "lend"), null);
+  assert.equal(positionOf(positions, "aspect", "lend:loans", "lend"), null);
 });
 
 test("file names relative to i3cm/", () => {

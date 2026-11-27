@@ -1,6 +1,6 @@
 import { el } from "../lib/dom.js";
 import { packages } from "../lib/catalog.js";
-import { fromCheckApi, modeOf } from "../lib/issues.js";
+import { fromCheckApi, modeOf, positionOf } from "../lib/issues.js";
 import { languageOf } from "../lib/highlight.js";
 import { locate, baseName } from "../lib/sources.js";
 import { referenceSnippet } from "../lib/diagram.js";
@@ -20,8 +20,9 @@ import "./issue-list.js";
  * - `file-end`: end at the container that lists its files; `file-reference`: the reference to link a new file;
  * - `room` (optional): name of the module room for new containers (`GET /v1/rooms`), else `root`;
  * - `check` (optional): URL of the check (`POST {modules: [{name, files: [{path, text}]}]}` answering
- *   `{catalog, issues, positions}`); without it, or when the server lacks it, the installed catalog
- *   (`GET /v1/catalog`) is shown and no issues.
+ *   `{catalog, issues, positions}`, e.g. `/v1/catalog/check`); without it, or when the server lacks
+ *   it, the installed catalog (`GET /v1/catalog`) is shown and no issues. While the sources have
+ *   errors the check returns no catalog, and the last good one stays.
  * Property `api`: the frame's authenticated fetch (`(path, options) => Response`), set by the frame.
  */
 export class BaseSourceWorkbench extends HTMLElement {
@@ -166,7 +167,7 @@ export class BaseSourceWorkbench extends HTMLElement {
     if (result) {
       this.catalog = result.catalog || this.catalog;
       this.positions = result.positions || {};
-      this.issues.issues = (result.issues || []).map((i) => fromCheckApi(i));
+      this.issues.issues = (result.issues || []).map((i) => fromCheckApi(i, this.container.name));
     } else {
       if (!this.catalog) this.catalog = await this.json("/v1/catalog").catch(() => ({ modules: [], types: [], references: [] }));
       this.positions = {};
@@ -201,11 +202,34 @@ export class BaseSourceWorkbench extends HTMLElement {
   }
 
   /** Open the file of a catalog element at its declaration and show a type in the diagram. */
-  goTo(kind, name, editable = true) {
+  async goTo(kind, name, editable = true) {
     if (kind === "type") this.diagram.show(name);
-    const pos = this.positions[name] || locate(this.files, kind, name);
-    if (!pos || !editable && !this.positions[name]) { this.state.textContent = `${name}: no source in this module`; return; }
+    const module = name.includes(":") ? name.split(":")[0] : null;
+    if (!editable && module && module !== this.container?.name) return this.showInstalled(module, kind, name);
+    const pos = positionOf(this.positions, kind, name, this.container?.name) || locate(this.files, kind, name);
+    if (!pos) { this.state.textContent = `${name}: not in the sources of this module`; return; }
     this.reveal(pos);
+  }
+
+  /** Sources of an installed module (`GET /v1/modules/{name}/sources`), shown read only. */
+  async showInstalled(module, kind, name) {
+    this.installed ??= {};
+    try {
+      this.installed[module] ??= (await this.json(`/v1/modules/${encodeURIComponent(module)}/sources`)).files
+        .map((f) => ({ path: f.path.replace(/^i3cm\//, ""), text: f.text }));
+    } catch (e) { this.state.textContent = `${module}: no sources (${e.message})`; return; }
+    const pos = locate(this.installed[module], kind, name);
+    const f = pos && this.installed[module].find((x) => x.path === pos.file);
+    if (!f) { this.state.textContent = `${name}: not found in the sources of ${module}`; return; }
+    this.capture();
+    this.current = null;
+    this.fillFiles();
+    this.editor.setAttribute("language", languageOf(f.path));
+    this.editor.setAttribute("readonly", "");
+    this.editor.value = f.text;
+    this.editor.markers = [];
+    this.state.textContent = `${module}:${f.path} (read only)`;
+    this.editor.reveal(pos.line, pos.column);
   }
 
   reveal(issue) {

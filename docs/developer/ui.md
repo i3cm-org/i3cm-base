@@ -76,10 +76,12 @@ offered when its module has at least one aspect in the tenant (inactive modules 
   others read only), in the middle the editor with the modes type (`types/`, `module.ts`),
   aspect (`aspects/`) and view (`ui/`), right the issues, above the diagram. Saving writes the
   content of each changed file (`PUT /v1/objects/{id}/content`); new and deleted files are
-  orders. The unsaved state of all files is sent to `check` after each change; its answer
-  `{catalog, issues, positions}` feeds packages, diagram, issues and jumps to declarations.
+  orders. The unsaved state of all files is sent to `check` (`POST /v1/catalog/check`, see
+  api.md) after each change; its answer `{catalog, issues, positions}` feeds packages, diagram,
+  issues and jumps to declarations (while there are errors the last good catalog stays).
   Without `check` (or if the server lacks it) the installed catalog (`GET /v1/catalog`) is shown,
-  and declarations are found in the sources by name.
+  and declarations are found in the sources by name. Elements of other modules open read only
+  from their sources (`GET /v1/modules/{name}/sources`).
 
 The logic without DOM (catalog index, diagram model, layout, highlighting, issue conversion,
 finding declarations) lives in `ui/lib/` and has unit tests: `node --test ui/test/*.test.mjs` (Node's test runner,

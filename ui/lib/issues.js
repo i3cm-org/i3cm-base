@@ -2,18 +2,44 @@
 
 const SEVERITY_RANK = { error: 0, warning: 1, info: 2 };
 
-/** Normalises one issue of the check API (`{severity, source, error_id, description, params, file, line, column}`). */
-export function fromCheckApi(issue, moduleRoot = "") {
+/**
+ * A file name of the check API: `<module>:<path>` (kernel types: `kernel:<path>`), the path with
+ * or without a leading `i3cm/`. Returns the module and the path relative to `i3cm/`.
+ */
+export function splitFile(file) {
+  if (!file) return { module: null, path: null };
+  const m = /^([A-Za-z0-9_-]+):(.*)$/.exec(file);
+  const module = m ? m[1] : null;
+  const path = (m ? m[2] : file).replace(/^i3cm\//, "");
+  return { module, path };
+}
+
+/**
+ * Normalises one issue of the check API (`{severity, source, error_id, description, params, file,
+ * line, column}`). Files of `ownModule` become paths relative to `i3cm/`; files of other modules
+ * keep their `<module>:` prefix, so they are shown but not opened.
+ */
+export function fromCheckApi(issue, ownModule = null) {
+  const { module, path } = splitFile(issue.file ?? null);
   return {
     severity: issue.severity ?? "error",
     source: issue.source ?? "checker",
     errorId: issue.error_id ?? "",
     description: issue.description ?? "",
     params: issue.params ?? {},
-    file: relativeFile(issue.file ?? null, moduleRoot),
+    file: path === null ? null : (module === null || module === ownModule ? path : `${module}:${path}`),
     line: issue.line ?? null,
     column: issue.column ?? null,
   };
+}
+
+/** Position of a declaration from the check API's `positions` (keys `type:<name>`, `aspect:<name>`). */
+export function positionOf(positions, kind, name, ownModule = null) {
+  const p = positions?.[`${kind}:${name}`];
+  if (!p) return null;
+  const { module, path } = splitFile(p.file);
+  if (module !== null && module !== ownModule) return null;
+  return { file: path, line: p.line ?? 1, column: p.column ?? 1 };
 }
 
 /**
