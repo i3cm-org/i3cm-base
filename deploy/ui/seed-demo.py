@@ -42,21 +42,21 @@ for day, count in days:
             s, subj = senders[n % len(senders)], f"{subjects[n % len(subjects)]} {n}"
             ref = f"m{i}"
             rcpt = [x for x in senders if x != s][: 1 + n % 3]
-            ops.append({"op": "create", "ref": ref, "types": {"base:Mail": {
+            ops.append({"op": "create", "ref": ref, "types": {"mail:Mail": {
                 "receivedAt": f"{day}T{8 + i % 10:02d}:{i % 60:02d}:00+01:00", "sender": s, "subject": subj, "recipients": rcpt}}})
             atts = n % 3
             for j in range(atts):
-                ops.append({"op": "create", "ref": f"{ref}a{j}", "types": {"base:MailAttachment": {"filename": f"attachment-{n}-{j}.pdf"}}})
-                ops.append({"op": "link", "reference": "base:MailAttachment.mail", "from": f"{ref}a{j}", "to": ref})
+                ops.append({"op": "create", "ref": f"{ref}a{j}", "types": {"mail:MailAttachment": {"title": f"attachment-{n}-{j}.pdf"}}})
+                ops.append({"op": "link", "reference": "mail:MailAttachment.mail", "from": f"{ref}a{j}", "to": ref})
             meta.append((ref, s, subj, rcpt, atts))
         created = order(ops)
         for ref, s, subj, rcpt, atts in meta:
             mid = created[ref]
             eml = f"From: {s}\r\nTo: {', '.join(rcpt)}\r\nSubject: {subj}\r\n\r\nHello,\r\n\r\nthis is demo mail {subj}.\r\n".encode()
             call("PUT", f"/v1/objects/{mid}/content", eml, "message/rfc822", {"x-filename": "mail.eml"})
-            call("PUT", f"/v1/objects/{mid}/texts/base:mail.md", f"# {subj}\n\nFrom **{s}**\n\nHello,\n\nthis is demo mail *{subj}*.\n".encode(), "text/plain")
+            call("PUT", f"/v1/objects/{mid}/texts/mail:markdown", f"# {subj}\n\nFrom **{s}**\n\nHello,\n\nthis is demo mail *{subj}*.\n".encode(), "text/plain")
             if n % 2 == 0:
-                call("PUT", f"/v1/objects/{mid}/texts/base:body.html", f"<h1>{subj}</h1><p>Hello from {s}.</p>".encode(), "text/plain")
+                call("PUT", f"/v1/objects/{mid}/texts/mail:html", f"<h1>{subj}</h1><p>Hello from {s}.</p>".encode(), "text/plain")
             for j in range(atts):
                 call("PUT", f"/v1/objects/{created[f'{ref}a{j}']}/content", PDF, "application/pdf", {"x-filename": f"attachment-{j}.pdf"})
     print(f"{day}: {count} mails")
@@ -64,16 +64,16 @@ for day, count in days:
 ops = [{"op": "create", "ref": f"p{i}", "types": {"base:Person": {"lastName": ln, "firstName": fn}}}
        for i, (fn, ln) in enumerate([("Anna", "Adler"), ("Ben", "Berg"), ("Carla", "Conrad"), ("Dora", "Dietz")])]
 ops += [{"op": "create", "ref": f"c{i}", "types": {"base:Company": {"name": nm}}} for i, nm in enumerate(["Example Ltd", "Sample GmbH"])]
-ops += [{"op": "create", "ref": f"d{i}", "types": {"base:Document": {"title": t}}} for i, t in enumerate(["Statutes", "Minutes 2026"])]
+ops += [{"op": "create", "ref": f"d{i}", "types": {"dms:Document": {"title": t}}} for i, t in enumerate(["Statutes", "Minutes 2026"])]
 docs = order(ops)
 for i in range(2):
-    call("PUT", f"/v1/objects/{docs[f'd{i}']}/texts/base:plain", f"Demo document {i}.\n".encode(), "text/plain")
+    call("PUT", f"/v1/objects/{docs[f'd{i}']}/texts/dms:plain", f"Demo document {i}.\n".encode(), "text/plain")
 print("persons, companies, documents: done")
 
 # one mail with many attachments: a grid with several pages
-ops = [{"op": "create", "ref": "scan", "types": {"base:Mail": {"receivedAt": "2026-11-25T18:00:00+01:00", "sender": "scanner@example.org", "subject": "Scan batch", "recipients": ["anna@example.org"]}}}]
+ops = [{"op": "create", "ref": "scan", "types": {"mail:Mail": {"receivedAt": "2026-11-25T18:00:00+01:00", "sender": "scanner@example.org", "subject": "Scan batch", "recipients": ["anna@example.org"]}}}]
 for j in range(60):
-    ops.append({"op": "create", "ref": f"s{j}", "types": {"base:MailAttachment": {"filename": f"scan-{j:03d}.pdf"}}})
-    ops.append({"op": "link", "reference": "base:MailAttachment.mail", "from": f"s{j}", "to": "scan"})
+    ops.append({"op": "create", "ref": f"s{j}", "types": {"mail:MailAttachment": {"title": f"scan-{j:03d}.pdf"}}})
+    ops.append({"op": "link", "reference": "mail:MailAttachment.mail", "from": f"s{j}", "to": "scan"})
 order(ops)
 print("scan batch with 60 attachments: done")
