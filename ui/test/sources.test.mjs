@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { locate, lineColumn, offsetOf, baseName } from "../lib/sources.js";
+import { locate, lineColumn, offsetOf, baseName, base64Text, contentOp } from "../lib/sources.js";
 import { highlight, highlightTs, languageOf, escapeHtml } from "../lib/highlight.js";
 
 const files = [
@@ -44,4 +44,11 @@ test("HTML highlighting keeps the text", () => {
   const src = '<template data-aspect="x"><!-- c --><span data-attr="a"></span></template>';
   const h = highlight(src, "html");
   assert.equal(h.replace(/<[^>]+>/g, "").replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&quot;/g, '"').replace(/&amp;/g, "&"), src);
+});
+
+test("content operation with UTF-8 text", () => {
+  assert.equal(base64Text("Größe"), Buffer.from("Größe", "utf8").toString("base64"));
+  assert.deepEqual(contentOp("f", "types/a.ts", "x"), { op: "content", id: "f", mediaType: "text/plain", filename: "a.ts", base64: "eA==" });
+  const big = "ä".repeat(100000);
+  assert.equal(Buffer.from(base64Text(big), "base64").toString("utf8"), big);
 });

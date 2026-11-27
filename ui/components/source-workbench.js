@@ -2,7 +2,7 @@ import { el } from "../lib/dom.js";
 import { packages } from "../lib/catalog.js";
 import { fromCheckApi, modeOf, positionOf } from "../lib/issues.js";
 import { languageOf } from "../lib/highlight.js";
-import { locate, baseName } from "../lib/sources.js";
+import { locate, contentOp } from "../lib/sources.js";
 import { referenceSnippet } from "../lib/diagram.js";
 import "./code-editor.js";
 import "./diagram.js";
@@ -240,19 +240,19 @@ export class BaseSourceWorkbench extends HTMLElement {
     if (issue.line) this.editor.reveal(issue.line, issue.column || 1);
   }
 
+  /** Save all changed files in one order (content operations): all or nothing. */
   async save() {
     this.capture();
     const dirty = this.files.filter((f) => f.text !== f.saved);
-    this.state.textContent = dirty.length ? "Saving…" : "Nothing to save.";
+    if (!dirty.length) { this.state.textContent = "Nothing to save."; return; }
+    this.state.textContent = "Saving…";
     try {
-      for (const f of dirty) {
-        await this._api(`/v1/objects/${f.id}/content`, { method: "PUT", headers: { "Content-Type": "text/plain; charset=utf-8", "X-Filename": baseName(f.path) }, body: f.text });
-        f.saved = f.text;
-      }
-      if (dirty.length) this.state.textContent = `Saved ${dirty.length} file${dirty.length === 1 ? "" : "s"}.`;
+      await this.order(dirty.map((f) => contentOp(f.id, f.path, f.text)));
+      for (const f of dirty) f.saved = f.text;
+      this.state.textContent = `Saved ${dirty.length} file${dirty.length === 1 ? "" : "s"}.`;
       this.editor.markSaved();
       this.fillFiles();
-    } catch (e) { this.state.textContent = `Save failed: ${e.message}`; }
+    } catch (e) { this.state.textContent = `Save failed, nothing saved: ${e.message}`; }
   }
 
   async newModule() {
@@ -285,9 +285,9 @@ export class BaseSourceWorkbench extends HTMLElement {
   async createFile(path, text) {
     const r = await this.order([
       { op: "create", ref: "f", room: this.container.room, types: { [this.a("file-type")]: { [this.a("path-attr")]: path } } },
-      { op: "link", reference: this.a("file-reference"), from: "f", to: this.container.id }]);
+      { op: "link", reference: this.a("file-reference"), from: "f", to: this.container.id },
+      contentOp("f", path, text)]);
     const id = r.created.f;
-    await this._api(`/v1/objects/${id}/content`, { method: "PUT", headers: { "Content-Type": "text/plain; charset=utf-8", "X-Filename": baseName(path) }, body: text });
     const f = { id, path, text, saved: text };
     this.files.push(f);
     this.files.sort((x, y) => x.path.localeCompare(y.path));
