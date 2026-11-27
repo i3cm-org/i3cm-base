@@ -1,0 +1,487 @@
+{
+ "format": 1,
+ "modules": [
+  {
+   "name": "dms",
+   "requires": [
+    "base"
+   ],
+   "rooms": [
+    "dms"
+   ],
+   "profiles": [
+    {
+     "name": "dms:reader",
+     "rights": [
+      {
+       "sign": "+",
+       "art": [
+        "read"
+       ],
+       "types": [
+        "dms:Document",
+        "dms:Binder"
+       ],
+       "room": "root"
+      }
+     ],
+     "includes": [],
+     "guardian": false
+    },
+    {
+     "name": "dms:clerk",
+     "includes": [
+      "dms:reader"
+     ],
+     "rights": [
+      {
+       "sign": "+",
+       "art": [
+        "write",
+        "create",
+        "delete"
+       ],
+       "types": [
+        "dms:Document",
+        "dms:Binder"
+       ],
+       "room": "root"
+      },
+      {
+       "sign": "+",
+       "art": [
+        "place",
+        "remove"
+       ],
+       "types": [
+        "dms:Document",
+        "dms:Binder"
+       ],
+       "room": "root"
+      }
+     ],
+     "guardian": false
+    }
+   ],
+   "i18n": {
+    "de": "dms-Document-name = { $title }\ndms-Document-description = Dokument\ndms-Binder-name = { $name }\ndms-Binder-description = Akte\ndms-filing--label-_name = Dokumente nach Datum\ndms-filing--label-title = Titel\ndms-filing--label-date = Dokumentdatum\ndms-filing--label-sender = Absender\ndms-filing--label-concerns = Bezüge\ndms-senders--label-_name = Dokumente nach Absender\ndms-senders--label-title = Titel\ndms-senders--label-date = Dokumentdatum\ndms-senders--label-sender = Absender\ndms-senders--label-concerns = Bezüge\ndms-inbox--label-_name = Dokumenteneingang\ndms-inbox--label-title = Titel\ndms-inbox--label-date = Dokumentdatum\ndms-inbox--label-sender = Absender\ndms-inbox--label-concerns = Bezüge\ndms-binders--label-_name = Akten\ndms-binders--label-name = Name\ndms-binders--label-documentCount = Dokumente\ndms-binders--label-documents = Dokumente\ndms-binders--label-title = Titel\ndms-binders--label-date = Dokumentdatum\ndms-binders--label-sender = Absender\ndms-binders--label-concerns = Bezüge\ndms-filing--label-file = Datei\ndms-senders--label-file = Datei\ndms-inbox--label-file = Datei\ndms-binders--label-file = Datei\ndms-filing--label-_none = Ohne Datum\ndms-senders--label-_none = Ohne Absender\n",
+    "en": "dms-Document-name = { $title }\ndms-Document-description = Document\ndms-Binder-name = { $name }\ndms-Binder-description = Binder\ndms-filing--label-_name = Documents by date\ndms-filing--label-title = Title\ndms-filing--label-date = Document date\ndms-filing--label-sender = Sender\ndms-filing--label-concerns = Concerns\ndms-senders--label-_name = Documents by sender\ndms-senders--label-title = Title\ndms-senders--label-date = Document date\ndms-senders--label-sender = Sender\ndms-senders--label-concerns = Concerns\ndms-inbox--label-_name = Document inbox\ndms-inbox--label-title = Title\ndms-inbox--label-date = Document date\ndms-inbox--label-sender = Sender\ndms-inbox--label-concerns = Concerns\ndms-binders--label-_name = Binders\ndms-binders--label-name = Name\ndms-binders--label-documentCount = Documents\ndms-binders--label-documents = Documents\ndms-binders--label-title = Title\ndms-binders--label-date = Document date\ndms-binders--label-sender = Sender\ndms-binders--label-concerns = Concerns\ndms-filing--label-file = File\ndms-senders--label-file = File\ndms-inbox--label-file = File\ndms-binders--label-file = File\ndms-filing--label-_none = No date\ndms-senders--label-_none = No sender\n"
+   },
+   "aspects": [
+    {
+     "name": "dms:filing",
+     "entry": {
+      "type": "dms:Document",
+      "groupBy": [
+       "documentDate.toString().substring(0, 4)",
+       "documentDate.toString().substring(0, 7)"
+      ]
+     },
+     "nodes": {
+      "dms:Document": {
+       "attributes": [
+        {
+         "label": "title",
+         "path": "title"
+        },
+        {
+         "label": "date",
+         "path": "documentDate"
+        },
+        {
+         "label": "sender",
+         "path": "sender"
+        },
+        {
+         "label": "file",
+         "path": "_content.filename"
+        },
+        {
+         "label": "concerns",
+         "path": "concerns.count()"
+        }
+       ],
+       "subNodes": [],
+       "files": [
+        {
+         "name": "{_content.filename}",
+         "path": "_content"
+        },
+        {
+         "name": "text.txt",
+         "path": "_texts.plain"
+        },
+        {
+         "name": "ocr.txt",
+         "path": "_texts.ocr"
+        }
+       ],
+       "tabs": [
+        {
+         "label": "concerns",
+         "path": "concerns",
+         "columns": []
+        }
+       ],
+       "functions": [],
+       "filesFirst": true
+      }
+     }
+    },
+    {
+     "name": "dms:senders",
+     "entry": {
+      "type": "dms:Document",
+      "groupBy": [
+       "sender"
+      ]
+     },
+     "nodes": {
+      "dms:Document": {
+       "attributes": [
+        {
+         "label": "title",
+         "path": "title"
+        },
+        {
+         "label": "date",
+         "path": "documentDate"
+        },
+        {
+         "label": "sender",
+         "path": "sender"
+        },
+        {
+         "label": "file",
+         "path": "_content.filename"
+        },
+        {
+         "label": "concerns",
+         "path": "concerns.count()"
+        }
+       ],
+       "subNodes": [],
+       "files": [
+        {
+         "name": "{_content.filename}",
+         "path": "_content"
+        },
+        {
+         "name": "text.txt",
+         "path": "_texts.plain"
+        },
+        {
+         "name": "ocr.txt",
+         "path": "_texts.ocr"
+        }
+       ],
+       "tabs": [
+        {
+         "label": "concerns",
+         "path": "concerns",
+         "columns": []
+        }
+       ],
+       "functions": [],
+       "filesFirst": true
+      }
+     }
+    },
+    {
+     "name": "dms:inbox",
+     "entry": {
+      "type": "dms:Document",
+      "groupBy": [],
+      "where": "documentDate.empty()"
+     },
+     "nodes": {
+      "dms:Document": {
+       "attributes": [
+        {
+         "label": "title",
+         "path": "title"
+        },
+        {
+         "label": "date",
+         "path": "documentDate"
+        },
+        {
+         "label": "sender",
+         "path": "sender"
+        },
+        {
+         "label": "file",
+         "path": "_content.filename"
+        },
+        {
+         "label": "concerns",
+         "path": "concerns.count()"
+        }
+       ],
+       "subNodes": [],
+       "files": [
+        {
+         "name": "{_content.filename}",
+         "path": "_content"
+        },
+        {
+         "name": "text.txt",
+         "path": "_texts.plain"
+        },
+        {
+         "name": "ocr.txt",
+         "path": "_texts.ocr"
+        }
+       ],
+       "tabs": [
+        {
+         "label": "concerns",
+         "path": "concerns",
+         "columns": []
+        }
+       ],
+       "functions": [],
+       "filesFirst": true
+      }
+     }
+    },
+    {
+     "name": "dms:binders",
+     "entry": {
+      "type": "dms:Binder",
+      "groupBy": [
+       "name.substring(0, 1).upper()"
+      ]
+     },
+     "nodes": {
+      "dms:Binder": {
+       "attributes": [
+        {
+         "label": "name",
+         "path": "name"
+        },
+        {
+         "label": "documentCount",
+         "path": "documents.count()"
+        }
+       ],
+       "subNodes": [
+        {
+         "label": "documents",
+         "path": "documents",
+         "folder": true,
+         "dropType": "dms:Document"
+        }
+       ],
+       "files": [],
+       "tabs": [
+        {
+         "label": "documents",
+         "path": "documents",
+         "columns": [
+          {
+           "label": "title",
+           "path": "title"
+          },
+          {
+           "label": "date",
+           "path": "documentDate"
+          },
+          {
+           "label": "sender",
+           "path": "sender"
+          },
+          {
+           "label": "file",
+           "path": "_content.filename"
+          }
+         ]
+        }
+       ],
+       "functions": [],
+       "filesFirst": true
+      },
+      "dms:Document": {
+       "attributes": [
+        {
+         "label": "title",
+         "path": "title"
+        },
+        {
+         "label": "date",
+         "path": "documentDate"
+        },
+        {
+         "label": "sender",
+         "path": "sender"
+        },
+        {
+         "label": "file",
+         "path": "_content.filename"
+        },
+        {
+         "label": "concerns",
+         "path": "concerns.count()"
+        }
+       ],
+       "subNodes": [],
+       "files": [
+        {
+         "name": "{_content.filename}",
+         "path": "_content"
+        },
+        {
+         "name": "text.txt",
+         "path": "_texts.plain"
+        },
+        {
+         "name": "ocr.txt",
+         "path": "_texts.ocr"
+        }
+       ],
+       "tabs": [
+        {
+         "label": "concerns",
+         "path": "concerns",
+         "columns": []
+        }
+       ],
+       "functions": [],
+       "filesFirst": true
+      }
+     }
+    }
+   ],
+   "operations": [],
+   "hooks": [],
+   "schedules": [],
+   "carriers": [],
+   "mandatory": true
+  }
+ ],
+ "types": [
+  {
+   "name": "dms:Binder",
+   "ns": "dms",
+   "local": "Binder",
+   "abstract": false,
+   "extends": null,
+   "attributes": [
+    {
+     "name": "name",
+     "vt": {
+      "kind": "string"
+     },
+     "required": true,
+     "list": false,
+     "indexed": true,
+     "unique": false
+    },
+    {
+     "name": "description",
+     "vt": {
+      "kind": "string"
+     },
+     "required": false,
+     "list": false,
+     "indexed": false,
+     "unique": false
+    }
+   ],
+   "requires": {
+    "mode": "any",
+    "types": []
+   },
+   "imprintsOn": [],
+   "brings": [],
+   "content": null,
+   "textTypes": []
+  },
+  {
+   "name": "dms:Document",
+   "ns": "dms",
+   "local": "Document",
+   "abstract": false,
+   "extends": null,
+   "attributes": [
+    {
+     "name": "title",
+     "vt": {
+      "kind": "string"
+     },
+     "required": true,
+     "list": false,
+     "indexed": true,
+     "unique": false
+    },
+    {
+     "name": "documentDate",
+     "vt": {
+      "kind": "date"
+     },
+     "required": false,
+     "list": false,
+     "indexed": true,
+     "unique": false
+    },
+    {
+     "name": "sender",
+     "vt": {
+      "kind": "string"
+     },
+     "required": false,
+     "list": false,
+     "indexed": true,
+     "unique": false
+    }
+   ],
+   "requires": {
+    "mode": "any",
+    "types": []
+   },
+   "imprintsOn": [],
+   "brings": [],
+   "content": {
+    "mediaType": null
+   },
+   "textTypes": [
+    "dms:plain",
+    "dms:ocr"
+   ]
+  }
+ ],
+ "references": [
+  {
+   "name": "dms:Document.concerns",
+   "holder": {
+    "type": "dms:Document",
+    "end": "concerns",
+    "min": 0,
+    "max": null
+   },
+   "target": {
+    "type": "*",
+    "end": "documents",
+    "min": 0,
+    "max": null
+   },
+   "partOf": false,
+   "ordered": false,
+   "rightsRelevant": false
+  }
+ ],
+ "textTypes": [
+  {
+   "name": "dms:plain",
+   "mediaType": "text/plain",
+   "owner": "dms:Document",
+   "grep": true
+  },
+  {
+   "name": "dms:ocr",
+   "mediaType": "text/plain",
+   "owner": "dms:Document",
+   "grep": false
+  }
+ ]
+}

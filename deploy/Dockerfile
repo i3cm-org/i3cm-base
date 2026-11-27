@@ -23,7 +23,9 @@ COPY --from=build /src/target/release/i3cm-server /usr/local/bin/i3cm-server
 # the agent program (tools, i3cm-init; FUSE needs /dev/fuse on the host)
 COPY --from=build /src/target/release/i3cm /usr/local/bin/i3cm
 COPY --from=catalog /catalog.json /etc/i3cm/catalog.json
-ENV I3CM_CATALOG=/etc/i3cm/catalog.json I3CM_LISTEN=0.0.0.0:8480
+# mandatory modules (tasks, dms), bundled with tools/bundle-modules.sh; installed modules go here too
+COPY deploy/modules /opt/i3cm/modules
+ENV I3CM_CATALOG=/etc/i3cm/catalog.json I3CM_MODULES_DIR=/opt/i3cm/modules I3CM_LISTEN=0.0.0.0:8480
 EXPOSE 8480
 ENTRYPOINT ["i3cm-server"]
 CMD ["serve"]

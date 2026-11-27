@@ -1,0 +1,3 @@
+# name  repository (local checkout)        ref
+tasks   ../../i3cm-tasks/product           v0.1.1
+dms     ../../i3cm-dms/product             v0.1.1

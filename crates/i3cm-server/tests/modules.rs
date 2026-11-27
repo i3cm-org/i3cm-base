@@ -369,3 +369,38 @@ fn task_views_mine_overdue_and_deadlines() {
         assert_eq!(deadlines.len(), 1, "{deadlines:?}");
     });
 }
+
+#[test]
+fn mandatory_modules_of_the_image_are_active_in_new_tenants() {
+    rt().block_on(async {
+        // the kernel catalog plus deploy/modules (tasks, dms), as the image starts
+        let kernel = root().join("target/kernel-catalog.json");
+        let st = Command::new("node").arg(root().join("tools/typecat/typecat.mjs")).arg(root().join("types")).arg("--out").arg(&kernel).stdout(std::process::Stdio::null()).status().unwrap();
+        assert!(st.success());
+        let model = i3cm_server::install::load_model(&kernel, Some(&root().join("deploy/modules"))).unwrap();
+        assert!(model.type_def("base:Mail").is_none() && model.type_def("base:Task").is_none(), "no business types in the kernel");
+        let store = Store::connect(&db_url(), model, 8).await.unwrap();
+        let init = store.init_tenant(&format!("mand-{}", uuid::Uuid::new_v4()), "admin").await.unwrap();
+        let ctx = store.ctx(init.tenant, init.admin_account).await.unwrap();
+        // tasks and dms are active without activation; only the optional fibu example is not
+        assert_eq!(ctx.inactive.iter().cloned().collect::<Vec<_>>(), vec!["fibu".to_string()]);
+        let (addr, _t) = serve_with(store.clone(), None, "127.0.0.1:0".parse().unwrap()).await.unwrap();
+        let http = reqwest::Client::new();
+        let r = http
+            .post(format!("http://{addr}/v1/orders"))
+            .bearer_auth(&init.token)
+            .json(&json!({"ops": [
+                {"op": "create", "types": {"tasks:Task": {"subject": "first", "status": "open"}}},
+                {"op": "create", "types": {"dms:Document": {"title": "Statutes"}}}
+            ]}))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(r.status().as_u16(), 200, "{}", r.text().await.unwrap());
+        let mods: Value = http.get(format!("http://{addr}/v1/modules")).bearer_auth(&init.token).send().await.unwrap().json().await.unwrap();
+        for m in ["tasks", "dms"] {
+            let e = mods.as_array().unwrap().iter().find(|x| x["name"] == m).unwrap();
+            assert_eq!((e["mandatory"].as_bool(), e["active"].as_bool()), (Some(true), Some(true)), "{m}");
+        }
+    });
+}
