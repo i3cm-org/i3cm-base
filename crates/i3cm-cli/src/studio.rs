@@ -388,12 +388,30 @@ pub fn save(api: &Api, start: &Path, force: bool) -> Result<i32, String> {
     let plan = plan_save(&states);
     let root = repo.join(SOURCE_DIR);
     let by_path: BTreeMap<&str, &TenantFile> = remote.files.iter().map(|f| (f.path.as_str(), f)).collect();
-    for p in &plan.write {
+    // stage first: every new content goes to a hidden sibling; only when all are written are they
+    // renamed into place and the deleted files removed, so a failing write changes nothing
+    let staged: Vec<(PathBuf, PathBuf)> = plan.write.iter().map(|p| {
         let target = root.join(p);
-        if let Some(dir) = target.parent() {
-            std::fs::create_dir_all(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+        let tmp = target.with_file_name(format!(".{}.i3cm-save", target.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default()));
+        (tmp, target)
+    }).collect();
+    let written = (|| -> Result<(), String> {
+        for ((tmp, target), p) in staged.iter().zip(&plan.write) {
+            if let Some(dir) = target.parent() {
+                std::fs::create_dir_all(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+            }
+            std::fs::write(tmp, &by_path[p.as_str()].content).map_err(|e| format!("{}: {e}", target.display()))?;
         }
-        std::fs::write(&target, &by_path[p.as_str()].content).map_err(|e| format!("{}: {e}", target.display()))?;
+        Ok(())
+    })();
+    if let Err(e) = written {
+        for (tmp, _) in &staged {
+            let _ = std::fs::remove_file(tmp);
+        }
+        return Err(e);
+    }
+    for (tmp, target) in &staged {
+        std::fs::rename(tmp, target).map_err(|e| format!("{}: {e}", target.display()))?;
     }
     for p in &plan.delete {
         let target = root.join(p);

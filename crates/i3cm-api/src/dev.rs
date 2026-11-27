@@ -11,6 +11,11 @@ use serde_json::{json, Value};
 use std::collections::BTreeSet;
 use std::path::{Component, Path, PathBuf};
 
+/// Limits of one check: modules, files and bytes of all texts.
+pub const MAX_MODULES: usize = 16;
+pub const MAX_FILES: usize = 400;
+pub const MAX_BYTES: usize = 4 * 1024 * 1024;
+
 const REPO: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../..");
 
 fn env_path(var: &str, default: &str) -> PathBuf {
@@ -100,6 +105,12 @@ pub fn read_sources(name: &str) -> Option<Vec<Value>> {
 pub async fn check(body: CheckBody, installed: &[(String, Vec<String>)]) -> Result<Value, BaseError> {
     if body.modules.is_empty() {
         return Err(BaseError::invalid("check.no_modules", "nothing to check"));
+    }
+    let files: usize = body.modules.iter().map(|m| m.files.len()).sum();
+    let bytes: usize = body.modules.iter().flat_map(|m| m.files.iter()).map(|f| f.text.len()).sum();
+    if body.modules.len() > MAX_MODULES || files > MAX_FILES || bytes > MAX_BYTES {
+        return Err(BaseError::invalid("check.too_large", "too many modules, files or bytes for one check")
+            .with("maxModules", MAX_MODULES as i64).with("maxFiles", MAX_FILES as i64).with("maxBytes", MAX_BYTES as i64));
     }
     let work = std::env::temp_dir().join(format!("i3cm-check-{}", uuid::Uuid::new_v4()));
     let res = check_in(&work, body, installed).await;

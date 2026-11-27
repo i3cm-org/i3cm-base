@@ -274,6 +274,10 @@ export class BaseSourceWorkbench extends HTMLElement {
     const dir = { type: "types/", aspect: "aspects/", view: "ui/" }[this.mode];
     const path = prompt("Path of the new file, relative to i3cm/:", this.mode === "view" ? `ui/${this.container.name}.html` : `${dir}new.ts`);
     if (!path) return;
+    // the same rule as the server and i3cm studio: relative, no "..", no hidden or empty parts
+    if (path.startsWith("/") || path.includes("\\") || path.split("/").some((c) => !c || c === "." || c === ".." || c.startsWith("."))) {
+      this.state.textContent = `${path}: not a path inside the module.`; return;
+    }
     if (this.files.some((f) => f.path === path)) { this.state.textContent = `${path} exists.`; return; }
     try { await this.createFile(path, ""); } catch (e) { this.state.textContent = e.message; }
   }

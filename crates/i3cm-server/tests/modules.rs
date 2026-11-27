@@ -226,6 +226,11 @@ fn the_scheduler_runs_a_due_operation_exactly_once_with_two_containers() {
         // a second "main container": its own store and runtime at the same database
         let store2 = Store::connect(&db_url(), i3cm_server::load_catalog(model).unwrap(), 8).await.unwrap();
         let rt2 = i3cm_server::runtime(&store2, dir).unwrap();
+        // FREQ=MINUTELY: keep both ticks (and the repeated pair below) inside one minute
+        let secs = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs() % 60;
+        if secs > 50 {
+            tokio::time::sleep(std::time::Duration::from_secs(61 - secs)).await;
+        }
         let (a, b) = tokio::join!(e.rt.tick("one"), rt2.tick("two"));
         let ran = a.unwrap() + b.unwrap();
         let ticks = e.notes().await.into_iter().filter(|n| n.starts_with("tick")).count();
