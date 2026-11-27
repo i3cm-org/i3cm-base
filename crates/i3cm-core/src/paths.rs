@@ -119,6 +119,8 @@ pub enum Operand {
     Lit(serde_json::Value),
     Now,
     Today,
+    /// A date/time operand shifted by a quantity: `today() + 7 days` (op `+` or `-`, amount, unit).
+    Shifted(Box<Operand>, &'static str, f64, String),
 }
 
 /// A view filter (`entry.where`): only what translates into SQL (SPEC-004 section 4).
@@ -141,7 +143,7 @@ pub fn view_filter(m: &Model, t: &str, src: &str) -> Result<Filter> {
 }
 
 fn own_attr(m: &Model, t: &str, n: &str) -> bool {
-    m.ancestors(t).iter().any(|d| d.attributes.iter().any(|a| a.name == n && !a.list && crate::values::Col::of(&a.vt) != crate::values::Col::Json))
+    m.path_types(t).iter().any(|d| d.attributes.iter().any(|a| a.name == n && !a.list && crate::values::Col::of(&a.vt) != crate::values::Col::Json))
 }
 
 fn operand(m: &Model, t: &str, e: &Expr, src: &str) -> Result<Operand> {
@@ -150,6 +152,17 @@ fn operand(m: &Model, t: &str, e: &Expr, src: &str) -> Result<Operand> {
         Expr::Call(None, f, a) if f == "now" && a.is_empty() => Ok(Operand::Now),
         Expr::Call(None, f, a) if f == "today" && a.is_empty() => Ok(Operand::Today),
         Expr::Member(None, n) if own_attr(m, t, n) => Ok(Operand::Attr(n.clone())),
+        Expr::Bin(op @ ("+" | "-"), a, b) => match b.as_ref() {
+            Expr::Lit(q) if q.get("quantity").is_some() => {
+                let base = operand(m, t, a, src)?;
+                if matches!(base, Operand::Lit(_)) {
+                    return Err(bad("path.bad_filter", "a quantity is added to now(), today() or a date attribute", src));
+                }
+                let n = q["quantity"].as_f64().unwrap_or(0.0);
+                Ok(Operand::Shifted(Box::new(base), op, n, q["unit"].as_str().unwrap_or("day").to_string()))
+            }
+            _ => Err(bad("path.bad_filter", "only a quantity such as `7 days` can be added or subtracted", src)),
+        },
         _ => Err(bad("path.bad_filter", "a filter compares attributes of the entry type with literals, now(), today() or %me", src)),
     }
 }

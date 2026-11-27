@@ -292,3 +292,80 @@ fn signed_packages_install_and_tampered_ones_are_refused() {
         assert!(files.contains_key("module.wasm") && files.contains_key("module.json"));
     });
 }
+
+/// Views of the tasks module (repository `i3cm-tasks` next to the kernel checkout); skipped when
+/// that checkout is not present.
+#[test]
+fn task_views_mine_overdue_and_deadlines() {
+    let tasks = root().join("../../i3cm-tasks/product");
+    if !tasks.join("i3cm/module.ts").exists() {
+        eprintln!("skipped: {} not checked out", tasks.display());
+        return;
+    }
+    rt().block_on(async {
+        let out = std::env::temp_dir().join(format!("i3cm-tasks-test-{}", std::process::id()));
+        std::fs::create_dir_all(&out).unwrap();
+        let cat = out.join("catalog.json");
+        let st = Command::new("node").arg(root().join("tools/typecat/typecat.mjs")).arg(root().join("types")).arg("--module").arg(&tasks).arg("--out").arg(&cat).status().unwrap();
+        assert!(st.success());
+        let store = Store::connect(&db_url(), i3cm_server::load_catalog(&cat).unwrap(), 8).await.unwrap();
+        let init = store.init_tenant(&format!("tk-{}", uuid::Uuid::new_v4()), "admin").await.unwrap();
+        let (addr, _t) = serve_with(store.clone(), None, "127.0.0.1:0".parse().unwrap()).await.unwrap();
+        let http = reqwest::Client::new();
+        let base = format!("http://{addr}");
+        let post = |path: &str, body: Value| {
+            let r = http.post(format!("{base}{path}")).bearer_auth(&init.token).json(&body).send();
+            async move {
+                let r = r.await.unwrap();
+                let code = r.status().as_u16();
+                (code, r.json::<Value>().await.unwrap_or(Value::Null))
+            }
+        };
+        // tasks is mandatory: active without activation
+        let me = init.admin_account.to_string();
+        let (code, v) = post("/v1/orders", json!({"ops": [
+            {"op": "create", "ref": "other", "types": {"base:Person": {"lastName": "Other"}, "base:PersonAccount": {"login": "other"}}},
+            {"op": "create", "ref": "t1", "types": {"tasks:Task": {"subject": "late", "status": "open", "due": "2020-01-01T10:00:00Z"}}},
+            {"op": "create", "ref": "t2", "types": {"tasks:Task": {"subject": "finished", "status": "done", "due": "2020-01-01T10:00:00Z"}}},
+            {"op": "create", "ref": "t3", "types": {"tasks:Task": {"subject": "not mine", "status": "open"}}},
+            {"op": "create", "ref": "t4", "types": {"tasks:Task": {"subject": "later", "status": "in_progress", "due": "2999-01-01T10:00:00Z"}}},
+            {"op": "create", "ref": "t5", "types": {"tasks:Task": {"subject": "court", "status": "open", "due": "2999-02-01T10:00:00Z"}, "tasks:Deadline": {"direction": "against_us"}}},
+            {"op": "link", "reference": "tasks:Task.assignees", "from": "t1", "to": me},
+            {"op": "link", "reference": "tasks:Task.assignees", "from": "t2", "to": me},
+            {"op": "link", "reference": "tasks:Task.assignees", "from": "t3", "to": "other"},
+            {"op": "link", "reference": "tasks:Task.assignees", "from": "t4", "to": me},
+            {"op": "link", "reference": "tasks:Task.assignees", "from": "t5", "to": me}
+        ]})).await;
+        assert_eq!(code, 200, "{v}");
+        let names = |aspect: &'static str| {
+            let http = http.clone();
+            let base = base.clone();
+            let token = init.token.clone();
+            async move {
+                let get = |node: String| {
+                    let r = http.get(format!("{base}/v1/aspects/{aspect}/children")).query(&[("node", node)]).bearer_auth(&token).send();
+                    async move { r.await.unwrap().json::<Value>().await.unwrap() }
+                };
+                let mut out = vec![];
+                for g in get(String::new()).await.as_array().cloned().unwrap_or_default() {
+                    for o in get(g["node"].as_str().unwrap().to_string()).await.as_array().cloned().unwrap_or_default() {
+                        if !o["file"].as_bool().unwrap_or(false) {
+                            out.push(o["displayName"].as_str().unwrap_or_default().to_string());
+                        }
+                    }
+                }
+                out.sort();
+                out
+            }
+        };
+        let mine = names("tasks:mine").await;
+        assert!(mine.iter().any(|n| n.contains("late")) && mine.iter().any(|n| n.contains("later")) && mine.iter().any(|n| n.contains("court")), "{mine:?}");
+        assert!(!mine.iter().any(|n| n.contains("finished") || n.contains("not mine")), "only open tasks of the account: {mine:?}");
+        let overdue = names("tasks:overdue").await;
+        assert_eq!(overdue.len(), 1, "{overdue:?}");
+        assert!(overdue[0].contains("late"));
+        let deadlines = names("tasks:deadlines").await;
+        // exactly the task that carries tasks:Deadline (its display name comes from the module's texts)
+        assert_eq!(deadlines.len(), 1, "{deadlines:?}");
+    });
+}

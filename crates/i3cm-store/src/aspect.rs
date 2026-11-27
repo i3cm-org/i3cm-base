@@ -211,6 +211,9 @@ pub struct LabeledValues {
     pub key: String,
     pub label: String,
     pub values: Vec<Value>,
+    /// Display texts of enum values (`<ns>-<Type>-<attr>-<value>`), parallel to `values`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub display: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -370,6 +373,27 @@ impl Store {
         }
     }
 
+    /// Display texts of enum values for a plain attribute path: `<ns>-<Type>-<attr>-<value>`,
+    /// falling back to the value itself; empty if the path is not an enum attribute.
+    fn enum_display(&self, types: &[String], path: &str, values: &[Value], lang: &str) -> Vec<String> {
+        if !path.chars().all(|c| c.is_alphanumeric() || c == '_') {
+            return vec![];
+        }
+        for t in types {
+            if let Some(owner) = self.model.path_defining_type(t, path) {
+                let Some(ad) = owner.attributes.iter().find(|x| x.name == path) else { continue };
+                if !matches!(ad.vt, i3cm_core::catalog::ValueType::Enum { .. }) {
+                    return vec![];
+                }
+                return values.iter().map(|v| {
+                    let raw = v.as_str().unwrap_or_default();
+                    self.i18n.enum_label(lang, &owner.name, path, raw).unwrap_or_else(|| raw.to_string())
+                }).collect();
+            }
+        }
+        vec![]
+    }
+
     /// Label of the group of objects without a value: `<aspect>--label-_none`, default "—".
     fn none_label(&self, aspect: &str, lang: &str) -> String {
         let l = self.i18n.label(aspect, lang, "_none");
@@ -456,12 +480,14 @@ impl Store {
         for g in &a.entry.group_by {
             let bad = || BaseError::invalid("aspect.bad_group", "grouping rule cannot run in SQL").with("rule", g.clone());
             let k = group_key(&expr(g)?).ok_or_else(bad)?;
-            let ad = def.attributes.iter().find(|x| x.name == k.attr).ok_or_else(bad)?;
+            let owner = self.model.path_defining_type(&a.entry.type_name, &k.attr).ok_or_else(bad)?;
+            let ad = owner.attributes.iter().find(|x| x.name == k.attr).ok_or_else(bad)?;
             let c = Col::of(&ad.vt);
             if c == Col::Json {
                 return Err(bad());
             }
-            cols.push((format!("x.{}", col(&k.attr)), c, ad.list, k));
+            // own column, or the column of a supertype or required host type (subquery)
+            cols.push((self.attr_col(&a.entry.type_name, &owner.name, &k.attr), c, ad.list, k));
         }
         let level = prefix.len();
         if level > cols.len() {
@@ -682,7 +708,9 @@ impl Store {
         let mut attributes = vec![];
         for x in &n.attributes {
             let vals = eval(&nav, &expr(&x.path)?, &focus).await?;
-            attributes.push(LabeledValues { key: x.label.clone(), label: self.i18n.label(&a.name, lang, &x.label), values: vals.iter().map(|i| i.to_json()).collect() });
+            let values: Vec<Value> = vals.iter().map(|i| i.to_json()).collect();
+            let display = self.enum_display(&v.types.iter().map(|t| t.type_name.clone()).collect::<Vec<_>>(), &x.path, &values, lang);
+            attributes.push(LabeledValues { key: x.label.clone(), label: self.i18n.label(&a.name, lang, &x.label), values, display });
         }
         let mut tabs = vec![];
         for t in &n.tabs {
@@ -934,13 +962,13 @@ impl Store {
                 let out = self.plain_object_out(&nav, id, lang).await?.ok_or_else(|| BaseError::not_found("object.not_found", "object not found"))?;
                 let v = nav.view(id).await?.ok_or_else(|| BaseError::not_found("object.not_found", "object not found"))?;
                 let mut attributes = vec![
-                    LabeledValues { key: "_id".into(), label: "_id".into(), values: vec![Value::String(id.to_string())] },
-                    LabeledValues { key: "_room".into(), label: "_room".into(), values: vec![Value::String(v.room.to_string())] },
-                    LabeledValues { key: "_type".into(), label: "_type".into(), values: v.types.iter().map(|t| Value::String(t.type_name.clone())).collect() },
+                    LabeledValues { key: "_id".into(), label: "_id".into(), values: vec![Value::String(id.to_string())], display: vec![] },
+                    LabeledValues { key: "_room".into(), label: "_room".into(), values: vec![Value::String(v.room.to_string())], display: vec![] },
+                    LabeledValues { key: "_type".into(), label: "_type".into(), values: v.types.iter().map(|t| Value::String(t.type_name.clone())).collect(), display: vec![] },
                 ];
                 for name in ["_createdBy", "_createdAt", "_changedBy", "_changedAt"] {
                     let values = nav.member(&Item::Obj(id), name).await?.iter().map(|i| i.to_json()).collect();
-                    attributes.push(LabeledValues { key: name.into(), label: name.into(), values });
+                    attributes.push(LabeledValues { key: name.into(), label: name.into(), values, display: vec![] });
                 }
                 for p in &v.parts {
                     for (k, x) in &p.attributes {
@@ -949,7 +977,7 @@ impl Store {
                             Value::Array(a) => a.clone(),
                             o => vec![o.clone()],
                         };
-                        attributes.push(LabeledValues { key: k.clone(), label: k.clone(), values });
+                        attributes.push(LabeledValues { key: k.clone(), label: k.clone(), values, display: vec![] });
                     }
                 }
                 let files = Self::plain_files(&v).into_iter().map(|(n, _)| n).collect();

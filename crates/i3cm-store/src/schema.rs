@@ -69,6 +69,17 @@ pub const TRIGRAM: &str = "CREATE EXTENSION IF NOT EXISTS pg_trgm; \
 CREATE INDEX IF NOT EXISTS text_part_trgm ON text_part USING gin (content gin_trgm_ops) WHERE valid_to IS NULL;";
 
 /// DDL for all catalog types and references.
+/// Add a column only if it is missing: `ALTER TABLE` takes an exclusive lock even with
+/// `IF NOT EXISTS`, which would queue behind open orders when another container starts.
+fn add_column(tb: &str, name: &str, sql: &str) -> String {
+    format!(
+        "DO $$ BEGIN IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema = current_schema() AND table_name = '{}' AND column_name = '{}') THEN ALTER TABLE {tb} ADD COLUMN {} {sql}; END IF; END $$",
+        tb.trim_matches('"').replace('\'', ""),
+        name.replace('\'', ""),
+        col(name)
+    )
+}
+
 pub fn catalog_ddl(m: &Model) -> Vec<String> {
     let mut out = Vec::new();
     for t in &m.catalog.types {
@@ -81,7 +92,7 @@ pub fn catalog_ddl(m: &Model) -> Vec<String> {
         out.push(format!("CREATE INDEX IF NOT EXISTS {tb}_order ON {tb} (tenant_id, valid_from, object_id) WHERE valid_to IS NULL AND deleted_at IS NULL"));
         for a in &t.attributes {
             let sql = Col::of(&a.vt).sql(a.list);
-            out.push(format!("ALTER TABLE {tb} ADD COLUMN IF NOT EXISTS {} {sql}", col(&a.name)));
+            out.push(add_column(&tb, &a.name, sql));
             if a.unique && !a.list {
                 out.push(format!(
                     "CREATE UNIQUE INDEX IF NOT EXISTS {tb}_{}_u ON {tb} (tenant_id, {}) WHERE valid_to IS NULL AND deleted_at IS NULL",
@@ -100,7 +111,7 @@ pub fn catalog_ddl(m: &Model) -> Vec<String> {
         out.push(format!(
             "CREATE TABLE IF NOT EXISTS {tb} (tenant_id uuid NOT NULL, id uuid NOT NULL, a_id uuid NOT NULL, b_id uuid NOT NULL, rank int, valid_from bigint NOT NULL, valid_to bigint, PRIMARY KEY (tenant_id, id, valid_from))"
         ));
-        out.push(format!("ALTER TABLE {tb} ADD COLUMN IF NOT EXISTS seq bigserial"));
+        out.push(add_column(&tb, "seq", "bigserial"));
         out.push(format!("CREATE INDEX IF NOT EXISTS {tb}_a ON {tb} (tenant_id, a_id) WHERE valid_to IS NULL"));
         out.push(format!("CREATE INDEX IF NOT EXISTS {tb}_b ON {tb} (tenant_id, b_id) WHERE valid_to IS NULL"));
     }

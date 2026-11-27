@@ -188,7 +188,7 @@ fn check_path(m: &Model, aspect: &str, focus: Option<&str>, path: &str) -> Resul
     if let (Some(t), Some(n)) = (focus, first_name(&e)) {
         let set: BTreeSet<String> = [t.to_string()].into();
         let known = PATH_RESERVED.contains(&n)
-            || m.defining_type(t, n).is_some()
+            || m.path_defining_type(t, n).is_some()
             || m.end_by_name(&set, n).is_some()
             || m.subtypes_closure(t).iter().any(|s| m.defining_type(s, n).is_some() || m.end_by_name(&[s.clone()].into(), n).is_some());
         if !known {
@@ -215,7 +215,10 @@ fn check_aspect(m: &Model, a: &crate::catalog::AspectDef) -> Result<()> {
                 .with("aspect", a.name.clone()).with("rule", g.clone()).with("reason", why)
         };
         let k = crate::fhirpath::group_key(&e).ok_or_else(|| bad("not an attribute with a standard function"))?;
-        let ad = entry_def.attributes.iter().find(|x| x.name == k.attr).ok_or_else(|| bad("not an attribute of the entry type itself"))?;
+        let ad = m
+            .path_defining_type(entry, &k.attr)
+            .and_then(|d| d.attributes.iter().find(|x| x.name == k.attr))
+            .ok_or_else(|| bad("not an attribute of the entry type, its supertypes or its required host type"))?;
         if crate::values::Col::of(&ad.vt) == crate::values::Col::Json {
             return Err(bad("structured attributes cannot be grouped"));
         }

@@ -101,6 +101,12 @@ base-mailbox--base-Mail-name = { $sender } - { $subject }
     .fallback = { $sender } - { $subject } ({ $receivedAt })
 ```
 
+At a type with `@requires(X)` (one type) or `@requiresAll(...)`, paths, filters and grouping
+rules may also use the names of the required host types: the object is guaranteed to carry them
+(e.g. at `tasks:Deadline` the attributes `due` and `status` of `tasks:Task`). Filters can shift
+`now()`, `today()` and date attributes by a quantity: `due <= today() + 7 days` (minutes, hours,
+days, weeks, months, years; SQL intervals). Enum values get display texts from Fluent messages
+`<ns>-<Type>-<attr>-<value>`; node details return them as `display` next to `values`.
 Objects without a value for the grouping rule (null, empty string, empty list) form one extra
 group with the empty key, labelled `<ns>-<aspect>--label-_none` (default "—"). A node definition
 may be held in a module-level `const` and used by several aspects of the same file (static values

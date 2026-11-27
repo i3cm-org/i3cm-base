@@ -402,6 +402,35 @@ impl Model {
         set.into_iter().any(|t| self.is_a(t, of))
     }
 
+    /// Types whose attributes are readable in paths at `t`: `t`, its supertypes, and the host types
+    /// it requires where carrying them is guaranteed (`@requires` with one type, or `@requiresAll`).
+    pub fn path_types(&self, t: &str) -> Vec<&TypeDef> {
+        let mut out: Vec<&TypeDef> = self.ancestors(t);
+        let mut i = 0;
+        while i < out.len() {
+            let d = out[i];
+            if d.requires.mode == RequireMode::All || d.requires.types.len() == 1 {
+                for h in &d.requires.types {
+                    for a in self.ancestors(h) {
+                        if !out.iter().any(|x| x.name == a.name) {
+                            out.push(a);
+                        }
+                    }
+                }
+            }
+            i += 1;
+            if out.len() > 128 {
+                break;
+            }
+        }
+        out
+    }
+
+    /// Like `defining_type`, also searching the guaranteed host types (`path_types`).
+    pub fn path_defining_type(&self, t: &str, attr: &str) -> Option<&TypeDef> {
+        self.path_types(t).into_iter().find(|a| a.attributes.iter().any(|x| x.name == attr))
+    }
+
     /// Type that defines attribute `attr`, searching `t` and its supertypes.
     pub fn defining_type(&self, t: &str, attr: &str) -> Option<&TypeDef> {
         self.ancestors(t).into_iter().find(|a| a.attributes.iter().any(|x| x.name == attr))

@@ -122,6 +122,11 @@ impl I18n {
         self.render_part(lang, &format!("{t}-name"), Some("fallback"), attrs)
     }
 
+    /// Display text of an enum value: message `<ns>-<Type>-<attr>-<value>`.
+    pub fn enum_label(&self, lang: &str, type_name: &str, attr: &str, value: &str) -> Option<String> {
+        self.render(lang, &format!("{}-{attr}-{value}", type_name.replace(':', "-")), &Map::new())
+    }
+
     /// Label of an attribute, folder, tab, column or function within an aspect.
     pub fn label(&self, aspect: &str, lang: &str, label: &str) -> String {
         let id = format!("{}--label-{}", aspect.replace(':', "-"), label);

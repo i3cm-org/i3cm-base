@@ -146,7 +146,7 @@ use i3cm_core::BaseError;
 impl Store {
     /// SQL for a view filter on the entry object `x` of type `t`; `$1` is the tenant.
     pub fn filter_sql(&self, f: &Filter, t: &str, ctx: &Ctx, params: &mut Vec<Param>) -> Result<String> {
-        let attr_def = |n: &str| self.model.ancestors(t).into_iter().flat_map(|d| d.attributes.iter()).find(|a| a.name == n).cloned();
+        let attr_def = |n: &str| self.model.path_types(t).into_iter().flat_map(|d| d.attributes.iter()).find(|a| a.name == n).cloned();
         Ok(match f {
             Filter::And(a, b) => format!("({} AND {})", self.filter_sql(a, t, ctx, params)?, self.filter_sql(b, t, ctx, params)?),
             Filter::Or(a, b) => format!("({} OR {})", self.filter_sql(a, t, ctx, params)?, self.filter_sql(b, t, ctx, params)?),
@@ -159,7 +159,7 @@ impl Store {
             }
             Filter::Exists(n, yes) => {
                 if let Some(a) = attr_def(n) {
-                    let owner = self.model.defining_type(t, &a.name).map(|d| d.name.clone()).unwrap_or_else(|| t.to_string());
+                    let owner = self.model.path_defining_type(t, &a.name).map(|d| d.name.clone()).unwrap_or_else(|| t.to_string());
                     let col_sql = self.attr_col(t, &owner, n);
                     format!("{col_sql} IS {}NULL", if *yes { "NOT " } else { "" })
                 } else {
@@ -175,11 +175,24 @@ impl Store {
                 let side = |o: &Operand, params: &mut Vec<Param>| -> Result<String> {
                     Ok(match o {
                         Operand::Attr(n) => {
-                            let owner = self.model.defining_type(t, n).map(|d| d.name.clone()).unwrap_or_else(|| t.to_string());
+                            let owner = self.model.path_defining_type(t, n).map(|d| d.name.clone()).unwrap_or_else(|| t.to_string());
                             self.attr_col(t, &owner, n)
                         }
                         Operand::Now => "now()".into(),
                         Operand::Today => "current_date".into(),
+                        Operand::Shifted(base, op, n, unit) => {
+                            let b = match base.as_ref() {
+                                Operand::Now => "now()".to_string(),
+                                Operand::Today => "current_date".to_string(),
+                                Operand::Attr(n) => {
+                                    let owner = self.model.path_defining_type(t, n).map(|d| d.name.clone()).unwrap_or_else(|| t.to_string());
+                                    self.attr_col(t, &owner, n)
+                                }
+                                _ => return Err(BaseError::invalid("path.bad_filter", "a quantity is added to now(), today() or a date attribute")),
+                            };
+                            // numbers and units come from the parser (closed list), not from input text
+                            format!("({b} {op} interval '{n} {unit}')")
+                        }
                         Operand::Lit(v) => match &typed {
                             Some(ad) => {
                                 let mut ad = ad.clone();
@@ -200,7 +213,7 @@ impl Store {
 
     /// Column of attribute `n` (defined on `owner`) for the entry object `x` of type `t`: the
     /// entry table itself, or a subquery on the owner's table for inherited attributes.
-    fn attr_col(&self, t: &str, owner: &str, n: &str) -> String {
+    pub(crate) fn attr_col(&self, t: &str, owner: &str, n: &str) -> String {
         if owner == t {
             format!("x.{}", col(n))
         } else {

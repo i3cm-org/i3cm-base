@@ -57,6 +57,14 @@ fn lex(src: &str) -> Result<Vec<Tok>> {
                 out.push(Tok::Op("="));
                 i += 1
             }
+            '+' => {
+                out.push(Tok::Op("+"));
+                i += 1
+            }
+            '-' => {
+                out.push(Tok::Op("-"));
+                i += 1
+            }
             '!' if cs.get(i + 1) == Some(&'=') => {
                 out.push(Tok::Op("!="));
                 i += 2
@@ -177,6 +185,9 @@ pub enum Expr {
     Bin(&'static str, Box<Expr>, Box<Expr>),
 }
 
+/// Calendar units of quantities (`7 days`), singular or plural.
+pub const QUANTITY_UNITS: &[&str] = &["minute", "minutes", "hour", "hours", "day", "days", "week", "weeks", "month", "months", "year", "years"];
+
 /// Functions of the profile "views".
 pub const VIEW_FUNCTIONS: &[&str] = &["where", "ofType", "first", "last", "count", "exists", "empty", "not", "toString", "substring", "upper", "lower"];
 
@@ -215,12 +226,24 @@ impl P<'_> {
         Ok(l)
     }
     fn cmp(&mut self) -> Result<Expr> {
-        let l = self.term()?;
+        let l = self.additive()?;
         if let Some(Tok::Op(op)) = self.peek().cloned() {
             if ["=", "!=", "<", "<=", ">", ">="].contains(&op) {
                 self.next();
-                return Ok(Expr::Bin(op, Box::new(l), Box::new(self.term()?)));
+                return Ok(Expr::Bin(op, Box::new(l), Box::new(self.additive()?)));
             }
+        }
+        Ok(l)
+    }
+    /// `a + b`, `a - b` (date/time arithmetic with quantities such as `7 days`).
+    fn additive(&mut self) -> Result<Expr> {
+        let mut l = self.term()?;
+        while let Some(Tok::Op(op)) = self.peek().cloned() {
+            if op != "+" && op != "-" {
+                break;
+            }
+            self.next();
+            l = Expr::Bin(op, Box::new(l), Box::new(self.term()?));
         }
         Ok(l)
     }
@@ -261,7 +284,15 @@ impl P<'_> {
             }
             Some(Tok::Num(n)) => {
                 self.next();
-                Expr::Lit(serde_json::from_str(&n).map_err(|_| err("bad number", self.src))?)
+                let v: Value = serde_json::from_str(&n).map_err(|_| err("bad number", self.src))?;
+                // a quantity: number followed by a calendar unit (FHIRPath `7 days`)
+                match self.peek().cloned() {
+                    Some(Tok::Ident(u)) if QUANTITY_UNITS.contains(&u.as_str()) => {
+                        self.next();
+                        Expr::Lit(serde_json::json!({ "quantity": v, "unit": u.trim_end_matches('s') }))
+                    }
+                    _ => Expr::Lit(v),
+                }
             }
             Some(Tok::This) => {
                 self.next();
