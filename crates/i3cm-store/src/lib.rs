@@ -67,9 +67,23 @@ impl Store {
         let c = self.client().await?;
         c.batch_execute("SELECT pg_advisory_lock(4711)").await.map_err(db)?;
         let res = async {
-            c.batch_execute(schema::SYSTEM).await.map_err(db)?;
-            for stmt in schema::catalog_ddl(&self.model) {
-                c.batch_execute(&stmt).await.map_err(db)?;
+            // skip the DDL when this exact schema was applied before: DDL statements take table
+            // locks even when nothing changes, which can deadlock with running orders
+            let ddl = schema::catalog_ddl(&self.model);
+            let mut h = <sha2::Sha256 as sha2::Digest>::new();
+            sha2::Digest::update(&mut h, schema::SYSTEM.as_bytes());
+            for stmt in &ddl {
+                sha2::Digest::update(&mut h, stmt.as_bytes());
+            }
+            let hash = hex::encode(sha2::Digest::finalize(h));
+            c.batch_execute("CREATE TABLE IF NOT EXISTS schema_state (hash text PRIMARY KEY, applied_at timestamptz NOT NULL DEFAULT now())").await.map_err(db)?;
+            let done: bool = c.query_one("SELECT EXISTS (SELECT 1 FROM schema_state WHERE hash=$1)", &[&hash]).await.map_err(db)?.get(0);
+            if !done {
+                c.batch_execute(schema::SYSTEM).await.map_err(db)?;
+                for stmt in &ddl {
+                    c.batch_execute(stmt).await.map_err(db)?;
+                }
+                c.execute("INSERT INTO schema_state (hash) VALUES ($1) ON CONFLICT DO NOTHING", &[&hash]).await.map_err(db)?;
             }
             Ok::<_, BaseError>(match c.batch_execute(schema::TRIGRAM).await {
                 Ok(()) => true,
