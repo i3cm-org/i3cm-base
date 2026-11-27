@@ -770,3 +770,18 @@ mod tests {
         assert_eq!(group_key(&parse("subject.count()").unwrap()), None);
     }
 }
+
+#[cfg(test)]
+mod quantity_tests {
+    use super::*;
+
+    #[test]
+    fn quantities_and_date_arithmetic_parse() {
+        let e = parse("due <= today() + 7 days").unwrap();
+        let Expr::Bin("<=", _, r) = e else { panic!("comparison expected") };
+        let Expr::Bin("+", _, q) = *r else { panic!("addition expected") };
+        assert_eq!(*q, Expr::Lit(serde_json::json!({"quantity": 7, "unit": "day"})));
+        assert!(parse("now() - 2 hours").is_ok());
+        assert!(parse("1 - 2").is_ok());
+    }
+}

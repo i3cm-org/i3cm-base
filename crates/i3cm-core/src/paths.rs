@@ -187,3 +187,31 @@ fn lower(m: &Model, t: &str, e: &Expr, src: &str) -> Result<Filter> {
         _ => Err(bad("path.bad_filter", "not a filter that translates into SQL", src)),
     }
 }
+
+#[cfg(test)]
+mod host_type_tests {
+    use crate::Model;
+    use serde_json::json;
+
+    fn model() -> Model {
+        let t = |name: &str, attrs: serde_json::Value, req: &[&str]| {
+            let (ns, local) = name.split_once(':').unwrap();
+            json!({"name": name, "ns": ns, "local": local, "abstract": false, "extends": null, "attributes": attrs,
+                "requires": {"mode": "any", "types": req}, "imprintsOn": [], "brings": [], "content": null, "textTypes": []})
+        };
+        let a = |n: &str, vt: serde_json::Value| json!({"name": n, "vt": vt, "required": false, "list": false, "indexed": false, "unique": false});
+        let cat = json!({"format": 1, "modules": [{"name": "m", "requires": [], "rooms": [], "profiles": [], "i18n": {}}],
+            "types": [t("m:Task", json!([a("due", json!({"kind": "datetime"})), a("status", json!({"kind": "string"}))]), &[]),
+                      t("m:Deadline", json!([a("direction", json!({"kind": "string"}))]), &["m:Task"])],
+            "references": [], "textTypes": []});
+        Model::from_json(&cat.to_string()).unwrap()
+    }
+
+    #[test]
+    fn a_type_with_requires_sees_the_names_of_its_host() {
+        let m = model();
+        assert!(super::view_filter(&m, "m:Deadline", "due <= today() + 7 days and status != 'done'").is_ok());
+        assert!(super::view_filter(&m, "m:Task", "direction = 'x'").is_err(), "the host does not see the names of the requiring type");
+        assert_eq!(m.path_defining_type("m:Deadline", "due").map(|d| d.name.as_str()), Some("m:Task"));
+    }
+}
