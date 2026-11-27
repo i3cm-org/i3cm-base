@@ -125,7 +125,10 @@ impl Runtime {
                 engine.increment_epoch();
             });
         }
-        Ok(Runtime { inner: Arc::new(Inner { engine, pres, model: store.model.clone(), ticks }), store })
+        let inner = Arc::new(Inner { engine, pres, model: store.model.clone(), ticks });
+        // every order of the base (shortcuts, files of aspects, tools) runs the hooks as well
+        store.set_order_runner(Arc::new(HookRunner { inner: inner.clone() }));
+        Ok(Runtime { inner, store })
     }
 
     pub fn store(&self) -> &Store {
@@ -133,12 +136,7 @@ impl Runtime {
     }
 
     fn shared(&self, session: Session) -> Arc<Shared> {
-        let now = self.inner.ticks.load(Ordering::SeqCst);
-        Arc::new(Shared {
-            store: self.store.clone(),
-            session: Mutex::new(Some(session)),
-            deadline_tick: now + ORDER_TIMEOUT.as_millis() as u64 / TICK_MS,
-        })
+        shared_with(&self.inner, &self.store, session)
     }
 
     fn declared(&self, module: &str, op: &str) -> bool {
@@ -184,26 +182,51 @@ impl Runtime {
 
     /// A generic order with hooks: before hooks may reject, after hooks run in the same order.
     pub async fn execute(&self, ctx: &mut Ctx, order: &Order) -> IResult<OrderResult> {
-        if order.ops.is_empty() {
-            return Err(BaseError::invalid("order.empty", "order without operations"));
+        execute_with(&self.inner, &self.store, ctx, order).await
+    }
+}
+
+fn shared_with(inner: &Inner, store: &Store, session: Session) -> Arc<Shared> {
+    let now = inner.ticks.load(Ordering::SeqCst);
+    Arc::new(Shared { store: store.clone(), session: Mutex::new(Some(session)), deadline_tick: now + ORDER_TIMEOUT.as_millis() as u64 / TICK_MS })
+}
+
+async fn execute_with(inner: &Arc<Inner>, store: &Store, ctx: &mut Ctx, order: &Order) -> IResult<OrderResult> {
+    if order.ops.is_empty() {
+        return Err(BaseError::invalid("order.empty", "order without operations"));
+    }
+    let rooms_before = ctx.rooms.clone();
+    let session = store.begin(ctx, &Audit::default()).await?;
+    let shared = shared_with(inner, store, session);
+    let res = async {
+        for (i, op) in order.ops.iter().enumerate() {
+            apply_with_hooks(inner, &shared, ctx, op, 0).await.map_err(|e| e.with("op_index", i))?;
         }
-        let session = self.store.begin(ctx, &Audit::default()).await?;
-        let shared = self.shared(session);
-        let res = async {
-            for (i, op) in order.ops.iter().enumerate() {
-                apply_with_hooks(&self.inner, &shared, ctx, op, 0).await.map_err(|e| e.with("op_index", i))?;
-            }
-            Ok::<_, BaseError>(())
+        Ok::<_, BaseError>(())
+    }
+    .await;
+    let session = shared.session.lock().await.take().ok_or_else(|| BaseError::internal("order lost its session"))?;
+    let out = match res {
+        Ok(()) => session.finish(store, ctx, !order.dry_run).await,
+        Err(e) => {
+            session.abort().await;
+            Err(e)
         }
-        .await;
-        let session = shared.session.lock().await.take().ok_or_else(|| BaseError::internal("order lost its session"))?;
-        match res {
-            Ok(()) => session.finish(&self.store, ctx, !order.dry_run).await,
-            Err(e) => {
-                session.abort().await;
-                Err(e)
-            }
-        }
+    };
+    if out.is_err() || order.dry_run {
+        ctx.rooms = rooms_before;
+    }
+    out
+}
+
+/// The hooks of module code for orders that reach the base by other ways than `POST /v1/orders`.
+struct HookRunner {
+    inner: Arc<Inner>,
+}
+
+impl i3cm_store::OrderRunner for HookRunner {
+    fn run<'a>(&'a self, store: &'a Store, ctx: &'a mut Ctx, order: &'a Order) -> std::pin::Pin<Box<dyn std::future::Future<Output = IResult<OrderResult>> + Send + 'a>> {
+        Box::pin(execute_with(&self.inner, store, ctx, order))
     }
 }
 

@@ -135,6 +135,8 @@ impl Store {
         tx.commit().await.map_err(db)?;
         let admin = created["admin"];
         // the first token is a start key: valid for one day
+        // carriers (agent accounts) of the mandatory modules, and anything else their definition needs
+        self.sync_modules(tenant).await?;
         let token = self.create_token_unchecked(tenant, admin, Some(INIT_TOKEN_TTL_DAYS)).await?.token;
         Ok(TenantInit { tenant, root_room: root, admin_account: admin, admin_group: admins, token })
     }
@@ -299,15 +301,11 @@ pub struct TokenInfo {
 }
 
 impl Store {
-    /// Whether a module is active in a tenant. Modules of the kernel image that were never
-    /// activated explicitly count as active in tenants created before 0.6 (no rows yet).
+    /// Whether a module is active in a tenant: a mandatory module (or `base`) always, any other
+    /// module once activated. The same rule as the request context uses.
     pub async fn module_active(&self, tenant: Uuid, module: &str) -> Result<bool> {
         let c = self.client().await?;
-        let any: bool = c.query_one("SELECT EXISTS (SELECT 1 FROM module_active WHERE tenant_id=$1)", &[&tenant]).await.map_err(db)?.get(0);
-        if !any {
-            return Ok(true);
-        }
-        Ok(c.query_one("SELECT EXISTS (SELECT 1 FROM module_active WHERE tenant_id=$1 AND name=$2)", &[&tenant, &module]).await.map_err(db)?.get(0))
+        Ok(!self.inactive_modules(&**c, tenant).await?.contains(module))
     }
 }
 
@@ -460,5 +458,199 @@ impl Store {
             .map_err(db)?
             .map(|r| r.get(0))
             .ok_or_else(|| BaseError::not_found("module.unknown_carrier", "the module has no such carrier in this tenant").with("module", module).with("carrier", carrier))
+    }
+}
+
+/// One row of `profile_right`: index, sign, arts, types, room, condition.
+type RightRow = (i32, String, Vec<String>, Vec<String>, Uuid, Option<String>);
+
+/// What `sync_modules` changed or noticed in one tenant.
+#[derive(Debug, Clone, Default, serde::Serialize)]
+pub struct ModuleSync {
+    pub tenant: Uuid,
+    /// Entries like `tasks: profile tasks:assignee created`.
+    pub changes: Vec<String>,
+    /// Entries like `tasks: profile tasks:old is no longer defined by the module (kept)`.
+    pub warnings: Vec<String>,
+}
+
+impl Store {
+    /// Bring every module that is active in the tenant (mandatory modules and activated ones) to
+    /// the definition of the installed version: missing module rooms, profiles and carriers are
+    /// created, the rights and includes of the module's profiles are set to the module's, missing
+    /// profile assignments of carriers are added. Profiles of the module that the installed
+    /// version no longer defines are kept and reported. Idempotent; each module in one transaction.
+    pub async fn sync_modules(&self, tenant: Uuid) -> Result<ModuleSync> {
+        let mut out = ModuleSync { tenant, ..Default::default() };
+        let (rooms, inactive, development) = {
+            let c = self.client().await?;
+            let rooms = self.load_rooms(&**c, tenant).await?;
+            let inactive = self.inactive_modules(&**c, tenant).await?;
+            let development: bool = c.query_opt("SELECT development FROM tenant WHERE id=$1", &[&tenant]).await.map_err(db)?.map(|r| r.get(0)).unwrap_or(false);
+            (rooms, inactive, development)
+        };
+        let root = rooms.root;
+        let mods: Vec<_> = self.model.catalog.modules.iter().filter(|m| !inactive.contains(&m.name)).cloned().collect();
+        for m in mods {
+            let name = m.name.clone();
+            // what exists
+            let (have_rooms, have_profiles, have_carriers) = {
+                let c = self.client().await?;
+                let have_rooms: HashMap<String, Uuid> =
+                    c.query("SELECT name, room_id FROM module_room WHERE tenant_id=$1", &[&tenant]).await.map_err(db)?.iter().map(|r| (r.get(0), r.get(1))).collect();
+                let have_profiles: Vec<String> = c
+                    .query("SELECT name FROM profile WHERE tenant_id=$1 AND name LIKE $2", &[&tenant, &format!("{name}:%")])
+                    .await
+                    .map_err(db)?
+                    .iter()
+                    .map(|r| r.get(0))
+                    .collect();
+                let have_carriers: HashMap<String, Uuid> = c
+                    .query("SELECT name, account FROM module_carrier WHERE tenant_id=$1 AND module=$2", &[&tenant, &name])
+                    .await
+                    .map_err(db)?
+                    .iter()
+                    .map(|r| (r.get(0), r.get(1)))
+                    .collect();
+                (have_rooms, have_profiles, have_carriers)
+            };
+            for p in &have_profiles {
+                if !m.profiles.iter().any(|d| &d.name == p) {
+                    out.warnings.push(format!("{name}: profile {p} is no longer defined by the module (kept)"));
+                }
+            }
+            let mut gctx = Ctx {
+                tenant,
+                subject: Subject { account: Uuid::nil(), carriers: vec![], rights: HashMap::new(), guardian: true },
+                rooms: rooms.clone(),
+                inactive: inactive.clone(),
+                development,
+            };
+            let mut sess = self.begin(&gctx, &crate::session::Audit { module: Some(name.clone()), function: Some("sync".into()), tool: None }).await?;
+            let res = async {
+                let mut changes = vec![];
+                let mut room_ids = have_rooms.clone();
+                for r in m.rooms.iter().filter(|r| !have_rooms.contains_key(*r)) {
+                    let local = format!("room:{r}");
+                    let id = sess
+                        .apply(self, &mut gctx, &Op::Create { local: Some(local.clone()), room: None, types: [("base:Room".into(), attrs(json!({"name": r})))].into() })
+                        .await?
+                        .ok_or_else(|| BaseError::internal("room not created"))?;
+                    sess.apply(self, &mut gctx, &Op::Link { reference: "base:Room.parent".into(), from: local, to: root.to_string(), rank: None }).await?;
+                    sess.client().execute("INSERT INTO module_room (tenant_id, name, room_id) VALUES ($1,$2,$3)", &[&tenant, r, &id]).await.map_err(db)?;
+                    room_ids.insert(r.clone(), id);
+                    changes.push(format!("{name}: room {r} created"));
+                }
+                let room_of = |n: &str| -> Uuid { if n == "root" { root } else { room_ids.get(n).copied().unwrap_or(root) } };
+                for p in &m.profiles {
+                    let c = sess.client();
+                    let want: Vec<RightRow> = p
+                        .rights
+                        .iter()
+                        .enumerate()
+                        .map(|(i, r)| {
+                            let sign = match r.sign {
+                                Sign::Plus => "+",
+                                Sign::Minus => "-",
+                                Sign::Block => "block",
+                            };
+                            (i as i32, sign.to_string(), r.art.iter().map(|a| a.as_str().to_string()).collect(), r.types.clone(), room_of(&r.room), r.when.clone())
+                        })
+                        .collect();
+                    let mut want_inc = p.includes.clone();
+                    want_inc.sort();
+                    if !have_profiles.contains(&p.name) {
+                        c.execute("INSERT INTO profile (tenant_id, name, guardian) VALUES ($1,$2,$3)", &[&tenant, &p.name, &p.guardian]).await.map_err(db)?;
+                        changes.push(format!("{name}: profile {} created", p.name));
+                    } else {
+                        let have: Vec<RightRow> = c
+                            .query("SELECT idx, sign, arts, types, room_id, cond FROM profile_right WHERE tenant_id=$1 AND profile=$2 ORDER BY idx", &[&tenant, &p.name])
+                            .await
+                            .map_err(db)?
+                            .iter()
+                            .map(|r| (r.get(0), r.get(1), r.get(2), r.get(3), r.get(4), r.get(5)))
+                            .collect();
+                        let mut have_inc: Vec<String> =
+                            c.query("SELECT includes FROM profile_include WHERE tenant_id=$1 AND profile=$2", &[&tenant, &p.name]).await.map_err(db)?.iter().map(|r| r.get(0)).collect();
+                        have_inc.sort();
+                        let guardian: bool = c.query_one("SELECT guardian FROM profile WHERE tenant_id=$1 AND name=$2", &[&tenant, &p.name]).await.map_err(db)?.get(0);
+                        if have == want && have_inc == want_inc && guardian == p.guardian {
+                            continue;
+                        }
+                        c.execute("UPDATE profile SET guardian=$3 WHERE tenant_id=$1 AND name=$2", &[&tenant, &p.name, &p.guardian]).await.map_err(db)?;
+                        c.execute("DELETE FROM profile_right WHERE tenant_id=$1 AND profile=$2", &[&tenant, &p.name]).await.map_err(db)?;
+                        c.execute("DELETE FROM profile_include WHERE tenant_id=$1 AND profile=$2", &[&tenant, &p.name]).await.map_err(db)?;
+                        changes.push(format!("{name}: profile {} updated", p.name));
+                    }
+                    for (i, sign, arts, types, room, cond) in &want {
+                        c.execute(
+                            "INSERT INTO profile_right (tenant_id, profile, idx, sign, arts, types, room_id, cond) VALUES ($1,$2,$3,$4,$5,$6,$7,$8)",
+                            &[&tenant, &p.name, i, sign, arts, types, room, cond],
+                        )
+                        .await
+                        .map_err(db)?;
+                    }
+                    for inc in &want_inc {
+                        c.execute("INSERT INTO profile_include (tenant_id, profile, includes) VALUES ($1,$2,$3)", &[&tenant, &p.name, inc]).await.map_err(db)?;
+                    }
+                }
+                for cr in &m.carriers {
+                    let id = match have_carriers.get(&cr.name) {
+                        Some(id) => *id,
+                        None => {
+                            let id = sess
+                                .apply(self, &mut gctx, &Op::Create { local: Some(format!("carrier:{}", cr.name)), room: None, types: [("base:AgentAccount".into(), attrs(json!({"login": cr.name, "purpose": format!("module {name}")})))].into() })
+                                .await?
+                                .ok_or_else(|| BaseError::internal("carrier not created"))?;
+                            sess.client()
+                                .execute("INSERT INTO module_carrier (tenant_id, module, name, account) VALUES ($1,$2,$3,$4)", &[&tenant, &name, &cr.name, &id])
+                                .await
+                                .map_err(db)?;
+                            changes.push(format!("{name}: carrier {} created", cr.name));
+                            id
+                        }
+                    };
+                    let txn = sess.txn;
+                    for p in &cr.profiles {
+                        let has: bool = sess
+                            .client()
+                            .query_one("SELECT EXISTS (SELECT 1 FROM assignment WHERE tenant_id=$1 AND carrier=$2 AND profile=$3 AND valid_to IS NULL)", &[&tenant, &id, p])
+                            .await
+                            .map_err(db)?
+                            .get(0);
+                        if !has {
+                            sess.client()
+                                .execute("INSERT INTO assignment (tenant_id, id, profile, carrier, valid_from) VALUES ($1,$2,$3,$4,$5)", &[&tenant, &Uuid::new_v4(), p, &id, &txn])
+                                .await
+                                .map_err(db)?;
+                            changes.push(format!("{name}: carrier {} assigned {p}", cr.name));
+                        }
+                    }
+                }
+                Ok::<_, BaseError>(changes)
+            }
+            .await;
+            match res {
+                Ok(changes) if changes.is_empty() => sess.abort().await,
+                Ok(changes) => {
+                    sess.finish(self, &mut gctx, true).await?;
+                    out.changes.extend(changes);
+                }
+                Err(e) => {
+                    sess.abort().await;
+                    return Err(e.with("module", name));
+                }
+            }
+        }
+        Ok(out)
+    }
+
+    /// `sync_modules` for every tenant (server start).
+    pub async fn sync_modules_all(&self) -> Result<Vec<ModuleSync>> {
+        let mut out = vec![];
+        for t in self.tenant_ids().await? {
+            out.push(self.sync_modules(t).await?);
+        }
+        Ok(out)
     }
 }

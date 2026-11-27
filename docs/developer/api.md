@@ -155,8 +155,11 @@ token at once. A token unused for 90 days lapses (`auth.unused_token`).
 | `POST /v1/modules/{name}/ops/{op}` | Run an operation of the module as one order; body: JSON params |
 | `GET /v1/modules/{name}/sources` | The module's sources (`{module, files: [{path, text}]}`, paths `i3cm/...`) if its package carries them; for modules active in the tenant, in a development tenant for every installed module |
 
-With module code loaded (`--modules-dir`), `POST /v1/orders` runs the hooks of the modules around
-each operation. Errors from module code come back with status 400 and the module's error id.
+With module code loaded (`--modules-dir`), every write runs the hooks of the modules around each
+operation: `POST /v1/orders`, the single-operation shortcuts (`POST`/`PATCH`/`DELETE /v1/objects…`,
+`/v1/references…`), writes to files of aspects (FUSE, `PUT /v1/aspects/{a}/file`, drops) and the tools.
+Writes of content and texts (`content`, `text`, `PUT …/content`, `PUT …/texts/…`) run no hooks. Errors
+from module code come back with status 400 and the module's error id.
 
 ## Development tenants and source checks (studio)
 

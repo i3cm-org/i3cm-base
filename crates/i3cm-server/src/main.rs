@@ -109,6 +109,15 @@ async fn main() -> Result<()> {
     match cli.cmd {
         Cmd::Serve { listen, pool } => {
             let store = connect_with(&db()?, &catalog, cli.modules_dir.as_deref(), pool).await?;
+            // bring tenants to the installed module versions (new profiles, rights, carriers)
+            for s in store.sync_modules_all().await.map_err(|e| anyhow::anyhow!("{e}"))? {
+                for c in &s.changes {
+                    tracing::info!(tenant = %s.tenant, "module sync: {c}");
+                }
+                for w in &s.warnings {
+                    tracing::warn!(tenant = %s.tenant, "module sync: {w}");
+                }
+            }
             let rt = match &cli.modules_dir {
                 Some(d) => Some(runtime(&store, d)?),
                 None => None,
@@ -167,7 +176,7 @@ async fn main() -> Result<()> {
             if development && !development_allowed() {
                 anyhow::bail!("development tenants are not allowed on this instance (operator: I3CM_ALLOW_DEVELOPMENT=true)");
             }
-            let store = connect(&db()?, &catalog, 4).await?;
+            let store = connect_with(&db()?, &catalog, cli.modules_dir.as_deref(), 4).await?;
             let init = store.init_tenant_with(&name, &admin, development).await.map_err(|e| anyhow::anyhow!("{e}"))?;
             println!("{}", serde_json::to_string_pretty(&init)?);
         }

@@ -9,9 +9,11 @@ separation is done by the base alone (modules know nothing of tenants).
 i3cm-server init-tenant <name> [--admin <login>]
 ```
 
-creates the root room, the profiles of the base and the mandatory modules, a group of administrators,
-the login (default `admin`) and prints a start token valid for one day. The mandatory modules `tasks`
-and `dms` are active in every tenant from its creation.
+creates the root room, the rooms, profiles and carriers (agent accounts) of the base and the mandatory
+modules, a group of administrators, the login (default `admin`) and prints a start token valid for one
+day. The mandatory modules `tasks` and `dms` are active in every tenant from its creation. Run it with
+the same `I3CM_MODULES_DIR` as the server (inside the main container it is set), so that it knows the
+installed modules.
 
 ### Development tenants
 
@@ -45,7 +47,14 @@ administrator's job and applies to one tenant ([../tenant-admin/](../tenant-admi
 The installer checks the package, its catalog part against the installed catalog, creates the tables of
 the module (all or nothing) and puts `module.json`, `module.wasm`, texts, UI templates and sources into
 the modules directory. The module is in force after the next start of the main containers; then tenants
-can activate it. The package format and signatures are described in
+can activate it.
+
+**Updates reach existing tenants at start.** When the server starts, it brings every tenant to the
+installed version of each module that is active there (mandatory or activated): missing module rooms,
+profiles and carriers are created, the rights and includes of the module's profiles are set to those of
+the module, and missing profile assignments of carriers are added. A profile that the new version no
+longer defines is kept (assignments stay valid) and logged as a warning (`module sync: …`); remove it by
+hand if it is no longer wanted. The step is idempotent: a start without changes changes nothing. The package format and signatures are described in
 [../developer/modules.md](../developer/modules.md).
 
 The UI frame loads `modules/<ns>.html` for every active namespace; with the compose file for the UI, copy

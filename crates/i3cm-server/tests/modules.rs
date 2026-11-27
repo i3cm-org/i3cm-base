@@ -681,3 +681,102 @@ fn aspects_of_inactive_modules_are_hidden() {
         assert!(names().await.iter().any(|n| n == "mail:mailbox"));
     });
 }
+
+/// A catalog with the example module made mandatory, optionally changed by `edit`.
+fn example_catalog_variant(tag: &str, edit: impl Fn(&mut Value)) -> PathBuf {
+    let (model, _) = example();
+    let mut cat: Value = serde_json::from_str(&std::fs::read_to_string(model).unwrap()).unwrap();
+    let ex = cat["modules"].as_array_mut().unwrap().iter_mut().find(|m| m["name"] == "example").unwrap();
+    ex["mandatory"] = json!(true);
+    edit(ex);
+    let p = model.with_file_name(format!("catalog-{tag}.json"));
+    std::fs::write(&p, cat.to_string()).unwrap();
+    p
+}
+
+#[test]
+fn new_tenants_get_profiles_and_carriers_of_mandatory_modules_and_updates_are_synced() {
+    rt().block_on(async {
+        let (_, dir) = example();
+        let url = db_named("sync_test");
+        // a mandatory module with a carrier: a new tenant has its profiles and its carrier
+        let v1 = example_catalog_variant("mand-v1", |_| {});
+        let store = Store::connect(&url, i3cm_server::load_catalog(&v1).unwrap(), 8).await.unwrap();
+        let init = store.init_tenant(&format!("sync-{}", uuid::Uuid::new_v4()), "admin").await.unwrap();
+        let c = store.client().await.unwrap();
+        let profiles: Vec<String> = c
+            .query("SELECT name FROM profile WHERE tenant_id=$1 AND name LIKE 'example:%' ORDER BY name", &[&init.tenant])
+            .await
+            .unwrap()
+            .iter()
+            .map(|r| r.get(0))
+            .collect();
+        assert_eq!(profiles, vec!["example:roomReader".to_string(), "example:writer".to_string()]);
+        let sys = store.module_carrier(init.tenant, "example", "example:system").await.expect("carrier of the mandatory module");
+        assert!(store.module_active(init.tenant, "example").await.unwrap());
+        assert!(!store.module_active(init.tenant, "fibu").await.unwrap(), "an optional module is not active in a new tenant");
+        // an operation that impersonates the carrier runs without any activation
+        let rt = i3cm_server::runtime(&store, dir).unwrap();
+        let (addr, _t) = serve_with(store.clone(), Some(rt), "127.0.0.1:0".parse().unwrap()).await.unwrap();
+        let r = reqwest::Client::new().post(format!("http://{addr}/v1/modules/example/ops/stamp")).bearer_auth(&init.token).json(&json!({"title": "x"})).send().await.unwrap();
+        let code = r.status().as_u16();
+        let v: Value = r.json().await.unwrap();
+        assert_eq!(code, 200, "{v}");
+        assert_eq!(v["as"].as_str().unwrap(), sys.to_string());
+        // nothing to do right after the creation
+        let s = store.sync_modules(init.tenant).await.unwrap();
+        assert!(s.changes.is_empty() && s.warnings.is_empty(), "{s:?}");
+
+        // a new version: one profile more, one less, changed rights, a second carrier
+        let v2 = example_catalog_variant("mand-v2", |ex| {
+            let profiles = ex["profiles"].as_array_mut().unwrap();
+            profiles.retain(|p| p["name"] != "example:roomReader");
+            profiles[0]["rights"][0]["art"] = json!(["read", "write"]);
+            profiles.push(json!({"name": "example:auditor", "rights": [{"sign": "+", "art": ["read"], "types": ["example:Note"], "room": "example"}]}));
+            ex["carriers"].as_array_mut().unwrap().push(json!({"name": "example:helper", "profiles": ["example:auditor"]}));
+        });
+        let store2 = Store::connect(&url, i3cm_server::load_catalog(&v2).unwrap(), 4).await.unwrap();
+        let s = store2.sync_modules(init.tenant).await.unwrap();
+        assert!(s.changes.contains(&"example: profile example:auditor created".to_string()), "{s:?}");
+        assert!(s.changes.contains(&"example: profile example:writer updated".to_string()), "{s:?}");
+        assert!(s.changes.contains(&"example: carrier example:helper created".to_string()), "{s:?}");
+        assert_eq!(s.warnings, vec!["example: profile example:roomReader is no longer defined by the module (kept)".to_string()]);
+        let arts: Vec<String> = c.query_one("SELECT arts FROM profile_right WHERE tenant_id=$1 AND profile='example:writer' AND idx=0", &[&init.tenant]).await.unwrap().get(0);
+        assert_eq!(arts, vec!["read".to_string(), "write".to_string()]);
+        let helper = store2.module_carrier(init.tenant, "example", "example:helper").await.unwrap();
+        let n: i64 = c
+            .query_one("SELECT count(*) FROM assignment WHERE tenant_id=$1 AND carrier=$2 AND profile='example:auditor' AND valid_to IS NULL", &[&init.tenant, &helper])
+            .await
+            .unwrap()
+            .get(0);
+        assert_eq!(n, 1);
+        // idempotent
+        let s = store2.sync_modules(init.tenant).await.unwrap();
+        assert!(s.changes.is_empty(), "{s:?}");
+        assert_eq!(s.warnings.len(), 1);
+    });
+}
+
+#[test]
+fn hooks_run_on_every_write_path_not_only_orders() {
+    rt().block_on(async {
+        let e = Env::new().await;
+        e.activate().await;
+        // the single-operation shortcut PATCH /v1/objects/{id} runs the after hook as an order does
+        let (code, v) = e.post("/v1/objects", json!({"types": {"example:Note": {"title": "patched", "status": "open"}}})).await;
+        assert_eq!(code, 200, "{v}");
+        let id = v["created"]["new"].as_str().unwrap().to_string();
+        let r = e.http.patch(format!("{}/v1/objects/{id}", e.base)).bearer_auth(&e.token).json(&json!({"types": {"example:Note": {"status": "done"}}})).send().await.unwrap();
+        assert_eq!(r.status().as_u16(), 200, "{}", r.text().await.unwrap());
+        let (_, note) = e.get(&format!("/v1/objects/{id}")).await;
+        assert!(note["parts"][0]["attributes"]["doneAt"].is_string(), "{note}");
+        assert!(e.notes().await.iter().any(|n| n == "log: patched done"));
+        // a failing after hook rolls the shortcut back as well
+        let (_, v) = e.post("/v1/objects", json!({"types": {"example:Note": {"title": "will fail", "status": "open"}}})).await;
+        let fid = v["created"]["new"].as_str().unwrap().to_string();
+        let r = e.http.patch(format!("{}/v1/objects/{fid}", e.base)).bearer_auth(&e.token).json(&json!({"types": {"example:Note": {"status": "done"}}})).send().await.unwrap();
+        assert_eq!(r.status().as_u16(), 400);
+        let (_, note) = e.get(&format!("/v1/objects/{fid}")).await;
+        assert_eq!(note["parts"][0]["attributes"]["status"], "open", "rolled back");
+    });
+}

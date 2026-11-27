@@ -27,6 +27,13 @@ use tokio_postgres::NoTls;
 pub use context::Ctx;
 pub use order::{Op, Order, OrderResult};
 
+/// Runs a generic order with the hooks of module code. Registered by the module runtime, so that
+/// every write path of the base (single-operation shortcuts, files of aspects, tools) runs the same
+/// hooks as `POST /v1/orders`.
+pub trait OrderRunner: Send + Sync {
+    fn run<'a>(&'a self, store: &'a Store, ctx: &'a mut Ctx, order: &'a Order) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<OrderResult>> + Send + 'a>>;
+}
+
 #[derive(Clone)]
 pub struct Store {
     pub pool: Pool,
@@ -34,6 +41,8 @@ pub struct Store {
     pub i18n: Arc<I18n>,
     /// The trigram index for the search prefilter exists.
     pub trigram: bool,
+    /// Hooks of module code for every order, when a module runtime is loaded.
+    runner: Arc<std::sync::RwLock<Option<Arc<dyn OrderRunner>>>>,
 }
 
 /// An authenticated request: tenant, account and the token used.
@@ -46,6 +55,15 @@ pub struct Auth {
 }
 
 impl Store {
+    /// Register the runner that adds the hooks of module code to every order (module runtime).
+    pub fn set_order_runner(&self, runner: Arc<dyn OrderRunner>) {
+        *self.runner.write().unwrap_or_else(|e| e.into_inner()) = Some(runner);
+    }
+
+    pub(crate) fn order_runner(&self) -> Option<Arc<dyn OrderRunner>> {
+        self.runner.read().unwrap_or_else(|e| e.into_inner()).clone()
+    }
+
     /// Connect and create or extend the schema for the catalog.
     pub async fn connect(url: &str, model: Model, pool_size: usize) -> Result<Store> {
         let mut cfg = Config::new();
@@ -53,7 +71,7 @@ impl Store {
         cfg.pool = Some(deadpool_postgres::PoolConfig::new(pool_size));
         let pool = cfg.create_pool(Some(Runtime::Tokio1), NoTls).map_err(|e| BaseError::internal(format!("pool: {e}")))?;
         let i18n = I18n::new(&model)?;
-        let mut store = Store { pool, model: Arc::new(model), i18n: Arc::new(i18n), trigram: false };
+        let mut store = Store { pool, model: Arc::new(model), i18n: Arc::new(i18n), trigram: false, runner: Default::default() };
         store.trigram = store.migrate().await?;
         Ok(store)
     }

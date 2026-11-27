@@ -115,7 +115,16 @@ fn denied(art: Art, t: &str) -> BaseError {
 }
 
 impl Store {
+    /// Execute an order in one transaction; with a module runtime loaded, its hooks run as well.
     pub async fn execute(&self, ctx: &mut Ctx, order: &Order) -> Result<OrderResult> {
+        match self.order_runner() {
+            Some(r) => r.run(self, ctx, order).await,
+            None => self.execute_plain(ctx, order).await,
+        }
+    }
+
+    /// Execute an order without hooks of module code.
+    pub async fn execute_plain(&self, ctx: &mut Ctx, order: &Order) -> Result<OrderResult> {
         if order.ops.is_empty() {
             return Err(BaseError::invalid("order.empty", "order without operations"));
         }
