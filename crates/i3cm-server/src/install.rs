@@ -148,12 +148,51 @@ pub async fn install(db_url: &str, base: &Path, dir: &Path, pkg_path: &Path, key
         }
         return Err(e);
     }
-    tx.commit().await?;
-    let mut placed = vec![];
-    for (tmp, target, name) in staged {
-        std::fs::rename(&tmp, &target).with_context(|| format!("placing {name} failed after the database commit; install again"))?;
-        placed.push(name);
+    // publish the files first (keeping the previous versions), then commit; if the commit fails,
+    // the previous files come back, so database and files never disagree
+    let mut placed: Vec<(PathBuf, Option<PathBuf>, String)> = vec![];
+    let restore = |placed: &[(PathBuf, Option<PathBuf>, String)]| {
+        for (target, bak, _) in placed.iter().rev() {
+            match bak {
+                Some(b) => {
+                    let _ = std::fs::rename(b, target);
+                }
+                None => {
+                    let _ = std::fs::remove_file(target);
+                }
+            }
+        }
+    };
+    for (tmp, target, name) in &staged {
+        let bak = if target.exists() {
+            let b = dir.join(format!(".{}.bak", name.replace('/', "_")));
+            std::fs::rename(target, &b)?;
+            Some(b)
+        } else {
+            None
+        };
+        if let Err(e) = std::fs::rename(tmp, target) {
+            if let Some(b) = &bak {
+                let _ = std::fs::rename(b, target);
+            }
+            restore(&placed);
+            for (t, _, _) in &staged {
+                let _ = std::fs::remove_file(t);
+            }
+            return Err(anyhow::anyhow!("placing {name} failed: {e}; nothing installed"));
+        }
+        placed.push((target.clone(), bak, name.clone()));
     }
+    if let Err(e) = tx.commit().await {
+        restore(&placed);
+        return Err(anyhow::anyhow!("database commit failed: {e}; files restored, nothing installed"));
+    }
+    for (_, bak, _) in &placed {
+        if let Some(b) = bak {
+            let _ = std::fs::remove_file(b);
+        }
+    }
+    let placed: Vec<String> = placed.into_iter().map(|(_, _, n)| n).collect();
     Ok(Installed { module, sha256: sha, tables: ddl.len(), files: placed })
 }
 

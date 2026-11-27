@@ -316,7 +316,11 @@ impl Store {
     /// Evaluate a path on an object (profile "views").
     pub async fn eval_path(&self, ctx: &Ctx, id: Uuid, src: &str) -> Result<Vec<Value>> {
         let e = expr(src)?;
-        self.get_object(ctx, id, None, "en").await?;
+        let v = self.get_object(ctx, id, None, "en").await?;
+        // an object whose types all belong to modules inactive in the tenant does not exist for it
+        if v.types.is_empty() {
+            return Err(BaseError::not_found("object.not_found", "object not found").with("id", id.to_string()));
+        }
         let nav = StoreNav::new(self, ctx);
         Ok(eval(&nav, &e, &[Item::Obj(id)]).await?.iter().map(|i| i.to_json()).collect())
     }
