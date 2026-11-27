@@ -370,12 +370,12 @@ impl Model {
             for r in &p.rights {
                 let Some(w) = &r.when else { continue };
                 for t in &r.types {
-                    // checked above: every condition is a valid rights path
-                    if let Ok(rp) = crate::paths::rights_path(&m, t, w) {
-                        for st in &rp.steps {
-                            let e = sides.entry(st.reference.clone()).or_default();
-                            if st.from_holder { e.0 = true } else { e.1 = true }
-                        }
+                    // the checker accepted every condition; an error here must not be swallowed,
+                    // or a reference a path runs over would escape the grant check
+                    let rp = crate::paths::rights_path(&m, t, w).map_err(|e| e.with("profile", p.name.clone()))?;
+                    for st in &rp.steps {
+                        let e = sides.entry(st.reference.clone()).or_default();
+                        if st.from_holder { e.0 = true } else { e.1 = true }
                     }
                 }
             }
