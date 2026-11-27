@@ -30,8 +30,12 @@ export class JournalLine {
   `@brings(B)` (every object of this type is also a B), `@imprintsOn(A)` (every A is also of
   this type), `@hasContent(mediaType?)`, `@texts("name:mediaType", ...)`, `@noGrep("name", ...)` (text
   types not searched by `grep`, e.g. the OCR layer of a scan).
-* Attribute decorators: `@indexed`, `@unique`; reference decorators: `@partOf`, `@ordered`,
-  `@rightsRelevant`, `@min`.
+* Attribute decorators: `@indexed`, `@unique`; reference decorators: `@partOf`, `@ordered`, `@min`.
+  `@rightsRelevant` is no longer needed and ignored (`typecat check` warns): a reference is
+  rights-relevant when a rights path of some profile runs over it.
+* References have no direction: both ends are named, and rights and deletion treat both ends alike
+  (see the API reference, "References, rights and deletion"). `@partOf` makes the object a part of
+  the referenced whole: parts move with the whole and are deleted with it.
 
 ## Value types
 

@@ -19,7 +19,6 @@ pub struct Step {
     pub from_holder: bool,
     /// Type at the other end.
     pub to: String,
-    pub rights_relevant: bool,
 }
 
 fn bad(code: &str, msg: &str, src: &str) -> BaseError {
@@ -31,10 +30,10 @@ pub fn step(m: &Model, cur: &str, name: &str) -> Result<Step> {
     let mut all = vec![];
     for r in &m.catalog.references {
         if r.holder.end == name {
-            all.push((Step { reference: r.name.clone(), from_holder: true, to: r.target.type_name.clone(), rights_relevant: r.rights_relevant }, r.holder.type_name.clone()));
+            all.push((Step { reference: r.name.clone(), from_holder: true, to: r.target.type_name.clone()}, r.holder.type_name.clone()));
         }
         if r.target.end == name {
-            all.push((Step { reference: r.name.clone(), from_holder: false, to: r.holder.type_name.clone(), rights_relevant: r.rights_relevant }, r.target.type_name.clone()));
+            all.push((Step { reference: r.name.clone(), from_holder: false, to: r.holder.type_name.clone()}, r.target.type_name.clone()));
         }
     }
     let pick: Vec<&(Step, String)> = all.iter().filter(|(_, at)| can_share(m, cur, at)).collect();
@@ -84,7 +83,8 @@ pub struct RightsPath {
 }
 
 /// Parse and check a rights-path condition for objects of type `t`: `<path> = %me`, 1 to 3
-/// steps, each over a reference marked `@rightsRelevant`.
+/// steps over any references. The references a path uses become rights-relevant (see
+/// `Model::grant_sides`).
 pub fn rights_path(m: &Model, t: &str, src: &str) -> Result<RightsPath> {
     let e = fhirpath::parse(src)?;
     let path = match &e {
@@ -100,9 +100,6 @@ pub fn rights_path(m: &Model, t: &str, src: &str) -> Result<RightsPath> {
     let mut steps = vec![];
     for n in &path {
         let s = step(m, &cur, n).map_err(|e| e.with("expr", src))?;
-        if !s.rights_relevant {
-            return Err(bad("path.not_rights_relevant", "rights paths only follow references marked @rightsRelevant", src).with("name", n.clone()));
-        }
         cur = s.to.clone();
         steps.push(s);
     }

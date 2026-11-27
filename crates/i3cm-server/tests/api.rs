@@ -69,6 +69,8 @@ fn test_model() -> Model {
     c.references.push(rf("t:Staff.team", "t:Staff", "team", "t:Team", "members"));
     c.references.push(rf("t:Team.leader", "t:Team", "leader", "base:Person", "leads"));
     c.references.push(rf("t:LeaveRequest.applicant", "t:LeaveRequest", "applicant", "base:Person", "leaveRequests"));
+    // not used by any rights path: an ordinary reference
+    c.references.push(rf("t:Team.mascot", "t:Team", "mascot", "base:Person", "mascotOf"));
     c.modules.push(
         serde_json::from_value(json!({
             "name": "t", "requires": ["base"], "rooms": ["tsub"], "i18n": {},
@@ -81,7 +83,11 @@ fn test_model() -> Model {
                 {"name": "t:no-person-sub", "rights": [{"sign": "-", "art": ["read"], "types": ["base:Person"], "room": "tsub"}]},
                 {"name": "t:block-person", "rights": [{"sign": "block", "art": ["read"], "types": ["base:Person"], "room": "root"}]},
                 {"name": "t:lead-leave", "rights": [{"sign": "+", "art": ["write"], "types": ["t:LeaveRequest"], "room": "root", "when": "applicant.team.leader = %me"}]},
-                {"name": "t:read-persons", "rights": [{"sign": "+", "art": ["read"], "types": ["base:Person"], "room": "root"}]}
+                {"name": "t:read-persons", "rights": [{"sign": "+", "art": ["read"], "types": ["base:Person"], "room": "root"}]},
+                {"name": "t:team-writer", "rights": [{"sign": "+", "art": ["create", "write"], "types": ["t:Team"], "room": "root"}]},
+                {"name": "t:team-granter", "rights": [{"sign": "+", "art": ["write", "grant"], "types": ["t:Team"], "room": "root"}]},
+                {"name": "t:person-writer", "rights": [{"sign": "+", "art": ["write"], "types": ["base:Person"], "room": "root"},
+                    {"sign": "+", "art": ["read"], "types": ["t:Team"], "room": "root"}]}
             ]
         }))
         .unwrap(),
@@ -839,6 +845,82 @@ async fn rights_path_team_leader_sees_team_requests() {
     // a person without the profile sees nothing
     let (_x, cx) = env.person("nobody", &[]).await;
     assert!(cx.list("t:LeaveRequest", &q).await.unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn rights_relevant_links_need_grant_and_references_have_no_direction() {
+    let env = env().await;
+    let mut o = Order::new();
+    o.create("team", None, json!({"t:Team": {"name": "x"}}));
+    let team = env.admin.order(&o).await.unwrap().created["team"];
+    // t:Team.leader is rights-relevant (the path applicant.team.leader leaves from the team):
+    // write on the team is not enough to make oneself its leader
+    let (w, cw) = env.person("writer", &[]).await;
+    env.admin.assign("t:team-writer", w).await.unwrap();
+    env.admin.assign("t:read-persons", w).await.unwrap();
+    let mut o = Order::new();
+    o.link("t:Team.leader", team, w);
+    let e = cw.order(&o).await.unwrap_err();
+    assert!(format!("{e}").contains("grant"), "{e}");
+    // with the right to grant rights on teams it is allowed, and so is unlinking
+    let (g, cg) = env.person("granter", &[]).await;
+    env.admin.assign("t:team-granter", g).await.unwrap();
+    env.admin.assign("t:read-persons", g).await.unwrap();
+    let mut o = Order::new();
+    o.link("t:Team.leader", team, g);
+    let link = cg.order(&o).await.unwrap().links[0];
+    let mut o = Order::new();
+    o.unlink("t:Team.leader", link);
+    assert!(cw.order(&o).await.is_err(), "unlinking needs grant too");
+    assert!(cg.order(&o).await.is_ok());
+    // an object created in the same order has no access to change yet: create suffices
+    let mut o = Order::new();
+    o.create("own", None, json!({"t:Team": {"name": "own"}}));
+    o.link("t:Team.leader", "own", w);
+    assert!(cw.order(&o).await.is_ok());
+    // an ordinary reference: write on either object and read on the other, from either side
+    let (pw, cpw) = env.person("pw", &[]).await;
+    env.admin.assign("t:person-writer", pw).await.unwrap();
+    let mut o = Order::new();
+    o.link("t:Team.mascot", team, pw);
+    let link = cpw.order(&o).await.expect("write on the person, read on the team").links[0];
+    let mut o = Order::new();
+    o.unlink("t:Team.mascot", link);
+    assert!(cpw.order(&o).await.is_ok());
+    let (n, cn) = env.person("none", &[]).await;
+    env.admin.assign("t:read-persons", n).await.unwrap();
+    let mut o = Order::new();
+    o.link("t:Team.mascot", team, n);
+    assert!(cn.order(&o).await.is_err(), "read on both sides is not enough");
+}
+
+#[tokio::test]
+async fn deleting_ends_references_and_takes_parts_along() {
+    let env = env().await;
+    let acc = env.accounts().await;
+    let mut o = Order::new();
+    env.journal(&mut o, 7, "2026-02-03", acc);
+    let r = env.admin.order(&o).await.unwrap();
+    let (e, line) = (r.created["e7"], r.created["e7-debit"]);
+    // deleting an account that a line still needs (min 1) is refused
+    let mut o = Order::new();
+    o.delete(acc.0);
+    assert!(env.admin.order(&o).await.is_err());
+    // deleting the whole deletes its parts and ends their references at both ends
+    let mut o = Order::new();
+    o.delete(e);
+    env.admin.order(&o).await.unwrap();
+    assert_eq!(env.admin.get_object(line, None).await.unwrap_err().status(), Some(404));
+    let open: i64 = {
+        let c = env.store.client().await.unwrap();
+        let t = env.store.model.ref_def("fibu:JournalLine.account").unwrap().clone();
+        c.query_one(&format!("SELECT count(*) FROM {} WHERE a_id=$1 AND valid_to IS NULL", i3cm_store::schema::ref_table(&t)), &[&line]).await.unwrap().get(0)
+    };
+    assert_eq!(open, 0, "references of deleted objects end");
+    // now the account can go
+    let mut o = Order::new();
+    o.delete(acc.0);
+    env.admin.order(&o).await.unwrap();
 }
 
 #[test]

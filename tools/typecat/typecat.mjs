@@ -282,6 +282,11 @@ export function buildCatalog(typesDir, opts = {}) {
                 if (!["partOf", "ordered", "rightsRelevant", "min"].includes(d.name))
                   throw new CatError("typecat.unknown_decorator", "decorator not allowed on reference", { type: full, attribute: name, decorator: d.name });
               }
+              if (has("rightsRelevant") && issues) {
+                // no longer needed: a reference is rights-relevant when a profile's rights path runs over it
+                issues.push({ severity: "warning", source: "typecat", error_id: "ref.rights_relevant_ignored",
+                  description: "@rightsRelevant is ignored: rights paths may run over any reference", params: { type: full, attribute: name }, ...(posOf(m) ?? {}) });
+              }
               const minDeco = decos.find((d) => d.name === "min");
               const targetCard = back ? cardOf(literalStrings(back)[0]) : { min: 0, max: null };
               const holderMin = list ? (minDeco ? Number(minDeco.args[0].text) : 0) : (optional ? 0 : 1);
@@ -289,7 +294,7 @@ export function buildCatalog(typesDir, opts = {}) {
                 name: `${full}.${name}`,
                 holder: { type: full, end: name, min: holderMin, max: list ? null : 1 },
                 target: { type: classFullName(target.typeName ?? target), end: literalStrings(end)[0], ...targetCard },
-                partOf: has("partOf"), ordered: has("ordered"), rightsRelevant: has("rightsRelevant"),
+                partOf: has("partOf"), ordered: has("ordered"),
               });
             }
             const vt = valueType(tn, full, name);

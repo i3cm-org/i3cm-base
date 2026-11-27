@@ -119,11 +119,30 @@ Built-in views need no definition and are listed before the module aspects:
 A right of a profile may carry a condition, a **rights path** (`when`): the right applies only
 to objects from which the path reaches the caller, e.g. `applicant.team.leader = %me`.
 `%me` is the account or any of its groups. Limits (checked when the catalog is loaded): plus
-rights on named types, at most 3 steps, only over references marked `@rightsRelevant`.
+rights on named types, at most 3 steps, over any references.
 Rights paths grant read, write and delete on existing objects (create, place and remove need
 unconditional rights). Lists combine the rooms with unconditional rights and each rights path
 as separate branches of one `UNION` (no `OR` in a query) and page by key, so every page costs
 the same (measured: 100,000 objects, page of 50, room plus rights path in REP-018).
+
+## References, rights and deletion
+
+References have no direction; the end that declares a reference in TypeScript only names it.
+
+* **Linking or unlinking** an ordinary reference needs write on one of the two objects (create for an
+  object of the same order; rights paths count) and read on the other, from either side.
+* A reference is **rights-relevant** when a rights path of some profile runs over it. Linking or
+  unlinking it changes who may access the object at the end the path leaves from (for
+  `applicant.team.leader = %me`: the request at `applicant`, the staff member at `team`, the team at
+  `leader`). That needs, in addition, the unconditional right `grant` on that object, so that write on a
+  project does not let anyone make themselves its lead. An object created in the same order has no
+  access to change yet: there the unconditional `create` suffices, consistent with creating objects,
+  where rights paths do not count either.
+* Group memberships need `grant` on the membership; the room tree (`base:Room.parent`) needs write on
+  the child room.
+* **Deleting** an object ends all its references at both ends. It is refused only if an object at the
+  other end would fall below the minimum of its end (`integrity.violated`, `cardinality.violated`).
+  Parts (`@partOf`) are deleted with their whole; the right to delete the whole suffices.
 
 ## Writing through views
 

@@ -237,3 +237,12 @@ test("a carrier belongs to the namespace of its module", () => {
   const bad = tmpTypes({ "modules/x/module.ts": mod("x") + `export const carriers = [ { name: "y:system", profiles: [] } ];\n`, "modules/x/types.ts": `import { ns } from "../../lib";\n@ns("x")\nexport class A { t!: string; }\n` });
   assert.throws(() => buildCatalog(bad), (e) => e.id === "typecat.foreign_carrier_name");
 });
+
+test("@rightsRelevant is ignored with a warning", () => {
+  const dir = tmpTypes({ "modules/x/module.ts": mod("x"), "modules/x/types.ts": `import { ns, rightsRelevant, Ref } from "../../lib";\n@ns("x")\nexport class A { @rightsRelevant owner?: Ref<A, "ownedAs">; }\n` });
+  const issues = [];
+  const cat = buildCatalog(dir, { issues });
+  const r = cat.references.find((x) => x.name === "x:A.owner");
+  assert.ok(r && !("rightsRelevant" in r));
+  assert.ok(issues.some((i) => i.severity === "warning" && i.error_id === "ref.rights_relevant_ignored"));
+});

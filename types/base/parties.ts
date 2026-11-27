@@ -1,4 +1,4 @@
-import { ns, abstractType, requires, rightsRelevant, indexed, unique, Ref, Formatted, LocalDate } from "../lib";
+import { ns, abstractType, requires, indexed, unique, Ref, Formatted, LocalDate } from "../lib";
 
 @ns("base")
 export class Person {
@@ -40,6 +40,6 @@ export class AgentAccount extends Account {
 /** Membership of a carrier in a group (technical, distinct from business memberships). */
 @ns("base")
 export class GroupMembership {
-  @rightsRelevant group!: Ref<Group, "memberships">;
-  @rightsRelevant member!: Ref<Carrier, "groupMemberships">;
+  group!: Ref<Group, "memberships">;
+  member!: Ref<Carrier, "groupMemberships">;
 }

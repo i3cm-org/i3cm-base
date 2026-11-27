@@ -56,7 +56,7 @@ export function noGrep(..._names: string[]): ClassDeco { return noopC; }
 export function min(_n: number): FieldDeco { return noopF; }
 /** "Part of": this object is a part of the referenced whole. */
 export const partOf: FieldDeco = noopF;
-/** References used in rights paths. */
+/** @deprecated Ignored (typecat warns): a reference is rights-relevant when a profile's rights path runs over it. */
 export const rightsRelevant: FieldDeco = noopF;
 /** Ordered reference (rank per target). */
 export const ordered: FieldDeco = noopF;

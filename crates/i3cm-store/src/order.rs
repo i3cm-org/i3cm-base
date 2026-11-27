@@ -110,6 +110,9 @@ pub(crate) struct Exec<'a> {
     pub(crate) links: Vec<Uuid>,
 }
 
+/// One end of a reference in a rights check: object, its room path, its types.
+type End3<'a> = (Uuid, &'a [Uuid], &'a BTreeMap<String, bool>);
+
 fn denied(art: Art, t: &str) -> BaseError {
     BaseError::not_found("rights.denied", "not allowed or not found").with("art", art.as_str()).with("type", t)
 }
@@ -354,6 +357,15 @@ impl Exec<'_> {
         Ok(out)
     }
 
+    /// End every active reference of `id` (both ends), except the room tree.
+    async fn end_references(&self, id: Uuid) -> Result<()> {
+        for r in self.m.catalog.references.iter().filter(|r| r.name != "base:Room.parent") {
+            let sql = format!("UPDATE {} SET valid_to=$3 WHERE tenant_id=$1 AND (a_id=$2 OR b_id=$2) AND valid_to IS NULL", ref_table(r));
+            self.tx.execute(&sql, &[&self.tenant(), &id, &self.txn]).await.map_err(db)?;
+        }
+        Ok(())
+    }
+
     /// All objects on the other side of active references of `id`.
     async fn neighbours(&self, id: Uuid) -> Result<Vec<Uuid>> {
         let mut out = vec![];
@@ -546,6 +558,8 @@ impl Exec<'_> {
                 let id = self.resolve(id)?;
                 let (_, path) = self.live(id).await?;
                 self.check(Art::Delete, ANY, &path)?;
+                // parts ("part of") go with their whole: the right to delete the whole suffices;
+                // every reference of a deleted object ends, at both ends (references have no direction)
                 let mut todo = vec![id];
                 while let Some(x) = todo.pop() {
                     self.version_state(x, None, true).await?;
@@ -554,6 +568,7 @@ impl Exec<'_> {
                         self.touched.insert(n);
                     }
                     todo.extend(self.parts_of(x).await?);
+                    self.end_references(x).await?;
                 }
             }
             Op::Move { id, room } => {
@@ -584,7 +599,7 @@ impl Exec<'_> {
                 if !self.m.set_is_a(tb.keys(), &def.target.type_name) {
                     return Err(BaseError::invalid("reference.wrong_type", "target lacks the required type").with("reference", reference.clone()).with("type", def.target.type_name.clone()));
                 }
-                self.check_link_rights(&def, a, &pa, b, &tb, &pb).await?;
+                self.check_link_rights(&def, (a, &pa, &ta), (b, &pb, &tb)).await?;
                 let rid = Uuid::new_v4();
                 self.tx
                     .execute(
@@ -658,8 +673,10 @@ impl Exec<'_> {
                     .ok_or_else(|| BaseError::not_found("reference.not_found", "reference not found").with("id", id.to_string()))?;
                 let (a, b): (Uuid, Uuid) = (row.get(0), row.get(1));
                 let (_, pa) = self.live(a).await?;
-                let art = if def.holder.type_name == GROUP_MEMBERSHIP { Art::Grant } else { Art::Write };
-                self.check_on(art, &def.holder.type_name, &pa, a).await?;
+                let (_, pb) = self.live(b).await?;
+                let ta = types_of(self.tx, tenant, a, None).await?;
+                let tb_types = types_of(self.tx, tenant, b, None).await?;
+                self.check_link_rights(&def, (a, &pa, &ta), (b, &pb, &tb_types)).await?;
                 self.tx
                     .execute(&format!("UPDATE {tb} SET valid_to=$3 WHERE tenant_id=$1 AND id=$2 AND valid_to IS NULL"), &[&tenant, id, &self.txn])
                     .await
@@ -674,35 +691,74 @@ impl Exec<'_> {
         Ok(())
     }
 
-    async fn check_link_rights(&self, def: &RefDef, a: Uuid, pa: &[Uuid], b: Uuid, tb: &BTreeMap<String, bool>, pb: &[Uuid]) -> Result<()> {
-        // writing the reference: write right on the holding type part (create for new objects);
-        // technical group memberships need the right to grant rights
-        let holder = &def.holder.type_name;
-        let art = if holder == GROUP_MEMBERSHIP {
-            Art::Grant
-        } else if self.new_objects.contains(&a) {
-            Art::Create
-        } else {
-            Art::Write
-        };
-        let holder_ok = match art {
-            Art::Write => self.allowed_on(Art::Write, holder, pa, a).await?,
-            Art::Create => self.ctx.subject.may(art, holder, pa) || self.ctx.subject.may(Art::Write, holder, pa),
-            _ => self.ctx.subject.may(art, holder, pa),
-        };
-        if !holder_ok {
-            return Err(denied(art, holder));
-        }
-        // referencing needs read access to the target (rights paths count)
-        let mut readable = false;
-        for t in self.m.table_types(&tb.keys().cloned().collect()) {
-            if (def.target.type_name == ANY || tb.contains_key(&t) || self.m.is_a(&t, &def.target.type_name)) && self.allowed_on(Art::Read, &t, pb, b).await? {
-                readable = true;
-                break;
+    /// Candidate types for a right at one end of a reference: the end type, or for `*` every
+    /// table type of the object.
+    fn end_candidates(&self, need: &str, types: &BTreeMap<String, bool>) -> Vec<String> {
+        if need == ANY { self.m.table_types(&types.keys().cloned().collect()).into_iter().collect() } else { vec![need.to_string()] }
+    }
+
+    /// May the caller write (create, for an object of this order) the object at this end?
+    async fn may_write_end(&self, need: &str, (id, path, types): End3<'_>) -> Result<bool> {
+        for t in self.end_candidates(need, types) {
+            let ok = if self.new_objects.contains(&id) {
+                self.ctx.subject.may(Art::Create, &t, path) || self.ctx.subject.may(Art::Write, &t, path)
+            } else {
+                self.allowed_on(Art::Write, &t, path, id).await?
+            };
+            if ok {
+                return Ok(true);
             }
         }
-        if !readable {
-            return Err(denied(Art::Read, &def.target.type_name));
+        Ok(false)
+    }
+
+    /// May the caller read the object at this end (rights paths count)?
+    async fn may_read_end(&self, need: &str, (id, path, types): End3<'_>) -> Result<bool> {
+        for t in self.m.table_types(&types.keys().cloned().collect()) {
+            if (need == ANY || types.contains_key(&t) || self.m.is_a(&t, need)) && self.allowed_on(Art::Read, &t, path, id).await? {
+                return Ok(true);
+            }
+        }
+        Ok(false)
+    }
+
+    /// Rights to link or unlink: references have no direction.
+    /// - normal reference: write (create for an object of this order) on one of the two objects
+    ///   and read on the other;
+    /// - rights-relevant reference (a rights path of some profile runs over it): in addition the
+    ///   right to grant rights on each existing object at an end a rights path leaves from, since
+    ///   its access changes; objects created in the same order have no access to change yet;
+    /// - technical group memberships need the right to grant rights on the membership, and the
+    ///   room tree (`base:Room.parent`) needs write on the child room, as before.
+    async fn check_link_rights(&self, def: &RefDef, a: End3<'_>, b: End3<'_>) -> Result<()> {
+        let (holder, target) = (&def.holder.type_name, &def.target.type_name);
+        if holder == GROUP_MEMBERSHIP || def.name == "base:Room.parent" {
+            let art = if holder == GROUP_MEMBERSHIP { Art::Grant } else { Art::Write };
+            let ok = match art {
+                Art::Grant => self.ctx.subject.may(art, holder, a.1),
+                _ => self.may_write_end(holder, a).await?,
+            };
+            if !ok {
+                return Err(denied(art, holder));
+            }
+            if !self.may_read_end(target, b).await? {
+                return Err(denied(Art::Read, target));
+            }
+        } else {
+            let (wa, wb) = (self.may_write_end(holder, a).await?, self.may_write_end(target, b).await?);
+            if !wa && !wb {
+                return Err(denied(if self.new_objects.contains(&a.0) { Art::Create } else { Art::Write }, holder));
+            }
+            let ok = (wa && self.may_read_end(target, b).await?) || (wb && self.may_read_end(holder, a).await?);
+            if !ok {
+                return Err(denied(Art::Read, if wa { target } else { holder }));
+            }
+        }
+        let (gh, gt) = self.m.grant_sides(&def.name);
+        for (need, end, from) in [(holder, a, gh), (target, b, gt)] {
+            if from && !self.new_objects.contains(&end.0) && !self.end_candidates(need, end.2).iter().any(|t| self.ctx.subject.may(Art::Grant, t, end.1)) {
+                return Err(denied(Art::Grant, need).with("reference", def.name.clone()));
+            }
         }
         Ok(())
     }

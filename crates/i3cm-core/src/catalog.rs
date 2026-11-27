@@ -296,7 +296,9 @@ pub struct RefDef {
     #[serde(rename = "partOf")]
     pub part_of: bool,
     pub ordered: bool,
-    #[serde(rename = "rightsRelevant")]
+    /// Former `@rightsRelevant` marker; ignored. Which references are rights-relevant follows from
+    /// the rights paths of the profiles (`Model::grant_sides`).
+    #[serde(rename = "rightsRelevant", default, skip_serializing_if = "std::ops::Not::not")]
     pub rights_relevant: bool,
 }
 
@@ -335,6 +337,10 @@ pub struct Model {
     refs: HashMap<String, usize>,
     /// direct subtypes
     children: HashMap<String, Vec<String>>,
+    /// Rights-relevant references: per reference, whether a rights path of some profile leaves
+    /// from the holder end (`.0`) and/or from the target end (`.1`). Linking or unlinking an
+    /// existing object at such an end changes its access and needs the right to grant rights.
+    grant_sides: HashMap<String, (bool, bool)>,
 }
 
 impl Model {
@@ -357,8 +363,24 @@ impl Model {
                 children.entry(p.clone()).or_default().push(t.name.clone());
             }
         }
-        let m = Model { catalog, types, refs, children };
+        let mut m = Model { catalog, types, refs, children, grant_sides: HashMap::new() };
         crate::checker::check(&m)?;
+        let mut sides: HashMap<String, (bool, bool)> = HashMap::new();
+        for p in m.profiles() {
+            for r in &p.rights {
+                let Some(w) = &r.when else { continue };
+                for t in &r.types {
+                    // checked above: every condition is a valid rights path
+                    if let Ok(rp) = crate::paths::rights_path(&m, t, w) {
+                        for st in &rp.steps {
+                            let e = sides.entry(st.reference.clone()).or_default();
+                            if st.from_holder { e.0 = true } else { e.1 = true }
+                        }
+                    }
+                }
+            }
+        }
+        m.grant_sides = sides;
         Ok(m)
     }
 
@@ -377,6 +399,17 @@ impl Model {
     pub fn require_type(&self, name: &str) -> Result<&TypeDef> {
         self.type_def(name).ok_or_else(|| BaseError::invalid("type.unknown", "unknown type").with("type", name))
     }
+    /// Ends of a reference from which a rights path leaves: (holder end, target end). Linking an
+    /// existing object at such an end needs the right to grant rights on it.
+    pub fn grant_sides(&self, reference: &str) -> (bool, bool) {
+        self.grant_sides.get(reference).copied().unwrap_or((false, false))
+    }
+
+    /// Is the reference used by some rights path?
+    pub fn is_rights_relevant(&self, reference: &str) -> bool {
+        self.grant_sides.contains_key(reference)
+    }
+
     pub fn ref_def(&self, name: &str) -> Option<&RefDef> {
         self.refs.get(name).map(|&i| &self.catalog.references[i])
     }
