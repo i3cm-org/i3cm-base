@@ -51,3 +51,16 @@ export function offsetOf(text, line, column = 1) {
 export function baseName(path) {
   return path.split("/").pop();
 }
+
+/** UTF-8 text as base64 (for the `content` operation of orders). */
+export function base64Text(text) {
+  const bytes = new TextEncoder().encode(text);
+  let bin = "";
+  for (let i = 0; i < bytes.length; i += 0x8000) bin += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
+  return btoa(bin);
+}
+
+/** Order operation that sets the content of an object (id or ref) to a text file. */
+export function contentOp(id, path, text) {
+  return { op: "content", id, mediaType: "text/plain", filename: baseName(path), base64: base64Text(text) };
+}
