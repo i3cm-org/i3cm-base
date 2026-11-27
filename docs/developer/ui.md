@@ -1,6 +1,7 @@
 # Browser UI (test app)
 
-`ui/` is a static artifact: one HTML document with its own code, a public `config.json`, and
+`ui/` is a static artifact: one HTML document with its own code, the frame components in
+`ui/components/` and their logic in `ui/lib/` (plain ES modules), a public `config.json`, and
 vendored libraries under `ui/vendor/` (versions and licences in `ui/vendor/VERSIONS.md`). There
 is no build step and no server-side rendering. Deploying is copying the directory.
 
@@ -36,6 +37,55 @@ The frame fills `data-attr="<key>"` with the values of the aspect attribute `<ke
   header (ascending, descending), fires `open` for a row. It **always** offers "Download as
   XLSX" and "Download as CSV"; the export contains **all** rows and is made by the server
   (`GET /v1/aspects/{aspect}/tab?…&format=xlsx|csv`), so agents get the same through the API.
+
+## Tool pages
+
+Besides templates for nodes, a module file may hold **one page template**
+`<template data-page="<ns>" data-title="…">`. The frame shows a button with the title in the
+header and, when it is pressed (address `#p=<ns>`), the page instead of tree and detail pane.
+The page consists of frame components only; the frame hands every element that has an `api`
+property its authenticated `fetch`, so all data still comes from the public API. A page is
+offered when its module has at least one aspect in the tenant (inactive modules have none).
+
+```html
+<template data-page="studio" data-title="Studio">
+  <base-source-workbench container-type="studio:ModuleSource" name-attr="name"
+    file-type="studio:SourceFile" path-attr="path" file-end="files"
+    file-reference="studio:SourceFile.module" room="studio" check="/v1/catalog/check">
+  </base-source-workbench>
+</template>
+```
+
+### Components for tool pages
+
+* `<base-code-editor>`: plain text editor with highlighting (`language`: `typescript`, `html`,
+  `plain`), line numbers, markers per line (`markers = [{line, severity, message}]`), `readonly`,
+  and a `mode` word that the stylesheet maps to a background (`type`, `aspect`, `view`). Methods
+  `reveal(line, column)` and `insert(text)`; events `change` (debounced) and `save` (Ctrl+S). It
+  is a textarea under a highlighted copy, so editing, undo and input methods are the browser's.
+* `<base-diagram>`: simplified UML class diagram of catalog types (`catalog = …`): boxes with
+  attributes, references with both end names and cardinalities, generalisation, part-of, and
+  dashed prerequisites. The context menu shows referenced or referencing types, hides a type or
+  opens it (`open-type` event); `pick()` waits for the user to click a type. Boxes can be moved;
+  with `storage-key`, shown types and positions are kept in `localStorage`.
+* `<base-issue-list>`: problems of a check sorted by severity, file and line, with a summary;
+  fires `reveal` with the chosen issue.
+* `<base-source-workbench>`: the three components put together for source files stored as
+  objects with content: a container type per module, a file type with a path attribute. Left the
+  packages of the catalog (types, aspects, profiles, rooms; the edited module writable, the
+  others read only), in the middle the editor with the modes type (`types/`, `module.ts`),
+  aspect (`aspects/`) and view (`ui/`), right the issues, above the diagram. Saving writes the
+  content of each changed file (`PUT /v1/objects/{id}/content`); new and deleted files are
+  orders. The unsaved state of all files is sent to `check` (`POST /v1/catalog/check`, see
+  api.md) after each change; its answer `{catalog, issues, positions}` feeds packages, diagram,
+  issues and jumps to declarations (while there are errors the last good catalog stays).
+  Without `check` (or if the server lacks it) the installed catalog (`GET /v1/catalog`) is shown,
+  and declarations are found in the sources by name. Elements of other modules open read only
+  from their sources (`GET /v1/modules/{name}/sources`).
+
+The logic without DOM (catalog index, diagram model, layout, highlighting, issue conversion,
+finding declarations) lives in `ui/lib/` and has unit tests: `node --test ui/test/*.test.mjs` (Node's test runner,
+no dependencies).
 
 ## Layout
 

@@ -101,6 +101,78 @@
   }
   .summary .card dt { color: var(--colorNeutralForeground3); }
   .summary .card dd { margin: 0; }
+  /* ---- frame components for tool pages: editor, diagram, issues, source workbench ---- */
+  #page { min-height: 0; overflow: auto; padding: 12px 16px; }
+  base-code-editor { display: block; min-height: 240px; }
+  .ce { display: grid; grid-template-columns: 48px 1fr; height: 100%; min-height: 240px; overflow: hidden;
+    font-family: var(--fontFamilyMonospace, ui-monospace, monospace); font-size: 13px; line-height: 18px;
+    border: 1px solid var(--colorNeutralStroke1); border-radius: var(--borderRadiusMedium, 4px); background: var(--ce-bg, var(--colorNeutralBackground1)); }
+  base-code-editor[mode="aspect"] { --ce-bg: color-mix(in srgb, var(--colorPaletteGreenBackground2, #9fd89f) 25%, var(--colorNeutralBackground1)); }
+  base-code-editor[mode="view"] { --ce-bg: color-mix(in srgb, var(--colorPaletteMarigoldBackground2, #f9e2ae) 35%, var(--colorNeutralBackground1)); }
+  .ce-gutter { overflow: hidden; padding: 8px 0; text-align: right; color: var(--colorNeutralForeground4); user-select: none;
+    border-right: 1px solid var(--colorNeutralStroke2); }
+  .ce-line { padding-right: 8px; height: 18px; }
+  .ce-line.ce-error { background: color-mix(in srgb, var(--colorPaletteRedBackground3, #d13438) 25%, transparent); color: var(--colorPaletteRedForeground1); }
+  .ce-line.ce-warning { background: color-mix(in srgb, var(--colorPaletteYellowBackground3, #fde300) 30%, transparent); }
+  .ce-body { position: relative; overflow: hidden; }
+  .ce-hl, .ce-input { position: absolute; inset: 0; margin: 0; padding: 8px; border: 0; font: inherit; line-height: inherit;
+    white-space: pre; tab-size: 2; overflow-wrap: normal; word-break: normal; }
+  .ce-hl { pointer-events: none; color: var(--colorNeutralForeground1); }
+  .ce-input { width: 100%; height: 100%; resize: none; outline: none; background: transparent; color: transparent;
+    caret-color: var(--colorNeutralForeground1); overflow: auto; }
+  .ce-input::selection { background: color-mix(in srgb, var(--colorBrandBackground) 30%, transparent); color: transparent; }
+  .tk-keyword { color: var(--colorPaletteBerryForeground1, #c239b3); }
+  .tk-type { color: var(--colorPaletteTealForeground2, #038387); }
+  .tk-string { color: var(--colorPaletteDarkOrangeForeground1, #ca5010); }
+  .tk-number { color: var(--colorPaletteBlueForeground2, #0f6cbd); }
+  .tk-comment { color: var(--colorNeutralForeground3); font-style: italic; }
+  .tk-decorator { color: var(--colorPaletteGrapeForeground2, #8764b8); }
+  base-issue-list { display: block; }
+  .il-head { display: flex; gap: 10px; margin-bottom: 8px; font-weight: var(--fontWeightSemibold); }
+  .il-green { color: var(--colorPaletteGreenForeground1); } .il-red { color: var(--colorPaletteRedForeground1); }
+  .il-count { color: var(--colorNeutralForeground3); }
+  .il { list-style: none; margin: 0; padding: 0; }
+  .il li { display: grid; grid-template-columns: 20px 1fr; gap: 0 6px; padding: 6px; border-radius: var(--borderRadiusMedium, 4px); cursor: pointer; }
+  .il li:hover, .il li:focus-visible { background: var(--colorNeutralBackground1Hover); outline: none; }
+  .il-sev { font-weight: var(--fontWeightSemibold); text-align: center; }
+  .il-error .il-sev { color: var(--colorPaletteRedForeground1); } .il-warning .il-sev { color: var(--colorPaletteDarkOrangeForeground1); }
+  .il-meta { grid-column: 2; color: var(--colorNeutralForeground3); font-size: var(--fontSizeBase200); word-break: break-all; }
+  base-diagram { display: block; }
+  .dg { position: relative; overflow: auto; height: 100%; }
+  .dg-svg { display: block; font-family: var(--fontFamilyBase); font-size: 12px; }
+  .dg-box rect { fill: var(--colorNeutralBackground1); stroke: var(--colorNeutralStroke1); }
+  .dg-box:focus rect, .dg-box:hover rect { stroke: var(--colorBrandStroke1, #0f6cbd); stroke-width: 2; }
+  .dg-box { cursor: grab; outline: none; }
+  .dg-box line { stroke: var(--colorNeutralStroke1); }
+  .dg-title { font-weight: 600; fill: var(--colorNeutralForeground1); }
+  .dg-abstract .dg-title { font-style: italic; }
+  .dg-attr, .dg-label, .dg-empty { fill: var(--colorNeutralForeground2); }
+  .dg-label { font-size: 11px; }
+  .dg-edge line { stroke: var(--colorNeutralForeground3); fill: none; }
+  .dg-requires line, .dg-brings line, .dg-imprintsOn line { stroke-dasharray: 5 4; }
+  .dg-hollow { fill: var(--colorNeutralBackground1); stroke: var(--colorNeutralForeground3); }
+  .dg-filled { fill: var(--colorNeutralForeground3); }
+  .dg-open { fill: none; stroke: var(--colorNeutralForeground3); }
+  .dg-menu { position: absolute; z-index: 10; display: grid; min-width: 200px; padding: 4px; background: var(--colorNeutralBackground1);
+    border-radius: var(--borderRadiusMedium, 4px); box-shadow: var(--shadow16); }
+  .dg-item { text-align: left; padding: 6px 10px; border: 0; background: none; color: inherit; font: inherit; cursor: pointer; border-radius: 4px; }
+  .dg-item:hover, .dg-item:focus { background: var(--colorNeutralBackground1Hover); outline: none; }
+  .dg-hint { position: sticky; left: 0; bottom: 0; padding: 6px 10px; background: var(--colorBrandBackground2); }
+  base-source-workbench { display: block; height: 100%; }
+  .wb { display: grid; grid-template-rows: auto minmax(160px, 35%) 1fr; gap: 8px; height: 100%; min-height: 600px; }
+  .wb-bar { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+  .wb-bar .spacer { flex: 1; }
+  .wb-state { color: var(--colorNeutralForeground3); }
+  .wb-select { font: inherit; padding: 4px 6px; border-radius: 4px; border: 1px solid var(--colorNeutralStroke1);
+    background: var(--colorNeutralBackground1); color: var(--colorNeutralForeground1); max-width: 320px; }
+  .wb-top, .wb-left, .wb-mid, .wb-right { background: var(--colorNeutralBackground1); border-radius: var(--borderRadiusLarge, 6px);
+    box-shadow: var(--shadow2); padding: 8px; min-height: 0; overflow: auto; }
+  .wb-cols { display: grid; grid-template-columns: minmax(180px, 1fr) minmax(0, 3fr) minmax(200px, 1.2fr); gap: 8px; min-height: 0; }
+  .wb-mid { display: grid; grid-template-rows: auto 1fr; gap: 8px; overflow: hidden; }
+  .wb-pkg summary { cursor: pointer; font-weight: var(--fontWeightSemibold); padding: 4px 0; }
+  .wb-group { color: var(--colorNeutralForeground3); margin: 6px 0 2px 8px; font-size: var(--fontSizeBase200); }
+  .wb-items { list-style: none; margin: 0; padding: 0 0 0 16px; }
+  .wb-items li { padding: 2px 0; }
   @media (max-width: 720px) {
     main { grid-template-columns: 1fr; grid-template-rows: 40% 60%; }
     nav { border-right: 0; border-bottom: 1px solid var(--colorNeutralStroke2); }
@@ -126,6 +198,7 @@
 <div id="app" hidden>
   <header>
     <span class="title app-name">i3cm</span>
+    <span id="pages"></span>
     <span class="spacer"></span>
     <span class="user" id="user"></span>
     <fluent-button appearance="transparent" id="theme-toggle" title="Light or dark">Dark</fluent-button>
@@ -144,6 +217,8 @@
       </div>
     </section>
   </main>
+  <!-- A tool page of a module (<template data-page="<ns>">), shown instead of tree and detail. -->
+  <div id="page" hidden></div>
 </div>
 
 <!-- Templates of the modules are loaded here (modules/<namespace>.html, DEC-127). -->
@@ -155,6 +230,11 @@ import { setTheme } from "./vendor/fluentui-web-components-3.2.1/web-components-
 import { createLightTheme, createDarkTheme } from "./vendor/fluentui-tokens-1.0.0-alpha.24/lib/index.js";
 import { marked } from "./vendor/marked-18.2.0/marked.esm.js";
 import DOMPurify from "./vendor/dompurify-3.4.17/purify.es.mjs";
+// frame components for tool pages; modules use them from their templates (no module code)
+import "./components/code-editor.js";
+import "./components/diagram.js";
+import "./components/issue-list.js";
+import "./components/source-workbench.js";
 
 const PAGE = 50;
 const $ = (s) => document.querySelector(s);
@@ -378,7 +458,7 @@ async function loadModule(ns) {
     const r = await fetch(`modules/${encodeURIComponent(ns)}.html`, { cache: "no-cache" });
     if (!r.ok) return;
     const doc = new DOMParser().parseFromString(await r.text(), "text/html");
-    for (const t of doc.querySelectorAll("template[data-aspect][data-type]")) $("#module-templates").append(document.importNode(t, true));
+    for (const t of doc.querySelectorAll("template[data-aspect][data-type], template[data-page]")) $("#module-templates").append(document.importNode(t, true));
   } catch {}
 }
 /** Fill a module template: `data-attr` takes the attribute values by key, `data-field` a field of the node. */
@@ -392,6 +472,27 @@ function moduleSummary(aspect, type, detail) {
   frag.querySelectorAll("[data-field]").forEach((e) => (e.textContent = fmt(detail.node?.[e.dataset.field])));
   return frag;
 }
+
+// ---- tool pages: a module template <template data-page="<ns>" data-title="…"> built from frame components ----
+function pageTemplates() { return [...$("#module-templates").querySelectorAll("template[data-page]")]; }
+function pageButtons() {
+  $("#pages").replaceChildren(...pageTemplates().map((t) =>
+    el("fluent-button", { appearance: "transparent", onclick: () => showPage(t.dataset.page) }, t.dataset.title || t.dataset.page)));
+}
+/** Show a tool page; every element of it with an `api` property gets the authenticated fetch. */
+function showPage(ns) {
+  const t = pageTemplates().find((x) => x.dataset.page === ns);
+  if (!t) return;
+  current = null;
+  const h = `#${q({ p: ns })}`;
+  if (location.hash !== h) history.replaceState(null, "", h);
+  const page = $("#page");
+  page.replaceChildren(t.content.cloneNode(true));
+  for (const e of page.querySelectorAll("*")) if ("api" in e) e.api = api;
+  document.querySelector("main").hidden = true;
+  page.hidden = false;
+}
+function hidePage() { $("#page").hidden = true; $("#page").replaceChildren(); document.querySelector("main").hidden = false; }
 
 // ---- detail pane with tabs -----------------------------------------------------------------
 let tabSeq = 0;
@@ -429,6 +530,7 @@ function fmt(v) {
 
 let current = null;
 async function select(aspect, entry, parentName) {
+  if (!$("#page").hidden) hidePage();
   current = { aspect, entry, parentName };
   const h = `#${q({ a: aspect, n: entry.node, ...(entry.file ? { f: entry.name || entry.displayName } : {}) })}`;
   if (location.hash !== h) history.replaceState(null, "", h);
@@ -553,12 +655,15 @@ async function start() {
   await Promise.all([...new Set(aspects.filter((a) => a.name.includes(":")).map((a) => a.name.split(":")[0]))].map(loadModule));
   const tree = $("#tree");
   tree.replaceChildren(...aspects.map((a) => treeItem(a.name, { node: "", file: false, displayName: a.displayName || a.name, name: a.displayName || a.name }, "")));
+  pageButtons();
   show("#app");
   const h = new URLSearchParams(location.hash.slice(1));
-  if (h.get("a")) select(h.get("a"), { node: h.get("n") || "", file: !!h.get("f"), name: h.get("f") || undefined, displayName: h.get("f") || h.get("a") }, "");
+  if (h.get("p")) showPage(h.get("p"));
+  else if (h.get("a")) select(h.get("a"), { node: h.get("n") || "", file: !!h.get("f"), name: h.get("f") || undefined, displayName: h.get("f") || h.get("a") }, "");
 }
 window.addEventListener("hashchange", () => {
   const h = new URLSearchParams(location.hash.slice(1));
+  if (h.get("p")) return showPage(h.get("p"));
   if (h.get("a") && (h.get("a") !== current?.aspect || h.get("n") !== current?.entry.node))
     select(h.get("a"), { node: h.get("n") || "", file: !!h.get("f"), name: h.get("f") || undefined, displayName: h.get("f") || h.get("a") }, "");
 });
