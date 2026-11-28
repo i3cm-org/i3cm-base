@@ -8,8 +8,9 @@
 //! 3. Union over the carriers: allowed if one carrier allows. Otherwise denied.
 //!
 //! A right covers the art itself; `write` also covers `read`. A right on type `*` covers
-//! every type. The store expands the types of a right with their subtypes, so a right on a type
-//! also covers its subtypes' parts; callers check each type part separately.
+//! every type. A right on a type covers the part of that type in objects of its subtypes (the
+//! attributes, texts and content declared there), never the subtypes' own parts; callers check
+//! each type part separately.
 
 use crate::catalog::{Art, Sign, ANY};
 use std::collections::HashMap;

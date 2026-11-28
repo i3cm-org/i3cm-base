@@ -100,6 +100,14 @@ pub struct OrderResult {
 
 pub(crate) const GROUP_MEMBERSHIP: &str = "base:GroupMembership";
 
+/// The media type as stored and filtered on: lower case, without parameters (`text/plain;
+/// charset=utf-8` is `text/plain`), so filters on `_content.mediaType` match whatever form a
+/// client sent; an empty value becomes `application/octet-stream`.
+pub fn normalize_media_type(m: &str) -> String {
+    let base = m.split(';').next().unwrap_or("").trim().to_ascii_lowercase();
+    if base.is_empty() { "application/octet-stream".into() } else { base }
+}
+
 /// Art needed to create objects of a type (technical memberships grant rights).
 fn create_art(t: &str) -> Art {
     if t == GROUP_MEMBERSHIP { Art::Grant } else { Art::Create }
@@ -193,7 +201,8 @@ impl Exec<'_> {
 
     /// Rights to take an object and its parts (transitively) out of room path `from` and put
     /// them into `to`: remove and place per explicit type of each (a right on `*` covers every
-    /// type, a right on a type its subtypes; implied types follow their carrier). An object
+    /// type; a right on a supertype does not move a subtype object; a block on any type of the
+    /// object, implied ones and supertypes included, stops it). An object
     /// created in this order needs no remove, and create in the target serves instead of place.
     async fn check_relocate(&self, id: Uuid, from: &[Uuid], to: &[Uuid]) -> Result<()> {
         let mut todo = vec![id];
@@ -208,6 +217,18 @@ impl Exec<'_> {
                 explicit.push(ANY);
             }
             let new = self.new_objects.contains(&x);
+            // a block on any type of the object (implied ones and supertypes included) stops it
+            let blocked = |art: Art, path: &[Uuid]| -> Option<String> {
+                types.keys().flat_map(|t| self.m.ancestors(t).into_iter().map(|d| d.name.clone()).chain(std::iter::once(t.clone()))).find(|t| {
+                    matches!(self.ctx.subject.decide(art, t, path), i3cm_core::rights::Decision::Blocked { .. })
+                })
+            };
+            if let Some(t) = (!new).then(|| blocked(Art::Remove, from)).flatten() {
+                return Err(denied(Art::Remove, &t));
+            }
+            if let Some(t) = blocked(Art::Place, to) {
+                return Err(denied(Art::Place, &t));
+            }
             for t in explicit {
                 if !new {
                     self.check(Art::Remove, t, from)?;
@@ -454,6 +475,7 @@ impl Exec<'_> {
 
     async fn insert_content(&mut self, id: Uuid, sha256: &String, media_type: &String, size: i64, filename: &Option<String>) -> Result<()> {
         let tenant = self.ctx.tenant;
+        let media_type = &normalize_media_type(media_type);
         self.tx.execute("UPDATE content SET valid_to=$3 WHERE tenant_id=$1 AND object_id=$2 AND valid_to IS NULL", &[&tenant, &id, &self.txn]).await.map_err(db)?;
         self.tx
             .execute(
@@ -656,6 +678,14 @@ impl Exec<'_> {
                     return Err(BaseError::invalid("reference.wrong_type", "target lacks the required type").with("reference", reference.clone()).with("type", def.target.type_name.clone()));
                 }
                 self.check_link_rights(&def, (a, &pa, &ta), (b, &pb, &tb)).await?;
+                // parts live in the room of their whole: linking a part moves it (with its own
+                // parts), which needs the same rights as moving it; checked before anything is
+                // written, so a refused link leaves nothing behind even if module code goes on
+                let (room_a, _) = self.live(a).await?;
+                let relocate = def.part_of && room_a != room_b;
+                if relocate {
+                    self.check_relocate(a, &pa, &pb).await?;
+                }
                 let rid = Uuid::new_v4();
                 self.tx
                     .execute(
@@ -670,14 +700,8 @@ impl Exec<'_> {
                         return Err(BaseError::invalid("room.cycle", "rooms must form a tree"));
                     }
                 }
-                if def.part_of {
-                    // parts live in the room of their whole: linking a part moves it (with its
-                    // own parts), which needs the same rights as moving it
-                    let (room_a, _) = self.live(a).await?;
-                    if room_a != room_b {
-                        self.check_relocate(a, &pa, &pb).await?;
-                        self.relocate(a, room_b).await?;
-                    }
+                if relocate {
+                    self.relocate(a, room_b).await?;
                 }
                 self.links.push(rid);
                 self.touched.insert(a);
@@ -901,5 +925,15 @@ impl Exec<'_> {
         } else {
             Err(BaseError::conflict("integrity.violated", "the end state violates integrity rules").with("violations", Value::Array(violations)))
         }
+    }
+}
+
+#[cfg(test)]
+mod media_type_tests {
+    #[test]
+    fn media_types_are_stored_lower_case_without_parameters() {
+        assert_eq!(super::normalize_media_type("Text/Plain; charset=UTF-8"), "text/plain");
+        assert_eq!(super::normalize_media_type(" application/PDF "), "application/pdf");
+        assert_eq!(super::normalize_media_type(""), "application/octet-stream");
     }
 }

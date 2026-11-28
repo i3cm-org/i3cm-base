@@ -136,10 +136,14 @@ export const operations: OperationDef[] = [ { name: "greet" }, { name: "stamp", 
 export const hooks: HookDef[] = [
   { type: "example:Note", on: "create", phase: "before", op: "checkNote" },
   { type: "example:Note", on: "update", phase: "after", op: "onUpdate" },
+  { filter: "@done", on: "enter", op: "onEnter" },               // a note became done
+  { type: "example:Doc", on: "content", op: "onContent" },       // new content (phase after by default)
+  { type: "example:Doc", on: "text", textType: "example:summary", op: "onSummary" },
 ];
 export const schedules: ScheduleDef[] = [ { op: "tick", rrule: "FREQ=MINUTELY" } ];
 export const filters: Record<string, FilterDef> = {
   open: { type: "example:Note", where: "status in ('new', 'checked')" },  // @open, or @example:open elsewhere
+  done: { type: "example:Note", where: "status = 'done'" },
 };
 ```
 
@@ -151,11 +155,23 @@ export const filters: Record<string, FilterDef> = {
 * A carrier is an agent account of the module, created on activation with the given profiles.
   `impersonate` is allowed only for operations listing the carrier.
 * Hooks run in the identity of the order and get `{"phase", "on", "type", "id", "op"}` as
-  parameters. A `before` hook gets a read-only handle and rejects the order by returning an error (a
+  parameters (`textType` for text hooks). A `before` hook gets a read-only handle and rejects the order by returning an error (a
   JSON error object `{"error_id", "description", "params"}` or text). An `after` hook may write
   with `order` in the same order, with the same rights; what it writes runs hooks again, so an
   `after` hook must stop writing once its work is done (check the state first). A chain of hooks
   and calls ends at depth 16 with `module.depth`; any failing hook aborts the whole order.
+* Hooks on a type react to `create`, `update`, `delete`, `content` (new content of an object) and
+  `text` (a new text, only `textType` if given), on objects of the type and its subtypes, in phase
+  `before` or `after` (default). Content and text hooks run on every way of writing: orders,
+  `PUT …/content`, `PUT …/texts/…`, files written through views and the tools.
+* Filter hooks (`filter`, `on: "enter" | "leave"`) run after the operations of an order, for every
+  object written in it that entered or left the named filter: the state when the order first
+  touched the object against its state at the end (created into the filter is `enter`, deleted out
+  of it `leave`, out and back within one order nothing). Parameters `{"phase", "on", "filter",
+  "type", "id"}`. Only the written objects are tested: a change of another object that a filter
+  reaches over a path does not count, so a bound filter may not use `%me`, `now()`, `today()` or
+  paths over references (`filter.not_bindable` when the catalog is loaded; time-driven work belongs
+  to a schedule). What filter hooks write is tested again, up to depth 16 (`module.depth`).
 * Schedules run per tenant in the identity of the module's first carrier, exactly once per
   period even with several main containers (`FREQ=MINUTELY|HOURLY|DAILY|WEEKLY;INTERVAL=n`).
 

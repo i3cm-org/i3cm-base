@@ -104,6 +104,12 @@ impl Session {
         self.client.as_ref().expect("session is open")
     }
 
+    /// The object an id of an operation names: a UUID or the local name of an object created
+    /// earlier in this order.
+    pub fn resolve_id(&self, s: &str) -> Option<Uuid> {
+        self.state.local.get(s).copied().or_else(|| Uuid::parse_str(s).ok())
+    }
+
     /// Apply one operation immediately inside the open transaction; returns the object created
     /// by a `create` (its local name or id).
     pub async fn apply(&mut self, store: &Store, ctx: &mut Ctx, op: &Op) -> Result<Option<Uuid>> {

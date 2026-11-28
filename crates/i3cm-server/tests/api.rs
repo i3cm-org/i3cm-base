@@ -67,6 +67,13 @@ fn test_model() -> Model {
     special["extends"] = json!("t:LeaveRequest");
     c.types.push(serde_json::from_value(special).unwrap());
     c.types.push(ty("t:LeaveNote", json!([at("mark", "string")]), &["t:LeaveRequest"]));
+    // content on a supertype: a reader of the subtype only must not learn about it in queries
+    let mut scan: serde_json::Value = serde_json::to_value(ty("t:Scan", json!([at("label", "string")]), &[]) as i3cm_core::catalog::TypeDef).unwrap();
+    scan["content"] = json!({"mediaType": null});
+    c.types.push(serde_json::from_value(scan).unwrap());
+    let mut receipt: serde_json::Value = serde_json::to_value(ty("t:Receipt", json!([at("amount", "int")]), &[]) as i3cm_core::catalog::TypeDef).unwrap();
+    receipt["extends"] = json!("t:Scan");
+    c.types.push(serde_json::from_value(receipt).unwrap());
     let rf = |name: &str, h: &str, he: &str, t: &str, te: &str| {
         serde_json::from_value(json!({"name": name, "holder": {"type": h, "end": he, "min": 0, "max": 1}, "target": {"type": t, "end": te, "min": 0, "max": null},
             "partOf": false, "ordered": false, "rightsRelevant": true})).unwrap()
@@ -110,6 +117,7 @@ fn test_model() -> Model {
                 {"name": "t:leave-mover", "rights": [{"sign": "+", "art": ["read", "remove", "place"], "types": ["t:LeaveRequest"], "room": "root"}]},
                 {"name": "t:special-mover", "rights": [{"sign": "+", "art": ["read", "remove", "place"], "types": ["t:SpecialLeave"], "room": "root"}]},
                 {"name": "t:read-special", "rights": [{"sign": "+", "art": ["read"], "types": ["t:SpecialLeave"], "room": "root"}]},
+                {"name": "t:read-receipt", "rights": [{"sign": "+", "art": ["read"], "types": ["t:Receipt"], "room": "root"}]},
                 {"name": "t:attach-sub", "rights": [{"sign": "+", "art": ["create", "write", "read"], "types": ["sample:MailAttachment"], "room": "tsub"},
                     {"sign": "+", "art": ["read", "write"], "types": ["sample:MailAttachment"], "room": "root"},
                     {"sign": "+", "art": ["read"], "types": ["sample:Mail"], "room": "root"}]},
@@ -1751,7 +1759,8 @@ async fn texts_content_filters_and_file_fallback() {
     assert_eq!((folder.name.as_str(), folder.display_name.as_str()), ("attachments", "Anhänge"));
 }
 
-/// A right on a type covers its subtypes; moving checks remove and place per type of the object.
+/// A right on a supertype covers the supertype part of subtype objects, not the subtype's own
+/// part; moving checks remove and place per type of the object.
 #[tokio::test]
 async fn subtype_rights_and_move_per_type() {
     let env = env().await;
@@ -1954,3 +1963,53 @@ async fn perf_filter_rights_list() {
     assert!(p95.as_millis() <= 30, "empty result p95 <= 30 ms, got {p95:?}");
 }
 
+
+/// Free queries see content metadata only where the type part carrying the content is readable;
+/// a refused part link writes nothing even if the order goes on; point-in-time literals are
+/// checked and read as UTC.
+#[tokio::test]
+async fn query_content_guard_part_link_before_write_and_time_literals() {
+    let env = env().await;
+    let mut o = Order::new();
+    o.create("r", None, json!({"t:Receipt": {"amount": 3}, "t:Scan": {"label": "x"}}));
+    o.content("r", b"%PDF-1", "application/pdf", Some("r.pdf"));
+    let r = env.admin.order(&o).await.unwrap();
+    let (u, _) = env.person("receipt-reader", &[]).await;
+    env.admin.assign("t:read-receipt", u).await.unwrap();
+    let c = env.store.client().await.unwrap();
+    let ctx = env.store.ctx(env.init.tenant, u).await.unwrap();
+    let admin_ctx = env.store.ctx(env.init.tenant, env.init.admin_account).await.unwrap();
+    let q = |ctx: i3cm_store::Ctx, e: &'static str| {
+        let (c, store) = (&c, &env.store);
+        async move { store.query_in(c, &ctx, "t:Receipt", e, None, 50, "en").await.unwrap().0.len() }
+    };
+    assert_eq!(q(admin_ctx.clone(), "_content.mediaType = 'application/pdf'").await, 1);
+    assert_eq!(q(ctx.clone(), "_content.mediaType = 'application/pdf'").await, 0, "no oracle on content of an unreadable supertype part");
+    assert_eq!(q(ctx.clone(), "_content.exists()").await, 0);
+    assert_eq!(q(ctx.clone(), "_content.size > 0").await, 0);
+    assert_eq!(q(ctx.clone(), "amount = 3").await, 1, "the readable part still filters");
+    // a part link refused for want of move rights leaves no row behind, even if the order goes on
+    let sub = env.rooms["tsub"];
+    let mut o = Order::new();
+    o.create("m", None, json!({"sample:Mail": {"receivedAt": "2026-11-28T10:00:00Z", "sender": "x@example.org", "subject": "m"}}));
+    o.create("m2", Some(sub), json!({"sample:Mail": {"receivedAt": "2026-11-28T10:00:00Z", "sender": "x@example.org", "subject": "m2"}}));
+    o.create("a", Some(sub), json!({"sample:MailAttachment": {"filename": "a.pdf"}}));
+    o.link("sample:MailAttachment.mail", "a", "m2");
+    let m = env.admin.order(&o).await.unwrap();
+    let (att, _) = env.person("attacher2", &[]).await;
+    env.admin.assign("t:attach-sub", att).await.unwrap();
+    let actx = env.store.ctx(env.init.tenant, att).await.unwrap();
+    let mut sess = env.store.begin(&actx, &i3cm_store::session::Audit::default()).await.unwrap();
+    let mut wctx = actx.clone();
+    let op: i3cm_store::Op = serde_json::from_value(json!({"op": "link", "reference": "sample:MailAttachment.mail", "from": m.created["a"].to_string(), "to": m.created["m"].to_string()})).unwrap();
+    assert!(sess.apply(&env.store, &mut wctx, &op).await.is_err(), "no remove/place: refused");
+    sess.finish(&env.store, &mut wctx, true).await.unwrap();
+    let tb = i3cm_store::schema::ref_table(env.store.model.ref_def("sample:MailAttachment.mail").unwrap());
+    let n: i64 = c.query_one(&format!("SELECT count(*) FROM {tb} WHERE tenant_id=$1 AND a_id=$2"), &[&env.init.tenant, &m.created["a"]]).await.unwrap().get(0);
+    assert_eq!(n, 1, "the refused link was not written (only the one to m2)");
+    // literals compared with a point in time: a date or an RFC 3339 date-time, nothing else
+    assert_eq!(env.store.query_in(&c, &admin_ctx, "sample:Mail", "receivedAt + 1 days > '2026-11-28'", None, 50, "en").await.unwrap().0.len(), 2);
+    assert_eq!(env.store.query_in(&c, &admin_ctx, "sample:Mail", "receivedAt + 1 days > '2026-11-29T12:00:00+02:00'", None, 50, "en").await.unwrap().0.len(), 0);
+    let bad = env.store.query_in(&c, &admin_ctx, "sample:Mail", "receivedAt + 1 days > 'tomorrow'", None, 50, "en").await.unwrap_err();
+    assert_eq!(bad.error_id, "path.bad_filter", "{bad:?}");
+}

@@ -71,15 +71,23 @@ export type Art = "read" | "write" | "create" | "place" | "remove" | "delete" | 
 /** `when`: condition in the filter language, e.g. `"status = 'submitted' and applicant.team.leader = %me"`
  *  or a named filter `"@submitted"` (plus rights on named types only). */
 export interface RightDef { sign: Sign; art: Art[]; types: string[]; room: string; when?: string }
-export interface ProfileDef { name: string; guardian?: boolean; includes?: string[]; rights: RightDef[] }
+/** `selfService`: why this profile may write data its own conditions depend on (silences the
+ *  `rights.self_service` warning of `typecat check`). */
+export interface ProfileDef { name: string; guardian?: boolean; includes?: string[]; rights: RightDef[]; selfService?: string }
 
 /* ---------- module code (WebAssembly component) ---------- */
 /** An operation exported by the module's component. `impersonates`: carriers of this module the
  *  operation may swap to with `conn.impersonate`. */
 export interface OperationDef { name: string; impersonates?: string[] }
-/** A hook: the module's operation `op` runs `before` or `after` `create`, `update` or `delete` of
- *  objects carrying `type`. A `before` hook may reject the order. */
-export interface HookDef { type: string; on: "create" | "update" | "delete"; phase: "before" | "after"; op: string }
+/** A hook: the module's operation `op` runs `before` or `after` (default) `create`, `update`,
+ *  `delete` of objects carrying `type`, or a write of their `content` or a `text` (only `textType`
+ *  if given). A `before` hook may reject the order. A filter hook runs `op` after an order in which
+ *  a written object entered (`enter`) or left (`leave`) the named `filter`; such a filter may not
+ *  use `%me`, `now()`, `today()` or paths over references. */
+export type HookDef =
+  | { type: string; on: "create" | "update" | "delete" | "content"; phase?: "before" | "after"; op: string }
+  | { type: string; on: "text"; textType?: string; phase?: "before" | "after"; op: string }
+  | { filter: string; on: "enter" | "leave"; phase?: "after"; op: string };
 /** A scheduled run of operation `op` per tenant, RRULE (RFC 5545), in the module's own identity. */
 export interface ScheduleDef { op: string; rrule: string }
 /** A rights carrier owned by the module (an agent account created on activation). */

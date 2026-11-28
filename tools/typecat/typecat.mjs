@@ -345,10 +345,15 @@ export function buildCatalog(typesDir, opts = {}) {
             throw new CatError("typecat.foreign_carrier", "an operation may only impersonate carriers of its own module", { module: mod.name, operation: o.name, carrier: c });
         return { name: o.name, impersonates: imp };
       });
+      mod.hooks = mod.hooks.map((h) => ({ ...h, phase: h.phase ?? "after" }));
       for (const h of mod.hooks) {
         if (!opNames.has(h.op)) throw new CatError("typecat.unknown_operation", "hook names an operation the module does not declare", { module: mod.name, op: h.op });
-        if (!["create", "update", "delete"].includes(h.on) || !["before", "after"].includes(h.phase))
-          throw new CatError("typecat.bad_hook", "hook needs on: create|update|delete and phase: before|after", { module: mod.name, op: h.op });
+        const onType = ["create", "update", "delete", "content", "text"].includes(h.on) && h.type && !h.filter;
+        const onFilter = ["enter", "leave"].includes(h.on) && h.filter && !h.type && h.phase === "after";
+        if (!(onType || onFilter) || !["before", "after"].includes(h.phase) || (h.textType && h.on !== "text"))
+          throw new CatError("typecat.bad_hook",
+            "a hook needs type with on: create|update|delete|content|text (textType only with text) and phase: before|after, or filter with on: enter|leave in phase after",
+            { module: mod.name, op: h.op });
       }
       for (const sc of mod.schedules) {
         if (!opNames.has(sc.op)) throw new CatError("typecat.unknown_operation", "schedule names an operation the module does not declare", { module: mod.name, op: sc.op });
@@ -391,6 +396,81 @@ export function copyUi(catalog, outDir) {
     }
   }
   return copied;
+}
+
+// Self service: a profile that may write an attribute or reference end which a condition (`when`) of
+// a profile of the same module depends on lets its holders change who the condition admits. In the
+// same profile that is a warning (strongest feedback), in another profile of the module a hint. A
+// profile that is meant to administer such data says why with `selfService: "…"`.
+export function checkSelfService(catalog) {
+  const issues = [];
+  const types = new Map(catalog.types.map((t) => [t.name, t]));
+  const ancestors = (t) => { const out = []; for (let c = types.get(t); c; c = c.extends ? types.get(c.extends) : null) out.push(c.name); return out; };
+  // what a name on type t is: an attribute (of t or a supertype) or a reference end leading on
+  const ends = new Map();
+  for (const r of catalog.references) {
+    ends.set(`${r.holder.type}#${r.holder.end}`, { owner: r.holder.type, next: r.target.type });
+    if (r.target.end) ends.set(`${r.target.type}#${r.target.end}`, { owner: r.target.type, next: r.holder.type });
+  }
+  const lookup = (t, n) => {
+    for (const a of ancestors(t)) {
+      const def = types.get(a);
+      if (def.attributes.some((x) => x.name === n)) return { owner: a, next: null };
+      const e = ends.get(`${a}#${n}`);
+      if (e) return e;
+    }
+    return null;
+  };
+  const words = new Set(["and", "or", "not", "in", "exists", "empty", "true", "false", "now", "today", "day", "days", "week", "weeks", "month", "months", "year", "years", "hour", "hours", "minute", "minutes"]);
+  // (owner type, name) pairs a condition on type t depends on, named filters expanded once
+  const deps = (mod, t, src, depth = 0) => {
+    const out = [];
+    const text = src.replace(/'(?:[^'\\]|\\.)*'/g, "''");
+    for (const m of text.matchAll(/@([\w]+(?::[\w]+)?)/g)) {
+      const name = m[1].includes(":") ? m[1] : `${mod.name}:${m[1]}`;
+      const f = catalog.modules.flatMap((x) => x.filters ?? []).find((x) => x.name === name);
+      if (f && depth < 3) out.push(...deps(mod, f.type, f.where, depth + 1));
+    }
+    for (const m of text.replace(/@[\w:]+/g, "").matchAll(/(?<![%\w.])([A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*)/g)) {
+      let cur = t;
+      for (const seg of m[1].split(".")) {
+        if (words.has(seg) || seg.startsWith("_")) break;
+        const hit = lookup(cur, seg);
+        if (!hit) break;
+        out.push([hit.owner, seg]);
+        if (!hit.next) break;
+        cur = hit.next;
+      }
+    }
+    return out;
+  };
+  const writes = (profile, owner) => profile.rights.some((r) => r.sign === "+" && r.art.includes("write")
+    && r.types.some((x) => x === "*" || x === owner || ancestors(x).includes(owner)));
+  for (const mod of catalog.modules) {
+    for (const holder of mod.profiles) {
+      for (const right of holder.rights) {
+        if (!right.when) continue;
+        for (const t of right.types) {
+          if (t === "*") continue;
+          for (const [owner, name] of deps(mod, t, right.when)) {
+            for (const writer of mod.profiles) {
+              if (writer.selfService || !writes(writer, owner)) continue;
+              const same = writer.name === holder.name;
+              issues.push({ severity: same ? "warning" : "info", source: "typecat", error_id: "rights.self_service",
+                description: same
+                  ? `profile ${writer.name} may write ${owner}.${name}, which its own condition depends on: holders can admit themselves`
+                  : `profile ${writer.name} may write ${owner}.${name}, which a condition of profile ${holder.name} depends on`,
+                hint: "give write on this data only to an administering profile and say why with selfService: \"…\"",
+                params: { profile: writer.name, condition: holder.name, type: owner, name } });
+            }
+          }
+        }
+      }
+    }
+  }
+  // one issue per (writer, condition, type, name)
+  const seen = new Set();
+  return issues.filter((i) => { const k = JSON.stringify(i.params); if (seen.has(k)) return false; seen.add(k); return true; });
 }
 
 // Code inside the template snippets of a module's UI files (i3cm/ui/*.html): <script>, on… handlers,
@@ -526,7 +606,7 @@ if (import.meta.url === `file://${process.argv[1]}` || process.argv[1]?.endsWith
   if (checkMode) {
     const issues = [];
     let cat = null;
-    try { cat = buildCatalog(dir, { modules, issues }); issues.push(...checkUi(cat)); } catch (e) {
+    try { cat = buildCatalog(dir, { modules, issues }); issues.push(...checkUi(cat), ...checkSelfService(cat)); } catch (e) {
       if (e instanceof CatError) issues.push({ severity: "error", source: "typecat", error_id: e.id, description: e.message, params: e.params });
       else issues.push({ severity: "error", source: "typecat", error_id: "typecat.internal", description: String(e?.message ?? e), params: {} });
     }

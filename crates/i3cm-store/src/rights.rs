@@ -169,6 +169,22 @@ impl Store {
     }
 }
 
+impl Store {
+    /// Does object `id` match filter `f` on entry type `t`, in the state the transaction of `c`
+    /// sees (false when the object lacks the type or is deleted)? For bindable filters (hooks,
+    /// events): no caller, time or paths involved.
+    pub async fn object_matches<C: GenericClient>(&self, c: &C, ctx: &Ctx, t: &str, f: &Filter, id: Uuid) -> Result<bool> {
+        let mut params: Vec<Param> = vec![Box::new(ctx.tenant), Box::new(id)];
+        let cond_sql = self.filter_sql(f, t, ctx, &mut params)?;
+        let tb = crate::schema::type_table(self.model.require_type(t)?);
+        let sql = format!(
+            "SELECT EXISTS (SELECT 1 FROM {tb} x JOIN object_state s ON s.tenant_id=x.tenant_id AND s.object_id=x.object_id AND s.valid_to IS NULL AND s.deleted_at IS NULL \
+             WHERE x.tenant_id=$1 AND x.object_id=$2 AND x.valid_to IS NULL AND x.deleted_at IS NULL AND {cond_sql})"
+        );
+        Ok(c.query_one(&sql, &crate::sql::refs(&params)).await.map_err(db)?.get(0))
+    }
+}
+
 /* ---------------------------------------------------------- filters in SQL */
 
 use crate::schema::{col, type_table};
@@ -236,8 +252,10 @@ impl Store {
         match other {
             // a date compared with a shifted operand: as a point in time
             Some(Operand::Now | Operand::Today | Operand::Shifted(..)) => {
-                let s = v.as_str().ok_or_else(|| BaseError::invalid("path.bad_filter", "a point in time is compared with a date or date-time"))?;
-                params.push(Box::new(s.to_string()));
+                let s = i3cm_core::paths::point_in_time(v)
+                    .ok_or_else(|| BaseError::invalid("path.bad_filter", "a point in time is compared with a date (YYYY-MM-DD) or a date-time with offset (RFC 3339)").with("value", v.to_string()))?;
+                let t = chrono::DateTime::parse_from_rfc3339(&s).map_err(|_| BaseError::invalid("path.bad_filter", "not a point in time"))?.with_timezone(&chrono::Utc);
+                params.push(Box::new(t));
                 return Ok(format!("${}::timestamptz", params.len()));
             }
             Some(Operand::Attr(a)) => {
@@ -263,7 +281,10 @@ impl Store {
         Ok(match o {
             Operand::Attr(a) if a.steps.is_empty() => self.entry_attr(q, a, params)?,
             Operand::Attr(a) => format!("o.{}", col(&a.name)),
-            Operand::Content(f) => Self::content_sql(f),
+            Operand::Content(f) => match self.content_guard(q, params)? {
+                Some(r) => format!("(CASE WHEN {r} THEN {} END)", Self::content_sql(f)),
+                None => Self::content_sql(f),
+            },
             Operand::Now => "now()".into(),
             Operand::Today => "current_date".into(),
             Operand::Shifted(base, op, n, unit) => {
@@ -314,6 +335,27 @@ impl Store {
         Ok(c)
     }
 
+    /// Condition that the caller may read the type part carrying the content of the entry object,
+    /// for free queries when that part is not the entry type itself (else none).
+    fn content_guard(&self, q: &mut FilterSql, params: &mut Vec<Param>) -> Result<Option<String>> {
+        if !q.guard {
+            return Ok(None);
+        }
+        let has = |d: &i3cm_core::catalog::TypeDef| d.content.is_some();
+        let owner = self
+            .model
+            .ancestors(q.t)
+            .into_iter()
+            .find(|d| has(d))
+            .or_else(|| self.model.attachable_types(q.t).into_iter().find(|d| has(d)))
+            .map(|d| d.name.clone());
+        match owner {
+            Some(o) if o == q.t => Ok(None),
+            Some(o) => Ok(Some(self.readable_part(q, &o, params)?)),
+            None => Ok(Some("false".into())),
+        }
+    }
+
     /// An attribute of the entry object (own, inherited, host or attached), guarded if asked.
     fn entry_attr(&self, q: &mut FilterSql, a: &AttrRef, params: &mut Vec<Param>) -> Result<String> {
         let v = self.attr_col(q.t, &a.owner, &a.name);
@@ -332,10 +374,21 @@ impl Store {
             // two-valued: an absent value makes a comparison false, so its negation true
             Filter::Not(a) => format!("(({}) IS NOT TRUE)", self.fsql(q, a, params)?),
             Filter::RefMe(steps) => {
+                // in a free query, the first end must belong to a type part the caller may read
+                let guard = match (q.guard, steps.first()) {
+                    (true, Some(s0)) => {
+                        let owner = self.model.ref_def(&s0.reference).map(|d| if s0.from_holder { d.holder.type_name.clone() } else { d.target.type_name.clone() });
+                        match owner {
+                            Some(o) if o != q.t => format!("{} AND ", self.readable_part(q, &o, params)?),
+                            _ => String::new(),
+                        }
+                    }
+                    _ => String::new(),
+                };
                 params.push(Box::new(q.ctx.subject.carriers.clone()));
                 let me = params.len();
                 let (from, last) = self.path_sql(steps);
-                format!("EXISTS (SELECT 1 {from} AND {last} = ANY(${me}))")
+                format!("({guard}EXISTS (SELECT 1 {from} AND {last} = ANY(${me})))")
             }
             Filter::RefExists(steps, yes) => {
                 let (from, _) = self.path_sql(steps);
@@ -359,10 +412,13 @@ impl Store {
                     params.len()
                 )
             }
-            Filter::HasContent(yes) => format!(
-                "{}EXISTS (SELECT 1 FROM content cn WHERE cn.tenant_id=x.tenant_id AND cn.object_id=x.object_id AND cn.valid_to IS NULL)",
-                if *yes { "" } else { "NOT " }
-            ),
+            Filter::HasContent(yes) => {
+                let guard = self.content_guard(q, params)?.map(|r| format!("{r} AND ")).unwrap_or_default();
+                format!(
+                    "{}({guard}EXISTS (SELECT 1 FROM content cn WHERE cn.tenant_id=x.tenant_id AND cn.object_id=x.object_id AND cn.valid_to IS NULL))",
+                    if *yes { "" } else { "NOT " }
+                )
+            }
             Filter::In(o, vals) => {
                 let lhs = self.operand_sql(q, o, None, params)?;
                 let mut items = vec![];

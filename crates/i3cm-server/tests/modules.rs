@@ -795,3 +795,87 @@ fn hooks_run_on_every_write_path_not_only_orders() {
         assert_eq!(note["parts"][0]["attributes"]["status"], "open", "rolled back");
     });
 }
+
+#[test]
+fn filter_hooks_fire_on_enter_and_leave_and_content_hooks_on_every_write_path() {
+    rt().block_on(async {
+        let e = Env::new().await;
+        e.activate().await;
+        let count = |notes: &[String], what: &str, id: &str| notes.iter().filter(|n| *n == &format!("{what} {id}")).count();
+        let create = |title: &str, status: &str| json!({"ops": [{"op": "create", "ref": "n", "types": {"example:Note": {"title": title, "status": status}}}]});
+        // created inside the filter: enter; created outside: nothing
+        let (code, v) = e.post("/v1/orders", create("born done", "done")).await;
+        assert_eq!(code, 200, "{v}");
+        let born = v["created"]["n"].as_str().unwrap().to_string();
+        let (_, v) = e.post("/v1/orders", create("plain", "open")).await;
+        let id = v["created"]["n"].as_str().unwrap().to_string();
+        let notes = e.notes().await;
+        assert_eq!(count(&notes, "enter", &born), 1, "{notes:?}");
+        assert_eq!(count(&notes, "enter", &id), 0, "{notes:?}");
+        let upd = |id: &str, attrs: Value| json!({"ops": [{"op": "update", "id": id, "types": {"example:Note": attrs}}]});
+        // open -> done: enter exactly once (the after hook writing doneAt keeps it inside)
+        let (code, v) = e.post("/v1/orders", upd(&id, json!({"status": "done"}))).await;
+        assert_eq!(code, 200, "{v}");
+        // a change inside the filter: nothing
+        let (code, v) = e.post("/v1/orders", upd(&id, json!({"author": "x"}))).await;
+        assert_eq!(code, 200, "{v}");
+        let notes = e.notes().await;
+        assert_eq!((count(&notes, "enter", &id), count(&notes, "leave", &id)), (1, 0), "{notes:?}");
+        // done -> open: leave
+        let (code, v) = e.post("/v1/orders", upd(&id, json!({"status": "open"}))).await;
+        assert_eq!(code, 200, "{v}");
+        assert_eq!(count(&e.notes().await, "leave", &id), 1);
+        // out and back in within one order: no transition (state at first touch against the end)
+        let (code, v) = e.post("/v1/orders", json!({"ops": [
+            {"op": "update", "id": born, "types": {"example:Note": {"status": "open"}}},
+            {"op": "update", "id": born, "types": {"example:Note": {"status": "done"}}}]})).await;
+        assert_eq!(code, 200, "{v}");
+        let notes = e.notes().await;
+        assert_eq!((count(&notes, "enter", &born), count(&notes, "leave", &born)), (1, 0), "{notes:?}");
+        // deleting an object inside the filter: leave
+        let (code, v) = e.post("/v1/orders", json!({"ops": [{"op": "delete", "id": born}]})).await;
+        assert_eq!(code, 200, "{v}");
+        let notes = e.notes().await;
+        assert_eq!(count(&notes, "leave", &born), 1, "{notes:?}");
+
+        // content and text hooks: order, PUT .../content, PUT .../texts, the tools (FUSE path)
+        let (code, v) = e.post("/v1/orders", json!({"ops": [
+            {"op": "create", "ref": "d", "types": {"example:Doc": {"name": "doc"}}},
+            {"op": "content", "id": "d", "mediaType": "text/plain", "filename": "a.txt", "base64": "YQ=="}]})).await;
+        assert_eq!(code, 200, "{v}");
+        let doc = v["created"]["d"].as_str().unwrap().to_string();
+        assert_eq!(count(&e.notes().await, "content", &doc), 1, "content written in the creating order");
+        let r = e.http.put(format!("{}/v1/objects/{doc}/content", e.base)).bearer_auth(&e.token).header("Content-Type", "Text/Plain; charset=UTF-8").body("b").send().await.unwrap();
+        assert_eq!(r.status().as_u16(), 200, "{}", r.text().await.unwrap());
+        assert_eq!(count(&e.notes().await, "content", &doc), 2, "PUT .../content runs the hook");
+        let (_, obj) = e.get(&format!("/v1/objects/{doc}")).await;
+        assert_eq!(obj["content"]["mediaType"], "text/plain", "media type stored normalized: {obj}");
+        let put_text = |tt: &str, body: &str| e.http.put(format!("{}/v1/objects/{doc}/texts/{tt}", e.base)).bearer_auth(&e.token).body(body.to_string()).send();
+        assert_eq!(put_text("example:summary", "sum").await.unwrap().status().as_u16(), 200);
+        assert_eq!(put_text("example:remark", "rem").await.unwrap().status().as_u16(), 200);
+        assert_eq!(count(&e.notes().await, "summary", &doc), 1, "only the hooked text type");
+        let (code, v) = e.post("/v1/tools/exec", json!({"cwd": "/", "argv": ["ls", format!("/_id/{doc}")]})).await;
+        assert_eq!(code, 200, "{v}");
+        let listing = v.to_string();
+        let file = ["summary.txt", "summary"].into_iter().find(|f| listing.contains(f)).unwrap_or("summary.txt");
+        let (code, v) = e.post("/v1/tools/exec", json!({"cwd": "/", "argv": ["sed", "-i", "s/sum/SUM/", format!("/_id/{doc}/{file}")]})).await;
+        assert_eq!(code, 200, "{v} {listing}");
+        assert_eq!(count(&e.notes().await, "summary", &doc), 2, "writing through the tools runs the hook: {listing}");
+    });
+}
+
+#[test]
+fn hooks_refuse_filters_with_me_time_or_paths_at_load() {
+    for (tag, wher) in [("now", "due < now()"), ("path", "parent.status = 'done'")] {
+        let p = example_catalog_variant(&format!("unbindable-{tag}"), |ex| {
+            ex["filters"] = json!([{ "name": "example:done", "type": "example:Note", "where": wher }]);
+        });
+        let e = i3cm_server::load_catalog(&p).err().map(|e| e.to_string()).unwrap_or_default();
+        assert!(e.contains("filter.not_bindable"), "{tag}: {e}");
+    }
+    // the same filters are fine where no hook binds them (views, profiles)
+    let p = example_catalog_variant("unbound-now", |ex| {
+        ex["filters"] = json!([{ "name": "example:done", "type": "example:Note", "where": "status = 'done'" }, { "name": "example:late", "type": "example:Note", "where": "due < now()" }]);
+    });
+    assert!(i3cm_server::load_catalog(&p).is_ok());
+}

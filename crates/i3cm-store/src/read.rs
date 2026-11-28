@@ -2,7 +2,7 @@
 //! an attribute filter, date grouping, groups and members, rooms, content and texts.
 
 use crate::context::{db, Ctx};
-use crate::order::GROUP_MEMBERSHIP;
+use crate::order::{Op, Order, GROUP_MEMBERSHIP};
 use crate::schema::{col, ref_table, type_table};
 use crate::sql::{param, refs, Param};
 use crate::Store;
@@ -292,7 +292,18 @@ impl Store {
             cond.push(format!("{guard}{} = ${}", self.attr_col(t, &owner.name, k), params.len()));
         }
         let wh = if cond.is_empty() { String::new() } else { format!(" AND {}", cond.join(" AND ")) };
-        let sql = format!("SELECT x.object_id FROM {tb} x WHERE x.tenant_id=$1 AND x.valid_to IS NULL AND x.deleted_at IS NULL{wh} ORDER BY x.object_id LIMIT {limit}");
+        // rights in the query, before the limit: objects the caller may not read do not use up places
+        let access = self.access(ctx, Art::Read, t)?;
+        if access.is_empty() {
+            return Ok(vec![]);
+        }
+        let branches = self.rights_branches(&access, ctx, &mut params)?;
+        let from = format!("FROM {tb} x JOIN object_state s ON s.tenant_id=x.tenant_id AND s.object_id=x.object_id AND s.valid_to IS NULL AND s.deleted_at IS NULL");
+        let parts: Vec<String> = branches
+            .iter()
+            .map(|b| format!("(SELECT x.object_id {from} WHERE x.tenant_id=$1 AND x.valid_to IS NULL AND x.deleted_at IS NULL{wh} AND {b} ORDER BY x.object_id LIMIT {limit})"))
+            .collect();
+        let sql = format!("SELECT object_id FROM ({}) u ORDER BY object_id LIMIT {limit}", parts.join(" UNION "));
         let rows = c.query(&sql, &refs(&params)).await.map_err(db)?;
         let mut out = vec![];
         for r in rows {
@@ -746,27 +757,14 @@ impl Store {
 
     /// Store binary content (new version).
     pub async fn put_content(&self, ctx: &Ctx, id: Uuid, data: &[u8], media_type: &str, filename: Option<&str>) -> Result<i64> {
-        let _turn = self.write_turn(ctx.tenant).await;
-        let mut c = self.client().await?;
-        let tx = c.transaction().await.map_err(db)?;
-        // the write turn first, then the checks on the state the write will see
-        let (txn, seq) = crate::session::clock(&*tx, ctx.tenant).await?;
-        let (t, path, _) = self.type_with(&*tx, ctx, id, |t| self.model.type_def(t).map(|d| d.content.is_some()).unwrap_or(false)).await?;
-        if !self.may_obj(&*tx, ctx, Art::Write, &t, &path, id).await? {
-            return Err(BaseError::not_found("rights.denied", "not allowed or not found").with("art", "write").with("type", t));
-        }
-        let sha = self.store_bytes(&*tx, data).await?;
-        tx.execute("INSERT INTO txn (tenant_id, id, account, seq) VALUES ($1,$2,$3,$4)", &[&ctx.tenant, &txn, &ctx.me(), &seq]).await.map_err(db)?;
-        tx.execute("UPDATE content SET valid_to=$3 WHERE tenant_id=$1 AND object_id=$2 AND valid_to IS NULL", &[&ctx.tenant, &id, &txn]).await.map_err(db)?;
-        let size = data.len() as i64;
-        tx.execute(
-            "INSERT INTO content (tenant_id, object_id, sha256, media_type, size, filename, valid_from) VALUES ($1,$2,$3,$4,$5,$6,$7)",
-            &[&ctx.tenant, &id, &sha, &media_type, &size, &filename, &txn],
-        )
-        .await
-        .map_err(db)?;
-        tx.commit().await.map_err(db)?;
-        Ok(txn)
+        // an order like any other write: rights checked there, hooks of module code run
+        let sha = {
+            let c = self.client().await?;
+            self.store_bytes(&**c, data).await?
+        };
+        let op = Op::SetContent { id: id.to_string(), sha256: sha, media_type: media_type.to_string(), size: data.len() as i64, filename: filename.map(Into::into) };
+        let mut c = ctx.clone();
+        Ok(self.execute(&mut c, &Order { dry_run: false, ops: vec![op] }).await?.txn)
     }
 
     /// Content of an object with where its bytes are (file store or database), for streaming.
@@ -797,27 +795,10 @@ impl Store {
     }
 
     pub async fn put_text(&self, ctx: &Ctx, id: Uuid, text_type: &str, content: &str) -> Result<i64> {
-        let def = self.model.text_type(text_type).ok_or_else(|| BaseError::invalid("text.unknown_type", "unknown text type").with("textType", text_type))?.clone();
-        let _turn = self.write_turn(ctx.tenant).await;
-        let mut c = self.client().await?;
-        let tx = c.transaction().await.map_err(db)?;
-        let (txn, seq) = crate::session::clock(&*tx, ctx.tenant).await?;
-        let (t, path, _) = self.type_with(&*tx, ctx, id, |t| t == def.owner).await?;
-        if !self.may_obj(&*tx, ctx, Art::Write, &t, &path, id).await? {
-            return Err(BaseError::not_found("rights.denied", "not allowed or not found").with("art", "write").with("type", t));
-        }
-        tx.execute("INSERT INTO txn (tenant_id, id, account, seq) VALUES ($1,$2,$3,$4)", &[&ctx.tenant, &txn, &ctx.me(), &seq]).await.map_err(db)?;
-        tx.execute("UPDATE text_part SET valid_to=$4 WHERE tenant_id=$1 AND object_id=$2 AND text_type=$3 AND valid_to IS NULL", &[&ctx.tenant, &id, &text_type, &txn])
-            .await
-            .map_err(db)?;
-        tx.execute(
-            "INSERT INTO text_part (tenant_id, object_id, text_type, content, media_type, valid_from) VALUES ($1,$2,$3,$4,$5,$6)",
-            &[&ctx.tenant, &id, &text_type, &content, &def.media_type, &txn],
-        )
-        .await
-        .map_err(db)?;
-        tx.commit().await.map_err(db)?;
-        Ok(txn)
+        self.model.text_type(text_type).ok_or_else(|| BaseError::invalid("text.unknown_type", "unknown text type").with("textType", text_type))?;
+        let op = Op::SetText { id: id.to_string(), text_type: text_type.to_string(), content: content.to_string() };
+        let mut c = ctx.clone();
+        Ok(self.execute(&mut c, &Order { dry_run: false, ops: vec![op] }).await?.txn)
     }
 
     pub async fn get_text(&self, ctx: &Ctx, id: Uuid, text_type: &str) -> Result<(String, String)> {

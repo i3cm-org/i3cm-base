@@ -15,7 +15,7 @@ use i3cm_store::order::{Op, Order, OrderResult};
 use i3cm_store::session::{Audit, Session};
 use i3cm_store::Store;
 use serde_json::{json, Map, Value};
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
@@ -64,6 +64,9 @@ struct Shared {
     /// Room tree of the open transaction, once an operation changed it: every frame, handle and
     /// hook of the order works on this one (rooms created anywhere stay known everywhere).
     rooms: std::sync::Mutex<Option<i3cm_store::context::RoomTree>>,
+    /// Bound filters an object written in this order belonged to when the order first touched
+    /// it (empty for objects created in it), later the state last reported to filter hooks.
+    trans: std::sync::Mutex<HashMap<Uuid, BTreeSet<usize>>>,
 }
 
 impl Shared {
@@ -97,6 +100,36 @@ struct Inner {
     pres: HashMap<String, ModulePre<HostState>>,
     model: Arc<Model>,
     ticks: Arc<AtomicU64>,
+    /// Named filters that hooks are bound to, with those hooks.
+    bound: Vec<Bound>,
+}
+
+/// A named filter bound to filter hooks (`on: enter | leave`).
+struct Bound {
+    name: String,
+    type_name: String,
+    filter: i3cm_core::paths::Filter,
+    hooks: Vec<(String, HookDef)>,
+}
+
+/// The named filters of all filter hooks of the catalog, parsed once.
+fn bound_filters(model: &Model) -> IResult<Vec<Bound>> {
+    let mut out: Vec<Bound> = vec![];
+    for m in &model.catalog.modules {
+        for h in &m.hooks {
+            let Some(name) = &h.filter else { continue };
+            let n = name.strip_prefix('@').unwrap_or(name);
+            let def = model.named_filter(n, &m.name).ok_or_else(|| BaseError::internal("hook names an unknown filter").with("filter", name.clone()))?;
+            if let Some(b) = out.iter_mut().find(|b| b.name == def.name) {
+                b.hooks.push((m.name.clone(), h.clone()));
+                continue;
+            }
+            let ns = def.name.split(':').next().unwrap_or(&m.name);
+            let filter = i3cm_core::paths::filter_in(model, &def.type_name, &def.filter, i3cm_core::paths::Origin::Catalog, ns, &BTreeSet::new())?;
+            out.push(Bound { name: def.name.clone(), type_name: def.type_name.clone(), filter, hooks: vec![(m.name.clone(), h.clone())] });
+        }
+    }
+    Ok(out)
 }
 
 /// The runtime: compiled components of all modules that have operations.
@@ -142,7 +175,8 @@ impl Runtime {
                 engine.increment_epoch();
             });
         }
-        let inner = Arc::new(Inner { engine, pres, model: store.model.clone(), ticks });
+        let bound = bound_filters(&store.model)?;
+        let inner = Arc::new(Inner { engine, pres, model: store.model.clone(), ticks, bound });
         // every order of the base (shortcuts, files of aspects, tools) runs the hooks as well
         store.set_order_runner(Arc::new(HookRunner { inner: inner.clone() }));
         Ok(Runtime { inner, store })
@@ -173,7 +207,13 @@ impl Runtime {
     /// Run an operation inside an already open session (scheduler: the claim is part of it).
     pub(crate) async fn run_in(&self, session: Session, ctx: &Ctx, module: &str, op: &str, params: &Value) -> IResult<Value> {
         let order = self.shared(session);
-        let res = run_frame(self.inner.clone(), order.clone(), ctx.clone(), module.to_string(), op.to_string(), 0, true, params.to_string()).await;
+        let mut res = run_frame(self.inner.clone(), order.clone(), ctx.clone(), module.to_string(), op.to_string(), 0, true, params.to_string()).await;
+        if let Ok(Ok(_)) = &res {
+            let mut c = ctx.clone();
+            if let Err(e) = settle(&self.inner, &order, &mut c).await {
+                res = Ok(Err(err(e)));
+            }
+        }
         let session = order.session.lock().await.take();
         let Some(session) = session else { return Err(BaseError::internal("order lost its session")) };
         match res {
@@ -205,7 +245,13 @@ impl Runtime {
 
 fn shared_with(inner: &Inner, store: &Store, session: Session) -> Arc<Shared> {
     let now = inner.ticks.load(Ordering::SeqCst);
-    Arc::new(Shared { store: store.clone(), session: Mutex::new(Some(session)), deadline_tick: now + ORDER_TIMEOUT.as_millis() as u64 / TICK_MS, rooms: std::sync::Mutex::new(None) })
+    Arc::new(Shared {
+        store: store.clone(),
+        session: Mutex::new(Some(session)),
+        deadline_tick: now + ORDER_TIMEOUT.as_millis() as u64 / TICK_MS,
+        rooms: std::sync::Mutex::new(None),
+        trans: std::sync::Mutex::new(HashMap::new()),
+    })
 }
 
 async fn execute_with(inner: &Arc<Inner>, store: &Store, ctx: &mut Ctx, order: &Order) -> IResult<OrderResult> {
@@ -219,7 +265,7 @@ async fn execute_with(inner: &Arc<Inner>, store: &Store, ctx: &mut Ctx, order: &
         for (i, op) in order.ops.iter().enumerate() {
             apply_with_hooks(inner, &shared, ctx, op, 0).await.map_err(|e| e.with("op_index", i))?;
         }
-        Ok::<_, BaseError>(())
+        settle(inner, &shared, ctx).await
     }
     .await;
     let session = shared.session.lock().await.take().ok_or_else(|| BaseError::internal("order lost its session"))?;
@@ -259,32 +305,136 @@ fn is_timeout(e: &wasmtime::Error) -> bool {
     matches!(e.downcast_ref::<wasmtime::Trap>(), Some(wasmtime::Trap::Interrupt))
 }
 
+/// What a hook learns about an operation: event, types of the object, object, text type.
+type HookEvent = (&'static str, Vec<String>, Option<Uuid>, Option<String>);
+
 /// Which (event, types) an operation touches, for hooks.
-async fn hook_event(shared: &Shared, ctx: &Ctx, op: &Op) -> IResult<Option<(&'static str, Vec<String>, Option<Uuid>)>> {
+async fn hook_event(shared: &Shared, ctx: &Ctx, op: &Op) -> IResult<Option<HookEvent>> {
     let id_types = |id: &str| -> IResult<Uuid> { Uuid::parse_str(id).map_err(|_| BaseError::invalid("order.unknown_ref", "neither a UUID nor a local reference").with("id", id)) };
+    let types_of = |uid: Uuid| async move {
+        let g = shared.session.lock().await;
+        let s = g.as_ref().ok_or_else(|| BaseError::internal("order lost its session"))?;
+        shared.store.types_in(s.client(), ctx.tenant, uid).await
+    };
+    // contents and texts of objects created earlier in the order count as well
+    let resolve = |id: String| async move { shared.session.lock().await.as_ref().and_then(|s| s.resolve_id(&id)) };
     Ok(match op {
-        Op::Create { types, .. } => Some(("create", types.keys().cloned().collect(), None)),
+        Op::Create { types, .. } => Some(("create", types.keys().cloned().collect(), None, None)),
         Op::Update { id, .. } | Op::Delete { id } => {
             let Ok(uid) = id_types(id) else { return Ok(None) };
-            let g = shared.session.lock().await;
-            let s = g.as_ref().ok_or_else(|| BaseError::internal("order lost its session"))?;
-            let set = shared.store.types_in(s.client(), ctx.tenant, uid).await?;
-            Some((if matches!(op, Op::Delete { .. }) { "delete" } else { "update" }, set, Some(uid)))
+            Some((if matches!(op, Op::Delete { .. }) { "delete" } else { "update" }, types_of(uid).await?, Some(uid), None))
+        }
+        Op::Content { id, .. } | Op::SetContent { id, .. } => {
+            let Some(uid) = resolve(id.clone()).await else { return Ok(None) };
+            Some(("content", types_of(uid).await?, Some(uid), None))
+        }
+        Op::Text { id, text_type, .. } | Op::SetText { id, text_type, .. } => {
+            let Some(uid) = resolve(id.clone()).await else { return Ok(None) };
+            Some(("text", types_of(uid).await?, Some(uid), Some(text_type.clone())))
         }
         _ => None,
     })
 }
 
-fn hooks_for<'a>(model: &'a Model, on: &str, phase: &str, types: &[String]) -> Vec<(&'a str, &'a HookDef)> {
+fn hooks_for<'a>(model: &'a Model, on: &str, phase: &str, types: &[String], text_type: Option<&str>) -> Vec<(&'a str, &'a HookDef)> {
     let mut out = vec![];
     for m in &model.catalog.modules {
         for h in &m.hooks {
-            if h.on == on && h.phase == phase && types.iter().any(|t| t == &h.type_name || model.is_a(t, &h.type_name)) {
+            if h.filter.is_some() || h.on != on || h.phase != phase {
+                continue;
+            }
+            if let (Some(want), Some(tt)) = (&h.text_type, text_type)
+                && want != tt
+            {
+                continue;
+            }
+            if types.iter().any(|t| t == &h.type_name || model.is_a(t, &h.type_name)) {
                 out.push((m.name.as_str(), h));
             }
         }
     }
     out
+}
+
+/// The object an operation changes, if it already exists (for filter transitions).
+fn target_of(op: &Op) -> Option<&str> {
+    match op {
+        Op::Update { id, .. }
+        | Op::Attach { id, .. }
+        | Op::Detach { id, .. }
+        | Op::Delete { id }
+        | Op::Move { id, .. }
+        | Op::Content { id, .. }
+        | Op::SetContent { id, .. }
+        | Op::Text { id, .. }
+        | Op::SetText { id, .. } => Some(id),
+        _ => None,
+    }
+}
+
+/// The bound filters object `id` belongs to now, as the open transaction sees it.
+async fn membership(rt: &Inner, shared: &Shared, ctx: &Ctx, id: Uuid) -> IResult<BTreeSet<usize>> {
+    let g = shared.session.lock().await;
+    let s = g.as_ref().ok_or_else(|| BaseError::internal("order lost its session"))?;
+    let mut out = BTreeSet::new();
+    for (i, b) in rt.bound.iter().enumerate() {
+        if shared.store.object_matches(s.client(), ctx, &b.type_name, &b.filter, id).await? {
+            out.insert(i);
+        }
+    }
+    Ok(out)
+}
+
+/// Before an operation changes an existing object for the first time in the order: remember
+/// which bound filters it belongs to.
+async fn note_before(rt: &Inner, shared: &Shared, ctx: &Ctx, op: &Op) -> IResult<()> {
+    if rt.bound.is_empty() {
+        return Ok(());
+    }
+    let Some(id) = target_of(op) else { return Ok(()) };
+    let Some(uid) = shared.session.lock().await.as_ref().and_then(|s| s.resolve_id(id)) else { return Ok(()) };
+    if shared.trans.lock().unwrap_or_else(|e| e.into_inner()).contains_key(&uid) {
+        return Ok(());
+    }
+    let m = membership(rt, shared, ctx, uid).await?;
+    shared.trans.lock().unwrap_or_else(|e| e.into_inner()).entry(uid).or_insert(m);
+    Ok(())
+}
+
+/// At the end of an order: run the filter hooks of every object written in it that entered or
+/// left a bound filter (state at first touch against now); what they write is evaluated again,
+/// up to the depth limit.
+async fn settle(rt: &Arc<Inner>, shared: &Arc<Shared>, ctx: &mut Ctx) -> IResult<()> {
+    if rt.bound.is_empty() {
+        return Ok(());
+    }
+    for round in 0..MAX_DEPTH {
+        let ids: Vec<(Uuid, BTreeSet<usize>)> = shared.trans.lock().unwrap_or_else(|e| e.into_inner()).iter().map(|(k, v)| (*k, v.clone())).collect();
+        let mut fired = false;
+        for (id, before) in ids {
+            let now = membership(rt, shared, ctx, id).await?;
+            if now == before {
+                continue;
+            }
+            shared.trans.lock().unwrap_or_else(|e| e.into_inner()).insert(id, now.clone());
+            for (on, set) in [("enter", now.difference(&before).copied().collect::<Vec<_>>()), ("leave", before.difference(&now).copied().collect::<Vec<_>>())] {
+                for i in set {
+                    let b = &rt.bound[i];
+                    let run: Vec<&(String, HookDef)> = b.hooks.iter().filter(|(m, h)| h.on == on && !ctx.inactive.contains(m)).collect();
+                    for (module, h) in run {
+                        fired = true;
+                        let params = json!({ "phase": "after", "on": on, "filter": b.name, "type": b.type_name, "id": id });
+                        hook_frame(rt, shared, ctx, module, &h.op, round, true, params).await?;
+                        shared.rooms_in(ctx);
+                    }
+                }
+            }
+        }
+        if !fired {
+            return Ok(());
+        }
+    }
+    Err(BaseError::invalid("module.depth", "filter hooks keep changing objects (depth limit)"))
 }
 
 /// Apply one operation of an order, with the hooks around it, in the identity of the order.
@@ -294,12 +444,13 @@ async fn apply_with_hooks(rt: &Arc<Inner>, shared: &Arc<Shared>, ctx: &mut Ctx, 
     shared.rooms_in(ctx);
     let ev = hook_event(shared, ctx, op).await?;
     let op_json = serde_json::to_value(op).unwrap_or(Value::Null);
-    if let Some((on, types, id)) = &ev {
-        for (module, h) in hooks_for(&rt.model, on, "before", types) {
-            let params = json!({ "phase": "before", "on": on, "type": h.type_name, "id": id, "op": op_json });
+    if let Some((on, types, id, tt)) = &ev {
+        for (module, h) in hooks_for(&rt.model, on, "before", types, tt.as_deref()) {
+            let params = json!({ "phase": "before", "on": on, "type": h.type_name, "id": id, "textType": tt, "op": op_json });
             hook_frame(rt, shared, ctx, module, &h.op, depth, false, params).await?;
         }
     }
+    note_before(rt, shared, ctx, op).await?;
     let created = {
         let mut g = shared.session.lock().await;
         let s = g.as_mut().ok_or_else(|| BaseError::internal("order lost its session"))?;
@@ -308,10 +459,13 @@ async fn apply_with_hooks(rt: &Arc<Inner>, shared: &Arc<Shared>, ctx: &mut Ctx, 
         shared.rooms_out(ctx);
         r?
     };
-    if let Some((on, types, id)) = &ev {
+    if let Some(c) = created {
+        shared.trans.lock().unwrap_or_else(|e| e.into_inner()).entry(c).or_default();
+    }
+    if let Some((on, types, id, tt)) = &ev {
         let id = id.or(created);
-        for (module, h) in hooks_for(&rt.model, on, "after", types) {
-            let params = json!({ "phase": "after", "on": on, "type": h.type_name, "id": id, "op": op_json });
+        for (module, h) in hooks_for(&rt.model, on, "after", types, tt.as_deref()) {
+            let params = json!({ "phase": "after", "on": on, "type": h.type_name, "id": id, "textType": tt, "op": op_json });
             hook_frame(rt, shared, ctx, module, &h.op, depth, true, params).await?;
             shared.rooms_in(ctx);
         }

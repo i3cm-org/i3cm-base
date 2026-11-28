@@ -186,6 +186,11 @@ async fn check_in(work: &Path, body: CheckBody, installed: &[(String, Vec<String
         "?".to_string()
     };
     if let Some(issues) = v["issues"].as_array_mut() {
+        // self-service notes concern the modules being checked, not installed ones read along
+        issues.retain(|i| {
+            i["error_id"] != "rights.self_service"
+                || i["params"]["profile"].as_str().and_then(|p| p.split(':').next()).is_some_and(|m| given.contains(m))
+        });
         for i in issues.iter_mut() {
             if let Some(f) = i["file"].as_str().map(strip) {
                 i["file"] = json!(f);

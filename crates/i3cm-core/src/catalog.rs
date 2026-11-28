@@ -66,13 +66,27 @@ pub struct FilterDef {
     pub filter: String,
 }
 
+/// A hook: an operation of the module run around writes. Either on a type (`on`: `create`,
+/// `update`, `delete`, `content`, `text`) or on a named filter (`filter` with `on`: `enter`,
+/// `leave`: an object written in the order entered or left the filter).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct HookDef {
-    #[serde(rename = "type")]
+    #[serde(rename = "type", default, skip_serializing_if = "String::is_empty")]
     pub type_name: String,
+    /// Named filter (`@name` or `@ns:name`) of a filter hook.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub filter: Option<String>,
+    /// Only for `on: "text"`: the (qualified) text type.
+    #[serde(rename = "textType", default, skip_serializing_if = "Option::is_none")]
+    pub text_type: Option<String>,
     pub on: String,
+    #[serde(default = "after_phase")]
     pub phase: String,
     pub op: String,
+}
+
+fn after_phase() -> String {
+    "after".into()
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -178,6 +192,10 @@ pub struct ProfileDef {
     #[serde(default)]
     pub includes: Vec<String>,
     pub rights: Vec<RightDef>,
+    /// Reason why this profile may write what its own conditions depend on (silences the
+    /// `rights.self_service` warning of `typecat check`).
+    #[serde(rename = "selfService", default, skip_serializing_if = "Option::is_none")]
+    pub self_service: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

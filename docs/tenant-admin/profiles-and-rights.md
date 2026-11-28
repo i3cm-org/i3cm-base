@@ -50,6 +50,9 @@ Rights come from profiles alone. The module's profiles decide who may write whic
 change a team's leader is whoever may write the team), the tenant administrator decides who gets a
 profile, and the data (who leads which team) decides where it applies. A module author should not
 give write on objects that the module's own conditions depend on to the people those conditions
-favour; otherwise they could put themselves into a condition by editing data.
+favour; otherwise they could put themselves into a condition by editing data. `typecat check` warns
+(`rights.self_service`) when a profile may write what its own condition reads, and notes it when
+another profile of the module may; a profile meant to administer such data says why with
+`selfService: "…"` and is not reported.
 
 Objects a caller may not read do not exist for them: the API answers `not found`, never `forbidden`.

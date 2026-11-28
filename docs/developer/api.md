@@ -213,7 +213,9 @@ and queries. It translates into SQL; what does not translate is refused when the
 * paths over reference ends with at most 3 steps, to `%me` (`applicant.team.leader = %me`) or to an
   attribute of the object reached (`applicant.team.name = 'a'`, true when some object reached matches);
 * texts and content: `_texts.<text type>.exists()` / `.empty()`, `_content.exists()`,
-  `_content.mediaType in (…)`, `_content.size > n`, `_content.sha256 = '…'`;
+  `_content.mediaType in (…)`, `_content.size > n`, `_content.sha256 = '…'`; media types are stored
+  in lower case without parameters (`Text/Plain; charset=UTF-8` is stored as `text/plain`), so
+  compare with that form;
 * attributes of attachable types (`@requires` on the entry type) by their name; when the type is not
   attached the attribute is absent (`empty()` is true, comparisons are false);
 * named filters: `@name` (a filter of the module that writes the condition, view or filter) or
@@ -295,8 +297,10 @@ account cannot act through module code either (impersonation, schedules). Add an
 With module code loaded (`--modules-dir`), every write runs the hooks of the modules around each
 operation: `POST /v1/orders`, the single-operation shortcuts (`POST`/`PATCH`/`DELETE /v1/objects…`,
 `/v1/references…`), writes to files of aspects (FUSE, `PUT /v1/aspects/{a}/file`, drops) and the tools.
-Writes of content and texts (`content`, `text`, `PUT …/content`, `PUT …/texts/…`) run no hooks. Errors
-from module code come back with status 400 and the module's error id.
+Writes of content and texts (`content`, `text`, `PUT …/content`, `PUT …/texts/…`, files written
+through views) run the hooks `on: "content"` and `on: "text"`; filter hooks run at the end of every
+order (see [modules](modules.md)). Errors from module code come back with status 400 and the
+module's error id.
 
 ## Development tenants and source checks (studio)
 

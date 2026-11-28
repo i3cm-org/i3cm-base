@@ -192,6 +192,16 @@ pub fn check(m: &Model) -> Result<()> {
             crate::paths::filter_in(m, &f.type_name, &f.filter, crate::paths::Origin::Catalog, &module.name, &BTreeSet::new()).map_err(|e| e.with("filter", f.name.clone()))?;
         }
     }
+    // hooks: on a type (create, update, delete, content, text) or on a named filter (enter,
+    // leave); a filter of a hook must be bindable
+    for module in &c.modules {
+        for h in &module.hooks {
+            if !module.operations.iter().any(|o| o.name == h.op) {
+                return Err(err("hook.unknown_operation", "a hook names an operation the module does not declare").with("module", module.name.clone()).with("op", h.op.clone()));
+            }
+            check_hook(m, &module.name, h)?;
+        }
+    }
     for a in m.aspects() {
         check_aspect(m, a)?;
     }
@@ -202,6 +212,52 @@ pub fn check(m: &Model) -> Result<()> {
         if let Some(cycle) = dfs(&r.name, &incl, &mut Vec::new(), &mut done) {
             return Err(err("profile.include_cycle", "profile includes form a cycle").with("cycle", cycle.join(" -> ")));
         }
+    }
+    Ok(())
+}
+
+fn check_hook(m: &Model, module: &str, h: &crate::catalog::HookDef) -> Result<()> {
+    let bad = |d: &str| err("hook.invalid", d).with("module", module).with("op", h.op.clone());
+    if !["before", "after"].contains(&h.phase.as_str()) {
+        return Err(bad("a hook runs in phase before or after"));
+    }
+    match (h.on.as_str(), &h.filter) {
+        ("enter" | "leave", Some(name)) => {
+            if !h.type_name.is_empty() || h.text_type.is_some() {
+                return Err(bad("a filter hook names a filter, not a type or text type"));
+            }
+            if h.phase != "after" {
+                return Err(bad("filter hooks run in phase after"));
+            }
+            let n = name.strip_prefix('@').unwrap_or(name);
+            let def = m
+                .named_filter(n, module)
+                .ok_or_else(|| err("filter.unknown", "unknown named filter").with("module", module).with("filter", name.clone()))?;
+            let ns = def.name.split(':').next().unwrap_or(module);
+            let f = crate::paths::filter_in(m, &def.type_name, &def.filter, crate::paths::Origin::Catalog, ns, &BTreeSet::new())?;
+            if let Some(why) = f.not_bindable() {
+                return Err(err("filter.not_bindable", "a filter of a hook may not use %me, now(), today() or paths over references")
+                    .hint("bind a state filter on the object's own attributes; time-driven work belongs to a generator")
+                    .with("module", module)
+                    .with("filter", def.name.clone())
+                    .with("uses", why));
+            }
+        }
+        ("create" | "update" | "delete" | "content" | "text", None) => {
+            if m.type_def(&h.type_name).is_none() {
+                return Err(err("hook.unknown_type", "a hook names an unknown type").with("module", module).with("type", h.type_name.clone()));
+            }
+            match (&h.text_type, h.on.as_str()) {
+                (Some(tt), "text") => {
+                    if m.text_type(tt).is_none() {
+                        return Err(err("text.unknown_type", "a hook names an unknown text type").with("module", module).with("textType", tt.clone()));
+                    }
+                }
+                (Some(_), _) => return Err(bad("textType belongs to hooks on text")),
+                _ => {}
+            }
+        }
+        _ => return Err(bad("a hook has on: create, update, delete, content or text with a type, or on: enter or leave with a filter")),
     }
     Ok(())
 }

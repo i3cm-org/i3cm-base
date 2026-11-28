@@ -107,6 +107,18 @@ pub fn rights_path(m: &Model, t: &str, src: &str) -> Result<RightsPath> {
     Ok(RightsPath { type_name: t.to_string(), steps })
 }
 
+/// A literal compared with a point in time (`now()`, `today()`, a shifted date): a date
+/// (`2026-01-31`, midnight UTC) or a date-time with offset (RFC 3339), as UTC in RFC 3339 form;
+/// the result never depends on the time zone of the database server.
+pub fn point_in_time(v: &serde_json::Value) -> Option<String> {
+    let s = v.as_str()?;
+    if let Ok(t) = chrono::DateTime::parse_from_rfc3339(s) {
+        return Some(t.with_timezone(&chrono::Utc).to_rfc3339());
+    }
+    let d = chrono::NaiveDate::parse_from_str(s, "%Y-%m-%d").ok()?;
+    Some(d.and_hms_opt(0, 0, 0)?.and_utc().to_rfc3339())
+}
+
 /* ------------------------------------------------------------- filter language */
 
 /// Most terms (comparisons, tests) a filter may have, named filters expanded.
@@ -213,6 +225,28 @@ impl Filter {
             _ => vec![],
         }
     }
+    /// Why the filter cannot be bound to hooks or events, if it cannot: transitions are found
+    /// from the written object alone, so a bound filter must not depend on the caller (`%me`),
+    /// on time (`now()`, `today()`) or on other objects (paths over references).
+    pub fn not_bindable(&self) -> Option<&'static str> {
+        fn timed(o: &Operand) -> bool {
+            match o {
+                Operand::Now | Operand::Today => true,
+                Operand::Shifted(b, ..) => timed(b),
+                _ => false,
+            }
+        }
+        match self {
+            Filter::And(a, b) | Filter::Or(a, b) => a.not_bindable().or_else(|| b.not_bindable()),
+            Filter::Not(a) => a.not_bindable(),
+            Filter::RefMe(_) => Some("%me"),
+            Filter::RefExists(..) => Some("path"),
+            Filter::Cmp(a, _, b) if timed(a) || timed(b) => Some("time"),
+            _ if self.joins() > 0 => Some("path"),
+            _ => None,
+        }
+    }
+
     /// Does the filter refer to `me`?
     pub fn uses_me(&self) -> bool {
         match self {
@@ -422,11 +456,11 @@ impl Lower<'_> {
                     None => false,
                 }
             }
-            Some(_) => v.is_string(),
+            Some(_) => point_in_time(v).is_some(),
             None => match o {
-                Operand::Content("size") => v.is_i64() || v.is_u64(),
+                Operand::Content("size") => v.is_i64(),
                 Operand::Content(_) => v.is_string(),
-                Operand::Now | Operand::Today => v.is_string(),
+                Operand::Now | Operand::Today => point_in_time(v).is_some(),
                 _ => false,
             },
         };
@@ -643,6 +677,17 @@ mod host_type_tests {
         assert_eq!(bad("due = status"), "path.bad_filter", "different kinds");
         assert_eq!(bad("due = 'abc'"), "path.bad_filter", "the literal is no date");
         assert_eq!(bad("due in ('x')"), "path.bad_filter");
+    }
+
+    #[test]
+    fn filters_that_depend_on_time_are_not_bindable_state_filters_are() {
+        let m = model();
+        let f = super::view_filter(&m, "m:Task", "due <= today() + 7 days").unwrap();
+        assert_eq!(f.not_bindable(), Some("time"));
+        let f = super::view_filter(&m, "m:Task", "status != 'done' and due.exists()").unwrap();
+        assert_eq!(f.not_bindable(), None);
+        let f = super::view_filter(&m, "m:Task", "not(status = 'done' or due < now())").unwrap();
+        assert_eq!(f.not_bindable(), Some("time"));
     }
 
     #[test]

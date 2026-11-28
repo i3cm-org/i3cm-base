@@ -4,7 +4,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { buildCatalog, copyUi, checkUi } from "../typecat.mjs";
+import { buildCatalog, copyUi, checkUi, checkSelfService } from "../typecat.mjs";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const typesDir = path.resolve(here, "../../../types");
@@ -245,4 +245,35 @@ test("@rightsRelevant is ignored with a warning", () => {
   const r = cat.references.find((x) => x.name === "x:A.owner");
   assert.ok(r && !("rightsRelevant" in r));
   assert.ok(issues.some((i) => i.severity === "warning" && i.error_id === "ref.rights_relevant_ignored"));
+});
+
+test("warns when a profile may write what its own condition depends on (self service)", () => {
+  const types = `import { ns, Ref } from "../../lib";\n@ns("m") export class Team { leader?: string; name!: string; }\n@ns("m") export class Request { status!: string; team?: Ref<Team, "requests">; }\n`;
+  const profiles = (selfService) => `export const module = { name: "m", requires: [] as string[] };\nexport const rooms: string[] = [];\nexport const profiles = [
+    { name: "lead", ${selfService} rights: [ { sign: "+", art: ["read", "write"], types: ["m:Request"], room: "root", when: "team.leader = 'x' and status = 'open'" },
+                                    { sign: "+", art: ["write"], types: ["m:Team"], room: "root" } ] },
+    { name: "clerk", rights: [ { sign: "+", art: ["write"], types: ["m:Request"], room: "root" } ] },
+  ];\n`;
+  const cat = buildCatalog(tmpTypes({ "modules/m/module.ts": profiles(""), "modules/m/t.ts": types }));
+  const issues = checkSelfService(cat);
+  const w = issues.filter((i) => i.error_id === "rights.self_service");
+  // lead writes m:Team.leader and m:Request.status/team, which its own condition reads: warnings
+  assert.ok(w.some((i) => i.severity === "warning" && i.params.profile === "m:lead" && i.params.type === "m:Team" && i.params.name === "leader"), JSON.stringify(w));
+  // clerk writes m:Request.status, which lead's condition reads: a hint only
+  assert.ok(w.some((i) => i.severity === "info" && i.params.profile === "m:clerk" && i.params.condition === "m:lead" && i.params.name === "status"), JSON.stringify(w));
+  // an administering profile with a reason is silent
+  const quiet = checkSelfService(buildCatalog(tmpTypes({ "modules/m/module.ts": profiles(`selfService: "leads hand over teams",`), "modules/m/t.ts": types })));
+  assert.ok(!quiet.some((i) => i.params.profile === "m:lead"), JSON.stringify(quiet));
+});
+
+test("hooks on filters, contents and texts are accepted, malformed hooks refused", () => {
+  const base = (hooks) => tmpTypes({
+    "modules/m/module.ts": `export const module = { name: "m", requires: [] as string[] };\nexport const rooms: string[] = [];\nexport const profiles = [];\nexport const operations = [{ name: "h" }];\nexport const filters = { done: { type: "m:A", where: "s = 'done'" } };\nexport const hooks = ${hooks};\n`,
+    "modules/m/t.ts": `import { ns, hasContent, texts } from "../../lib";\n@ns("m") @hasContent() @texts("sum:text/plain") export class A { s?: string; }\n`,
+  });
+  const cat = buildCatalog(base(`[{ filter: "@done", on: "enter", op: "h" }, { type: "m:A", on: "content", op: "h" }, { type: "m:A", on: "text", textType: "m:sum", op: "h" }]`));
+  assert.deepEqual(cat.modules.find((m) => m.name === "m").hooks.map((h) => h.phase), ["after", "after", "after"]);
+  assert.throws(() => buildCatalog(base(`[{ filter: "@done", on: "enter", phase: "before", op: "h" }]`)), (e) => e.id === "typecat.bad_hook");
+  assert.throws(() => buildCatalog(base(`[{ type: "m:A", on: "enter", op: "h" }]`)), (e) => e.id === "typecat.bad_hook");
+  assert.throws(() => buildCatalog(base(`[{ type: "m:A", on: "update", textType: "m:sum", op: "h" }]`)), (e) => e.id === "typecat.bad_hook");
 });

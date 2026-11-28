@@ -110,6 +110,16 @@ impl Guest for Example {
                 let children: Value = serde_json::from_str(&conn.ends(id, "children", 0, 500)?).map_err(|e| e.to_string())?;
                 Ok(json!({ "references": v["references"], "children": children }).to_string())
             }
+            // filter hooks: a note entered or left `@done`; content and text hooks of documents;
+            // each writes a log note naming what happened
+            "onEnter" | "onLeave" | "onContent" | "onSummary" => {
+                let what = match op.as_str() { "onEnter" => "enter", "onLeave" => "leave", "onContent" => "content", _ => "summary" };
+                // hooks write into the order of their trigger: local names must be unique there
+                let id = args["id"].as_str().unwrap_or_default();
+                let ops = json!([{ "op": "create", "ref": format!("{what}-{id}"), "types": { "example:Note": { "title": format!("{what} {id}"), "author": conn.me() } } }]);
+                conn.order(&ops.to_string())?;
+                Ok("{}".into())
+            }
             "spin" => {
                 #[allow(clippy::empty_loop)]
                 loop {}
