@@ -43,6 +43,27 @@ because it changes rights.
 
 `GET /v1/me/groups` and `GET /v1/groups/{id}/members?transitive=true` show the result.
 
+## Profile assignments
+
+`POST /v1/assignments` gives a profile to a group or an account; `GET /v1/assignments?carrier=<id>`
+lists the current assignments, `DELETE /v1/assignments/{id}` ends one. All three need the right to grant
+rights.
+
+## Deactivating accounts and the last administrator
+
+An account is deactivated by setting `deactivated: true` on it (an ordinary update); it keeps its data
+and memberships, but its tokens are refused (`auth.account_inactive`) until `deactivated` is set back to
+`false`.
+
+```json
+{"ops": [{"op": "update", "id": "<account id>", "types": {"base:PersonAccount": {"deactivated": true}}}]}
+```
+
+A tenant always keeps at least one active account that can grant rights at the root room. An order that
+would remove the last one (deleting or deactivating the account, deleting its group or membership,
+ending its profile assignment) is refused with `tenant.last_admin`; make another account an
+administrator first, for example by adding it to the group `admins`.
+
 ## Tokens for agents
 
 An agent gets an account of its own (`base:AgentAccount`) with small profiles cut to its task, and a

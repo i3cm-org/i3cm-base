@@ -354,3 +354,157 @@ pub async fn install_from_registry_with(db_url: &str, base: &Path, dir: &Path, r
     std::fs::write(PathBuf::from(format!("{}.sig", file.display())), &sig)?;
     install_with(db_url, base, dir, &file, trust).await
 }
+
+/// Fail unless `dir` exists (or can be created) and is writable; the message says what to do.
+pub fn ensure_writable(dir: &Path) -> Result<()> {
+    let hint = || {
+        format!(
+            "the modules directory {} is not writable by this process; mount a volume there that this user can write \
+             (the image runs as uid {}), or point I3CM_MODULES_DIR to a writable directory",
+            dir.display(),
+            current_uid()
+        )
+    };
+    std::fs::create_dir_all(dir).with_context(hint)?;
+    let probe = dir.join(format!(".write-probe-{}", std::process::id()));
+    std::fs::write(&probe, b"").with_context(hint)?;
+    std::fs::remove_file(&probe).with_context(hint)?;
+    Ok(())
+}
+
+fn current_uid() -> String {
+    std::fs::read_to_string("/proc/self/status")
+        .ok()
+        .and_then(|s| s.lines().find(|l| l.starts_with("Uid:")).and_then(|l| l.split_whitespace().nth(1)).map(str::to_string))
+        .unwrap_or_else(|| "?".into())
+}
+
+/// Copy the modules bundled with the image (`bundled`) into the modules directory `dir`.
+///
+/// A bundled module is copied when `dir` lacks it, or when the copy in `dir` is still the one
+/// copied from an earlier bundle (marker `.bundled/<name>.sha256`) and the bundle changed. A module
+/// the operator installed over it (its catalog part differs from the marker) is kept. Returns one
+/// line per change.
+pub fn sync_bundled(bundled: &Path, dir: &Path) -> Result<Vec<String>> {
+    let mut out = vec![];
+    let mut names: Vec<String> = std::fs::read_dir(bundled)
+        .with_context(|| format!("cannot read the bundled modules in {}", bundled.display()))?
+        .filter_map(|e| e.ok().map(|e| e.path()))
+        .filter(|p| p.extension().is_some_and(|x| x == "json"))
+        .filter_map(|p| p.file_stem().and_then(|s| s.to_str()).map(str::to_string))
+        .collect();
+    names.sort();
+    let markers = dir.join(".bundled");
+    std::fs::create_dir_all(&markers)?;
+    for name in names {
+        let bpart = std::fs::read(bundled.join(format!("{name}.json")))?;
+        let bsha = hex_sha(&bpart);
+        let marker = markers.join(format!("{name}.sha256"));
+        let current = std::fs::read(dir.join(format!("{name}.json"))).ok().map(|b| hex_sha(&b));
+        let last = std::fs::read_to_string(&marker).ok().map(|s| s.trim().to_string());
+        let copy = match (&current, &last) {
+            (None, _) => true,
+            (Some(cur), Some(last)) => cur == last && *cur != bsha,
+            (Some(_), None) => false,
+        };
+        if copy {
+            copy_module(bundled, dir, &name)?;
+            out.push(format!("{name}: copied from the image"));
+        } else if current.as_deref() != Some(bsha.as_str()) {
+            if current.is_some() && last.is_none() {
+                out.push(format!("{name}: kept the copy in the modules directory (not from this image)"));
+            } else if current != last {
+                out.push(format!("{name}: kept the version installed by the operator"));
+            }
+            continue;
+        }
+        std::fs::write(&marker, &bsha)?;
+    }
+    Ok(out)
+}
+
+/// Copy one module's files: `<name>.json`, `<name>.wasm`, `ui/<name>.html`, `src/<name>/`.
+fn copy_module(from: &Path, to: &Path, name: &str) -> Result<()> {
+    for f in [format!("{name}.wasm"), format!("ui/{name}.html")] {
+        let src = from.join(&f);
+        let dst = to.join(&f);
+        if src.exists() {
+            if let Some(p) = dst.parent() {
+                std::fs::create_dir_all(p)?;
+            }
+            std::fs::copy(&src, &dst).with_context(|| format!("copying {}", src.display()))?;
+        } else if dst.exists() {
+            std::fs::remove_file(&dst)?;
+        }
+    }
+    let src = from.join("src").join(name);
+    let dst = to.join("src").join(name);
+    if dst.exists() {
+        std::fs::remove_dir_all(&dst)?;
+    }
+    if src.exists() {
+        copy_dir(&src, &dst)?;
+    }
+    // the catalog part last: a module counts as present only once its other files are in place
+    std::fs::copy(from.join(format!("{name}.json")), to.join(format!("{name}.json")))?;
+    Ok(())
+}
+
+fn copy_dir(from: &Path, to: &Path) -> Result<()> {
+    std::fs::create_dir_all(to)?;
+    for e in std::fs::read_dir(from)? {
+        let e = e?;
+        let p = e.path();
+        if e.file_type()?.is_dir() {
+            copy_dir(&p, &to.join(e.file_name()))?;
+        } else {
+            std::fs::copy(&p, to.join(e.file_name()))?;
+        }
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod bundle_tests {
+    use super::*;
+
+    fn tmp(tag: &str) -> PathBuf {
+        let d = std::env::temp_dir().join(format!("i3cm-bundle-{tag}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        d
+    }
+
+    #[test]
+    fn bundled_modules_are_copied_updated_and_never_override_an_operator_install() {
+        let b = tmp("b");
+        let d = tmp("d");
+        std::fs::write(b.join("tasks.json"), "v1").unwrap();
+        std::fs::write(b.join("tasks.wasm"), "w1").unwrap();
+        std::fs::create_dir_all(b.join("src/tasks/i3cm")).unwrap();
+        std::fs::write(b.join("src/tasks/i3cm/module.ts"), "s1").unwrap();
+        // first start: copied
+        assert_eq!(sync_bundled(&b, &d).unwrap(), vec!["tasks: copied from the image"]);
+        assert_eq!(std::fs::read_to_string(d.join("tasks.wasm")).unwrap(), "w1");
+        assert_eq!(std::fs::read_to_string(d.join("src/tasks/i3cm/module.ts")).unwrap(), "s1");
+        // unchanged start: nothing to do
+        assert!(sync_bundled(&b, &d).unwrap().is_empty());
+        // newer image: updated
+        std::fs::write(b.join("tasks.json"), "v2").unwrap();
+        assert_eq!(sync_bundled(&b, &d).unwrap(), vec!["tasks: copied from the image"]);
+        assert_eq!(std::fs::read_to_string(d.join("tasks.json")).unwrap(), "v2");
+        // the operator installs another version: kept, also when the image changes again
+        std::fs::write(d.join("tasks.json"), "operator").unwrap();
+        std::fs::write(b.join("tasks.json"), "v3").unwrap();
+        assert_eq!(sync_bundled(&b, &d).unwrap(), vec!["tasks: kept the version installed by the operator"]);
+        assert_eq!(std::fs::read_to_string(d.join("tasks.json")).unwrap(), "operator");
+        let _ = std::fs::remove_dir_all(&b);
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn a_directory_that_cannot_be_written_is_reported_with_advice() {
+        let e = ensure_writable(Path::new("/proc/i3cm-not-writable")).unwrap_err();
+        assert!(format!("{e:#}").contains("mount a volume"), "{e:#}");
+    }
+}

@@ -844,6 +844,48 @@ impl Store {
         Ok(id)
     }
 
+    /// Current profile assignments (`carrier` filters); needs the right to grant rights.
+    pub async fn assignments(&self, ctx: &Ctx, carrier: Option<Uuid>) -> Result<Vec<Value>> {
+        if !ctx.subject.may(Art::Grant, ANY, &[ctx.rooms.root]) && !ctx.subject.may(Art::Grant, GROUP_MEMBERSHIP, &[ctx.rooms.root]) {
+            return Err(BaseError::not_found("rights.denied", "not allowed or not found").with("art", "grant"));
+        }
+        let c = self.client().await?;
+        Ok(c.query(
+            "SELECT id, profile, carrier FROM assignment WHERE tenant_id=$1 AND valid_to IS NULL AND ($2::uuid IS NULL OR carrier=$2) ORDER BY profile, carrier, id",
+            &[&ctx.tenant, &carrier],
+        )
+        .await
+        .map_err(db)?
+        .iter()
+        .map(|r| serde_json::json!({"id": r.get::<_, Uuid>(0), "profile": r.get::<_, String>(1), "carrier": r.get::<_, Uuid>(2)}))
+        .collect())
+    }
+
+    /// End a profile assignment (needs the right to grant rights); refused when it would leave the
+    /// tenant without an administrator.
+    pub async fn unassign(&self, ctx: &Ctx, id: Uuid) -> Result<i64> {
+        if !ctx.subject.may(Art::Grant, ANY, &[ctx.rooms.root]) && !ctx.subject.may(Art::Grant, GROUP_MEMBERSHIP, &[ctx.rooms.root]) {
+            return Err(BaseError::not_found("rights.denied", "not allowed or not found").with("art", "grant"));
+        }
+        let mut c = self.client().await?;
+        let tx = c.transaction().await.map_err(db)?;
+        let had = self.has_admin(&*tx, ctx.tenant).await?;
+        let txn: i64 = tx.query_one("SELECT nextval('txn_seq')", &[]).await.map_err(db)?.get(0);
+        tx.execute("INSERT INTO txn (tenant_id, id, account) VALUES ($1,$2,$3)", &[&ctx.tenant, &txn, &ctx.me()]).await.map_err(db)?;
+        let n = tx
+            .execute("UPDATE assignment SET valid_to=$3 WHERE tenant_id=$1 AND id=$2 AND valid_to IS NULL", &[&ctx.tenant, &id, &txn])
+            .await
+            .map_err(db)?;
+        if n == 0 {
+            return Err(BaseError::not_found("assignment.not_found", "no current assignment with this id").with("id", id.to_string()));
+        }
+        if had && !self.has_admin(&*tx, ctx.tenant).await? {
+            return Err(crate::admin::last_admin_error());
+        }
+        tx.commit().await.map_err(db)?;
+        Ok(txn)
+    }
+
     pub async fn profiles(&self, ctx: &Ctx) -> Result<Vec<Value>> {
         let c = self.client().await?;
         Ok(c.query(

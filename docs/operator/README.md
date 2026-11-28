@@ -20,6 +20,12 @@ docker compose -f deploy/compose.yaml up -d --build
 docker compose -f deploy/compose.yaml exec server i3cm-server init-tenant acme
 ```
 
+The server runs as user `i3cm` (uid 10001). Installed modules are state: the compose files keep the
+modules directory on the volume `modules` (`/var/lib/i3cm/modules`), so modules installed later survive
+a new container. When you run the image yourself, mount a volume there that uid 10001 can write; the
+server refuses to start otherwise. The image has a health check (`i3cm-server health`, which asks the
+local `GET /health`); compose restarts the server unless it was stopped.
+
 `init-tenant` prints a start token for the login `admin` that is valid for one day; use it to issue
 lasting tokens (see [tokens-backup-fuse.md](tokens-backup-fuse.md)). The server listens on port 8480.
 TLS belongs to a reverse proxy in front of it.
@@ -41,8 +47,16 @@ A main container serves one version (several main containers of different versio
 database within one major version). The schema migrates itself on start; migrations run only when the
 schema version changes. Installed modules are in force after the next start.
 
+The mandatory modules come with the image. At start the server copies them into the modules directory
+when they are missing there, or when the copy there came from an older image; a version the operator
+installed over them is kept (the log says so: `bundled modules: …`). A new image therefore updates the
+mandatory modules without touching modules you installed.
+
+After an upgrade, compare `GET /v1/version` with the version and revision you meant to deploy; the start
+log ends with a line `ready` that names address, version and revision.
+
 ## Checking an instance
 
-* `GET /health` — liveness; `GET /v1/version` — version and source revision (also `i3cm-server --version`).
+* `GET /health` — liveness (also `i3cm-server health`, exit code 0 when healthy); `GET /v1/version` — version and source revision (also `i3cm-server --version`).
 * `GET /v1/metrics` — requests served by this process (useful to measure clients such as FUSE).
 * `i3cm-server catalog check [catalog.json]` — checks a catalog with the server's checker, no database.

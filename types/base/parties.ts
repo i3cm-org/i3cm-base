@@ -25,6 +25,8 @@ export class Group extends Carrier {
 export abstract class Account extends Carrier {
   @unique @indexed login!: string;
   email?: Formatted<"email">;
+  /** A deactivated account keeps its data, but its tokens no longer work. */
+  deactivated?: boolean;
 }
 
 /** Login of a person; attached to the person object itself. */

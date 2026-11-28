@@ -1,7 +1,8 @@
 # REST API (v1)
 
 All requests send `Authorization: Bearer <token>` (401 with `auth.invalid_token`,
-`auth.expired_token`, `auth.revoked_token` or `auth.unused_token` otherwise), except the
+`auth.expired_token`, `auth.revoked_token`, `auth.unused_token` or `auth.account_inactive`
+otherwise), except the
 self-description: `GET /` (entry page), `/guide/agents` (guide for agents), `/openapi.json`,
 `/skill.zip` (the guide as a skill) and `/v1/version` (version and source revision). Errors are
 `{"error_id": "...", "description": "...", "params": {...}}` with status 400 (invalid),
@@ -57,6 +58,7 @@ back as `integrity.violated` with a list of violations.
 | `GET /v1/types/{type}/groups` | counts per `unit` (year, month, day) of a date attribute `attr` |
 | `GET /v1/catalog`, `GET /v1/profiles` | catalog and profiles |
 | `POST /v1/assignments` | `{"profile": "fibu:accountant", "carrier": "<group or account>"}` |
+| `GET /v1/assignments`, `DELETE /v1/assignments/{id}` | current assignments (`?carrier=` filters), end one |
 | `POST /v1/tokens` | `{"account": "<id>", "label": "...", "ttl": 90}` issues a token; see Tokens |
 | `GET /v1/tokens`, `DELETE /v1/tokens/{id}` | list (without secrets), revoke |
 | `GET /v1/metrics` | requests served by this server process |
@@ -161,7 +163,26 @@ request. A token for another account needs the right to grant rights. `ttl` is i
 `i3cm-server create-token <tenant> <login> [--ttl <days>]` (default 90, at most 365); the first
 token printed by `init-tenant` is a start key valid for one day. `GET /v1/tokens` lists the caller's tokens, or all tokens of the
 tenant with the right to grant rights (`?account=` filters); `DELETE /v1/tokens/{id}` revokes a
-token at once. A token unused for 90 days lapses (`auth.unused_token`).
+token at once. A token unused for 90 days lapses (`auth.unused_token`). The tokens of a deactivated
+(`deactivated: true` on the account) or deleted account are refused (`auth.account_inactive`); after
+reactivation they work again.
+
+**The last administrator is protected.** An order, or the end of an assignment, that would leave the
+tenant without an active account able to grant rights at the root room is refused with 409
+`tenant.last_admin` (deleting or deactivating that account, deleting its group or membership, ending
+the profile assignment). Add another administrator first.
+
+## Limits
+
+| Limit | Value | Error |
+|---|---|---|
+| request body | 64 MiB | 413 |
+| order of module code (operation, hook, schedule) | 10 s | `module.timeout` |
+| chain of hooks and calls | depth 16 | `module.depth` |
+| rights path | 3 steps | `path.too_long` (catalog) |
+| token lifetime | default 90 days, at most 365 | `token.bad_ttl` |
+| unused token | lapses after 90 days | `auth.unused_token` |
+| operator secret | at least 32 characters | the server does not start |
 
 ## Modules
 

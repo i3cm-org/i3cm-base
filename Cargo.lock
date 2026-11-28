@@ -1510,7 +1510,7 @@ dependencies = [
 
 [[package]]
 name = "i3cm-api"
-version = "0.8.3"
+version = "0.8.4"
 dependencies = [
  "axum",
  "base64 0.22.1",
@@ -1530,7 +1530,7 @@ dependencies = [
 
 [[package]]
 name = "i3cm-cli"
-version = "0.8.3"
+version = "0.8.4"
 dependencies = [
  "base64 0.22.1",
  "fuser",
@@ -1550,7 +1550,7 @@ dependencies = [
 
 [[package]]
 name = "i3cm-client"
-version = "0.8.3"
+version = "0.8.4"
 dependencies = [
  "base64 0.22.1",
  "reqwest",
@@ -1562,7 +1562,7 @@ dependencies = [
 
 [[package]]
 name = "i3cm-core"
-version = "0.8.3"
+version = "0.8.4"
 dependencies = [
  "chrono",
  "fluent-bundle",
@@ -1576,7 +1576,7 @@ dependencies = [
 
 [[package]]
 name = "i3cm-loadtest"
-version = "0.8.3"
+version = "0.8.4"
 dependencies = [
  "anyhow",
  "chrono",
@@ -1592,7 +1592,7 @@ dependencies = [
 
 [[package]]
 name = "i3cm-server"
-version = "0.8.3"
+version = "0.8.4"
 dependencies = [
  "anyhow",
  "axum",
@@ -1621,7 +1621,7 @@ dependencies = [
 
 [[package]]
 name = "i3cm-store"
-version = "0.8.3"
+version = "0.8.4"
 dependencies = [
  "base64 0.22.1",
  "chrono",
@@ -1642,7 +1642,7 @@ dependencies = [
 
 [[package]]
 name = "i3cm-tools"
-version = "0.8.3"
+version = "0.8.4"
 dependencies = [
  "base64 0.22.1",
  "chrono",
@@ -1655,7 +1655,7 @@ dependencies = [
 
 [[package]]
 name = "i3cm-wasm"
-version = "0.8.3"
+version = "0.8.4"
 dependencies = [
  "chrono",
  "i3cm-core",

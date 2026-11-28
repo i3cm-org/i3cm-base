@@ -43,6 +43,8 @@ pub const ROUTES: &[(&str, &str, &str)] = &[
     ("get", "/v1/types/{t}/groups", "Counts per year, month or day"),
     ("get", "/v1/profiles", "Profiles (collections of rights)"),
     ("post", "/v1/assignments", "Assign a profile to a group or account"),
+    ("get", "/v1/assignments", "Current profile assignments (`carrier` filters)"),
+    ("delete", "/v1/assignments/{id}", "End a profile assignment (refused if it removes the last administrator)"),
     ("post", "/v1/tokens", "Issue a token"),
     ("get", "/v1/tokens", "List tokens"),
     ("delete", "/v1/tokens/{id}", "Revoke a token"),

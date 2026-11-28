@@ -1124,3 +1124,61 @@ async fn structure_content_and_texts_in_one_order() {
     o.ops.push(json!({"op": "content", "id": d.to_string(), "mediaType": "text/plain", "base64": "%%%"}));
     assert_eq!(env.admin.order(&o).await.unwrap_err().error_id(), Some("content.bad_base64"));
 }
+
+#[tokio::test]
+async fn deactivated_accounts_cannot_act() {
+    let env = env().await;
+    let (lea_id, lea) = env.person("lea-off", &[]).await;
+    lea.me().await.unwrap();
+    let mut o = Order::new();
+    o.update(lea_id, json!({"base:PersonAccount": {"deactivated": true}}));
+    env.admin.order(&o).await.unwrap();
+    let e = lea.me().await.unwrap_err();
+    assert_eq!((e.status(), e.error_id()), (Some(401), Some("auth.account_inactive")));
+    let mut o = Order::new();
+    o.update(lea_id, json!({"base:PersonAccount": {"deactivated": false}}));
+    env.admin.order(&o).await.unwrap();
+    assert_eq!(lea.me().await.unwrap().id, lea_id, "reactivated: the same token works again");
+}
+
+#[tokio::test]
+async fn the_last_admin_is_protected() {
+    let env = env().await;
+    let admin = env.init.admin_account;
+    let admins = env.init.admin_group;
+    let last = |e: i3cm_client::ClientError| assert_eq!(e.error_id(), Some("tenant.last_admin"), "{e:?}");
+    // deactivating, deleting the account, deleting the group, ending the membership: all refused
+    let mut o = Order::new();
+    o.update(admin, json!({"base:PersonAccount": {"deactivated": true}}));
+    last(env.admin.order(&o).await.unwrap_err());
+    let mut o = Order::new();
+    o.delete(admin);
+    last(env.admin.order(&o).await.unwrap_err());
+    let mut o = Order::new();
+    o.delete(admins);
+    last(env.admin.order(&o).await.unwrap_err());
+    let membership = env.store.client().await.unwrap()
+        .query_one("SELECT m.a_id FROM r_base_groupmembership_member m WHERE m.tenant_id=$1 AND m.b_id=$2 AND m.valid_to IS NULL", &[&env.init.tenant, &admin])
+        .await.unwrap().get::<_, Uuid>(0);
+    let mut o = Order::new();
+    o.delete(membership);
+    last(env.admin.order(&o).await.unwrap_err());
+    // removing the guardian profile of the group: refused
+    let a = env.admin.assignments(Some(admins)).await.unwrap();
+    let id: Uuid = serde_json::from_value(a.iter().find(|x| x["profile"] == "base:admin").unwrap()["id"].clone()).unwrap();
+    last(env.admin.unassign(id).await.unwrap_err());
+    env.admin.me().await.unwrap();
+    // with a second administrator the first may step down
+    let (bob_id, bob) = env.person("bob-admin", &[admins]).await;
+    let mut o = Order::new();
+    o.update(admin, json!({"base:PersonAccount": {"deactivated": true}}));
+    env.admin.order(&o).await.unwrap();
+    assert_eq!(env.admin.me().await.unwrap_err().error_id(), Some("auth.account_inactive"));
+    // now bob is the last one: he cannot deactivate himself
+    let mut o = Order::new();
+    o.update(bob_id, json!({"base:PersonAccount": {"deactivated": true}}));
+    last(bob.order(&o).await.unwrap_err());
+    // an order on other objects is not affected
+    let g = bob.order(Order::new().create("g", None, json!({"base:Group": {"name": "plain"}}))).await.unwrap().created["g"];
+    bob.order(Order::new().delete(g)).await.unwrap();
+}

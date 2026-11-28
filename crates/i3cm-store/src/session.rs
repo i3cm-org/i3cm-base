@@ -24,6 +24,9 @@ struct State {
     touched: BTreeSet<Uuid>,
     detached: BTreeSet<Uuid>,
     links: Vec<Uuid>,
+    /// Whether the tenant had an administrator before the first operation that could remove one
+    /// (set lazily; `None` while no such operation ran).
+    admin_before: Option<bool>,
 }
 
 pub struct Session {
@@ -60,13 +63,18 @@ impl Session {
     /// Apply one operation immediately inside the open transaction; returns the object created
     /// by a `create` (its local name or id).
     pub async fn apply(&mut self, store: &Store, ctx: &mut Ctx, op: &Op) -> Result<Option<Uuid>> {
+        if self.state.admin_before.is_none() && self.may_remove_admin(store, ctx, op).await? {
+            let had = store.has_admin(self.client(), ctx.tenant).await?;
+            self.state.admin_before = Some(had);
+        }
         let before: BTreeSet<Uuid> = self.state.new_objects.clone();
         let st = std::mem::take(&mut self.state);
         let client = self.client.as_ref().expect("session is open");
+        let admin_before = st.admin_before;
         let mut ex = Exec { tx: client, m: &store.model, ctx, txn: self.txn, local: st.local, new_objects: st.new_objects, touched: st.touched, detached: st.detached, links: st.links };
         let res = ex.apply(op).await;
         let created = ex.new_objects.difference(&before).next().copied();
-        self.state = State { local: ex.local, new_objects: ex.new_objects, touched: ex.touched, detached: ex.detached, links: ex.links };
+        self.state = State { local: ex.local, new_objects: ex.new_objects, touched: ex.touched, detached: ex.detached, links: ex.links, admin_before };
         res.map(|_| created)
     }
 
@@ -84,13 +92,41 @@ impl Session {
         Ok(())
     }
 
+    /// Whether `op` could take the administrator right away from the tenant's last admin: changes
+    /// to existing accounts, groups and group memberships (update, detach, delete) and unlinking a
+    /// membership.
+    async fn may_remove_admin(&self, store: &Store, ctx: &Ctx, op: &Op) -> Result<bool> {
+        let id = match op {
+            Op::Unlink { reference, .. } => return Ok(reference.starts_with("base:GroupMembership.")),
+            Op::Update { id, .. } | Op::Detach { id, .. } | Op::Delete { id } => id,
+            _ => return Ok(false),
+        };
+        // objects created in this order (local names) held no rights before it
+        let Ok(id) = Uuid::parse_str(id) else { return Ok(false) };
+        let set = crate::read::types_of(self.client(), ctx.tenant, id, None).await?;
+        Ok(store.model.set_is_a(set.keys(), "base:Carrier") || store.model.set_is_a(set.keys(), crate::order::GROUP_MEMBERSHIP))
+    }
+
     /// Check the end state, then commit (or roll back for a dry run).
     pub async fn finish(mut self, store: &Store, ctx: &mut Ctx, commit: bool) -> Result<OrderResult> {
         let st = std::mem::take(&mut self.state);
         let client = self.client.take().expect("session is open");
+        // the last administrator first: its message says more than an integrity violation that
+        // removing them may also cause
+        let admin = match st.admin_before {
+            Some(true) => match store.has_admin(&**client, ctx.tenant).await {
+                Ok(true) => Ok(()),
+                Ok(false) => Err(crate::admin::last_admin_error()),
+                Err(e) => Err(e),
+            },
+            _ => Ok(()),
+        };
         let (res, created, links) = {
             let mut ex = Exec { tx: &client, m: &store.model, ctx, txn: self.txn, local: st.local, new_objects: st.new_objects, touched: st.touched, detached: st.detached, links: st.links };
-            let res = ex.check_end_state().await;
+            let res = match admin {
+                Ok(()) => ex.check_end_state().await,
+                Err(e) => Err(e),
+            };
             (res, ex.local.clone().into_iter().collect(), ex.links.clone())
         };
         match res {

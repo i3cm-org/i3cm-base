@@ -56,6 +56,11 @@ enum Cmd {
         #[command(subcommand)]
         cmd: ModuleCmd,
     },
+    /// Health check for containers: exit 0 when the local server answers `GET /health`
+    Health {
+        #[arg(long, env = "I3CM_LISTEN", default_value = "0.0.0.0:8480")]
+        listen: SocketAddr,
+    },
     /// Development: embedded PostgreSQL in a data directory, tenant "dev", serve
     Dev {
         #[arg(long, default_value = ".pgdata")]
@@ -93,7 +98,20 @@ enum ModuleCmd {
 
 /// The operator allows development tenants (and unsigned module packages) on this instance.
 fn development_allowed() -> bool {
-    matches!(std::env::var("I3CM_ALLOW_DEVELOPMENT").as_deref(), Ok("true") | Ok("1") | Ok("yes"))
+    matches!(flag("I3CM_ALLOW_DEVELOPMENT"), Ok(true))
+}
+
+/// A yes/no setting: unset is no; `true`, `1`, `yes` and `false`, `0`, `no` in any case; anything else
+/// is an error instead of a silent "no".
+fn flag(name: &str) -> Result<bool> {
+    match std::env::var(name) {
+        Err(_) => Ok(false),
+        Ok(v) => match v.trim().to_ascii_lowercase().as_str() {
+            "true" | "1" | "yes" => Ok(true),
+            "false" | "0" | "no" | "" => Ok(false),
+            _ => anyhow::bail!("{name}={v:?} is not a yes/no value; use true or false"),
+        },
+    }
 }
 
 #[tokio::main]
@@ -108,6 +126,28 @@ async fn main() -> Result<()> {
     let db = || cli.db.clone().ok_or_else(|| anyhow::anyhow!("--db or I3CM_DATABASE_URL required"));
     match cli.cmd {
         Cmd::Serve { listen, pool } => {
+            // settings that would otherwise switch something off silently are checked first
+            flag("I3CM_ALLOW_DEVELOPMENT")?;
+            let operator_token = match std::env::var("I3CM_OPERATOR_TOKEN") {
+                Ok(t) if t.len() < 32 => anyhow::bail!(
+                    "I3CM_OPERATOR_TOKEN has {} characters, at least 32 are required; set a longer secret or unset the variable to run without the operator surface",
+                    t.len()
+                ),
+                Ok(_) if cli.modules_dir.is_none() => anyhow::bail!(
+                    "I3CM_OPERATOR_TOKEN is set but no modules directory: set I3CM_MODULES_DIR (the operator surface installs modules there) or unset I3CM_OPERATOR_TOKEN"
+                ),
+                Ok(t) => Some(t),
+                Err(_) => None,
+            };
+            if let Some(dir) = &cli.modules_dir {
+                i3cm_server::install::ensure_writable(dir)?;
+                // mandatory modules bundled with the image
+                if let Ok(b) = std::env::var("I3CM_BUNDLED_MODULES") {
+                    for line in i3cm_server::install::sync_bundled(std::path::Path::new(&b), dir)? {
+                        tracing::info!("bundled modules: {line}");
+                    }
+                }
+            }
             let store = connect_with(&db()?, &catalog, cli.modules_dir.as_deref(), pool).await?;
             // bring tenants to the installed module versions (new profiles, rights, carriers)
             match store.sync_modules_all().await {
@@ -133,7 +173,7 @@ async fn main() -> Result<()> {
                 spawn_scheduler(rt.clone(), worker, std::time::Duration::from_secs(20));
             }
             // operator surface over HTTP: only with a root secret (I3CM_OPERATOR_TOKEN)
-            let op = match (std::env::var("I3CM_OPERATOR_TOKEN").ok().filter(|t| t.len() >= 32), &cli.modules_dir) {
+            let op = match (operator_token, &cli.modules_dir) {
                 (Some(token), Some(dir)) => Some(Operator {
                     token,
                     db_url: db()?,
@@ -144,8 +184,9 @@ async fn main() -> Result<()> {
                 }),
                 _ => None,
             };
+            let operator = op.is_some();
             let (addr, task) = serve_full(store, rt, op, listen).await?;
-            tracing::info!(%addr, "listening");
+            tracing::info!(%addr, version = env!("CARGO_PKG_VERSION"), revision = i3cm_api::REVISION, operator, "ready");
             task.await?;
         }
         Cmd::Catalog { cmd: CatalogCmd::Check { file } } => {
@@ -195,6 +236,22 @@ async fn main() -> Result<()> {
                 eprintln!("expires: {}", exp.to_rfc3339());
             }
             println!("{}", issued.token);
+        }
+        Cmd::Health { listen } => {
+            let host = if listen.ip().is_unspecified() { std::net::IpAddr::from([127, 0, 0, 1]) } else { listen.ip() };
+            let url = format!("http://{}/health", SocketAddr::new(host, listen.port()));
+            let ok = reqwest::Client::builder()
+                .timeout(std::time::Duration::from_secs(3))
+                .build()?
+                .get(&url)
+                .send()
+                .await
+                .map(|r| r.status().is_success())
+                .unwrap_or(false);
+            if !ok {
+                eprintln!("not healthy: {url}");
+                std::process::exit(1);
+            }
         }
         Cmd::Dev { data, listen } => {
             let pg = EmbeddedDb::start(Some(std::fs::canonicalize(".").unwrap_or_default().join(data))).await?;

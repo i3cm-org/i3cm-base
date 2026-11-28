@@ -1,6 +1,9 @@
 //! i3cm-api: REST API (`/v1`, JSON). Every request carries `Authorization: Bearer <token>`;
 //! the token determines tenant and `me`. Display names follow `Accept-Language`.
 
+/// Source revision the binaries were built from (`I3CM_REV` or git).
+pub const REVISION: &str = env!("I3CM_REV");
+
 pub mod describe;
 pub mod dev;
 use axum::body::Bytes;
@@ -206,7 +209,8 @@ fn base_router(store: Store) -> Router {
         .route("/v1/types/{t}/objects", get(list))
         .route("/v1/types/{t}/groups", get(groups))
         .route("/v1/profiles", get(profiles))
-        .route("/v1/assignments", post(assign))
+        .route("/v1/assignments", post(assign).get(assignments))
+        .route("/v1/assignments/{id}", delete(unassign))
         .route("/v1/tokens", post(token).get(tokens))
         .route("/v1/tokens/{id}", delete(revoke))
         .route("/v1/metrics", get(move |State(s): State<Store>, h: HeaderMap| async move {
@@ -460,6 +464,22 @@ async fn assign(State(s): State<Store>, h: HeaderMap, Json(b): Json<AssignBody>)
     let r = auth(&s, &h).await?;
     let id = s.assign(&r.ctx, &b.profile, b.carrier).await?;
     Ok(Json(json!({"id": id})))
+}
+
+#[derive(Deserialize)]
+struct AssignmentQuery {
+    carrier: Option<Uuid>,
+}
+
+async fn assignments(State(s): State<Store>, h: HeaderMap, Query(q): Query<AssignmentQuery>) -> R<Json<Value>> {
+    let r = auth(&s, &h).await?;
+    Ok(Json(Value::Array(s.assignments(&r.ctx, q.carrier).await?)))
+}
+
+async fn unassign(State(s): State<Store>, h: HeaderMap, Path(id): Path<Uuid>) -> R<Json<Value>> {
+    let r = auth(&s, &h).await?;
+    let txn = s.unassign(&r.ctx, id).await?;
+    Ok(Json(json!({"ended": id, "txn": txn})))
 }
 
 async fn token(State(s): State<Store>, h: HeaderMap, Json(b): Json<TokenBody>) -> R<Json<Value>> {

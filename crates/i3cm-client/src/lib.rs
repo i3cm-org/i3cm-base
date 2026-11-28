@@ -484,6 +484,18 @@ impl Client {
         let v: Value = self.post("/assignments", &json!({"profile": profile, "carrier": carrier})).await?;
         Ok(serde_json::from_value(v["id"].clone()).unwrap_or_default())
     }
+    /// Current profile assignments (`carrier` filters).
+    pub async fn assignments(&self, carrier: Option<Uuid>) -> Result<Vec<Value>> {
+        match carrier {
+            Some(c) => self.get_q("/assignments", &[("carrier", c.to_string())]).await,
+            None => self.get("/assignments").await,
+        }
+    }
+    /// End a profile assignment.
+    pub async fn unassign(&self, id: Uuid) -> Result<()> {
+        Self::check(self.req(reqwest::Method::DELETE, &format!("/assignments/{id}")).send().await?).await?;
+        Ok(())
+    }
     pub async fn create_token(&self, account: Uuid) -> Result<String> {
         let v: Value = self.post("/tokens", &json!({"account": account})).await?;
         Ok(v["token"].as_str().unwrap_or_default().to_string())
