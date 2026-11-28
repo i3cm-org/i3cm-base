@@ -86,6 +86,8 @@ fn test_model() -> Model {
                 {"name": "t:read-persons", "rights": [{"sign": "+", "art": ["read"], "types": ["base:Person"], "room": "root"}]},
                 {"name": "t:team-writer", "rights": [{"sign": "+", "art": ["create", "write"], "types": ["t:Team"], "room": "root"}]},
                 {"name": "t:team-granter", "rights": [{"sign": "+", "art": ["write", "grant"], "types": ["t:Team"], "room": "root"}]},
+                {"name": "t:member-writer", "rights": [{"sign": "+", "art": ["create", "write"], "types": ["base:GroupMembership"], "room": "root"},
+                    {"sign": "+", "art": ["read"], "types": ["base:Group", "base:Person"], "room": "root"}]},
                 {"name": "t:task-worker", "rights": [{"sign": "+", "art": ["read", "write"], "types": ["sample:Task"], "room": "root", "when": "assignees = %me"},
                     {"sign": "+", "art": ["read"], "types": ["base:Person"], "room": "root"}]},
                 {"name": "t:person-writer", "rights": [{"sign": "+", "art": ["write"], "types": ["base:Person"], "room": "root"},
@@ -885,6 +887,22 @@ async fn rights_relevant_links_need_only_write_and_references_have_no_direction(
     let mut o = Order::new();
     o.link("t:Team.mascot", team, n);
     assert!(cn.order(&o).await.is_err(), "read on both sides is not enough");
+    // the other orientation of a rights-relevant reference: write on the person, read on the team
+    let mut o = Order::new();
+    o.link("t:Team.leader", team, pw);
+    let link = cpw.order(&o).await.expect("write on the person end, read on the team").links[0];
+    let mut o = Order::new();
+    o.unlink("t:Team.leader", link);
+    assert!(cpw.order(&o).await.is_ok());
+    // group memberships still need the right to grant rights
+    let g = env.group("club", None).await;
+    let (mw, cmw) = env.person("mw", &[]).await;
+    env.admin.assign("t:member-writer", mw).await.unwrap();
+    let mut o = Order::new();
+    o.create("m", None, json!({"base:GroupMembership": {}}));
+    o.link("base:GroupMembership.group", "m", g).link("base:GroupMembership.member", "m", mw);
+    let e = cmw.order(&o).await.unwrap_err();
+    assert!(format!("{e}").contains("grant"), "{e}");
 }
 
 #[tokio::test]
