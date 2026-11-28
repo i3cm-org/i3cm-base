@@ -446,7 +446,7 @@ async fn mailbox_aspect() {
     let days = de.aspect_children("sample:mailbox", "").await.unwrap();
     assert_eq!(days.iter().map(|d| (d.display_name.as_str(), d.count)).collect::<Vec<_>>(), vec![("2026-11-24", Some(2)), ("2026-11-25", Some(1))]);
     let mut mails = de.aspect_children("sample:mailbox", &days[0].node).await.unwrap();
-    mails.sort_by(|a, b| a.display_name.cmp(&b.display_name)); // compared as a set (DEC-118)
+    mails.sort_by(|a, b| a.display_name.cmp(&b.display_name)); // compared as a set
     assert_eq!(mails.iter().map(|m| m.display_name.as_str()).collect::<Vec<_>>(), vec!["anna@example.org - Angebot", "ben@example.org - Rechnung"]);
     let inside = de.aspect_children("sample:mailbox", &mails[0].node).await.unwrap();
     // order of the definition: the sub-node block comes before the files block in sample:mailbox
@@ -556,7 +556,7 @@ async fn multi_valued_group_by() {
     );
     let none = de.aspect_children("sample:recipients", &groups[0].node).await.unwrap();
     assert_eq!(none.iter().map(|m| m.display_name.as_str()).collect::<Vec<_>>(), vec!["carla@example.org - Ohne"]);
-    // grouping is paged like every listing (DEC-108)
+    // grouping is paged like every listing
     let second = de.aspect_children_page("sample:recipients", "", 2, 1).await.unwrap();
     assert_eq!(second.iter().map(|g| g.display_name.as_str()).collect::<Vec<_>>(), vec!["carla@example.org"]);
     let groups: Vec<_> = groups.into_iter().skip(1).collect();
@@ -972,7 +972,7 @@ fn rights_path_checker_limits() {
     assert_eq!(with("applicant.team.leader = %me", "-", "t:LeaveRequest").as_deref(), Some("profile.conditional_sign"));
     assert_eq!(with("applicant.team.leader = %me", "+", "*").as_deref(), Some("profile.conditional_any"));
     assert_eq!(with("nothere = %me", "+", "t:LeaveRequest").as_deref(), Some("path.unknown_step"));
-    // an end of an unrelated type is not resolved (review REP-019): Team.leader from a request
+    // an end of an unrelated type is not resolved: Team.leader from a request
     assert_eq!(with("leader = %me", "+", "t:LeaveRequest").as_deref(), Some("path.unknown_step"));
 }
 
@@ -1181,4 +1181,22 @@ async fn the_last_admin_is_protected() {
     // an order on other objects is not affected
     let g = bob.order(Order::new().create("g", None, json!({"base:Group": {"name": "plain"}}))).await.unwrap().created["g"];
     bob.order(Order::new().delete(g)).await.unwrap();
+}
+
+#[tokio::test]
+async fn concurrent_orders_cannot_remove_both_last_admins() {
+    let env = env().await;
+    let admins = env.init.admin_group;
+    let (bob_id, _bob) = env.person("bob-race", &[admins]).await;
+    let off = |id: Uuid| {
+        let mut o = Order::new();
+        o.update(id, json!({"base:PersonAccount": {"deactivated": true}}));
+        o
+    };
+    let (o1, o2) = (off(env.init.admin_account), off(bob_id));
+    let (a, b) = tokio::join!(env.admin.order(&o1), env.admin.order(&o2));
+    let ok = [a.is_ok(), b.is_ok()].iter().filter(|x| **x).count();
+    assert_eq!(ok, 1, "exactly one of two concurrent removals may commit: {a:?} {b:?}");
+    let err = if a.is_err() { a.unwrap_err() } else { b.unwrap_err() };
+    assert!(matches!(err.error_id(), Some("tenant.last_admin") | Some("auth.account_inactive")), "{err:?}");
 }

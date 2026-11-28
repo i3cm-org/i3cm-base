@@ -97,22 +97,11 @@ enum ModuleCmd {
 }
 
 /// The operator allows development tenants (and unsigned module packages) on this instance.
-fn development_allowed() -> bool {
-    matches!(flag("I3CM_ALLOW_DEVELOPMENT"), Ok(true))
+fn development_allowed() -> Result<bool> {
+    flag("I3CM_ALLOW_DEVELOPMENT")
 }
 
-/// A yes/no setting: unset is no; `true`, `1`, `yes` and `false`, `0`, `no` in any case; anything else
-/// is an error instead of a silent "no".
-fn flag(name: &str) -> Result<bool> {
-    match std::env::var(name) {
-        Err(_) => Ok(false),
-        Ok(v) => match v.trim().to_ascii_lowercase().as_str() {
-            "true" | "1" | "yes" => Ok(true),
-            "false" | "0" | "no" | "" => Ok(false),
-            _ => anyhow::bail!("{name}={v:?} is not a yes/no value; use true or false"),
-        },
-    }
-}
+use i3cm_server::install::flag;
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -122,6 +111,8 @@ async fn main() -> Result<()> {
         .with_env_filter(tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "info,tokio_postgres=warn".into()))
         .init();
     let cli = Cli::parse();
+    // a yes/no setting with another value stops every command instead of reading as "no"
+    flag("I3CM_ALLOW_DEVELOPMENT")?;
     let catalog = cli.catalog.clone().unwrap_or_else(default_catalog);
     let db = || cli.db.clone().ok_or_else(|| anyhow::anyhow!("--db or I3CM_DATABASE_URL required"));
     match cli.cmd {
@@ -220,7 +211,7 @@ async fn main() -> Result<()> {
             println!("{}", serde_json::to_string_pretty(&r)?);
         }
         Cmd::InitTenant { name, admin, development } => {
-            if development && !development_allowed() {
+            if development && !development_allowed()? {
                 anyhow::bail!("development tenants are not allowed on this instance (operator: I3CM_ALLOW_DEVELOPMENT=true)");
             }
             let store = connect_with(&db()?, &catalog, cli.modules_dir.as_deref(), 4).await?;
@@ -238,7 +229,11 @@ async fn main() -> Result<()> {
             println!("{}", issued.token);
         }
         Cmd::Health { listen } => {
-            let host = if listen.ip().is_unspecified() { std::net::IpAddr::from([127, 0, 0, 1]) } else { listen.ip() };
+            let host = match listen.ip() {
+                std::net::IpAddr::V4(ip) if ip.is_unspecified() => std::net::IpAddr::from([127, 0, 0, 1]),
+                std::net::IpAddr::V6(ip) if ip.is_unspecified() => std::net::IpAddr::V6(std::net::Ipv6Addr::LOCALHOST),
+                ip => ip,
+            };
             let url = format!("http://{}/health", SocketAddr::new(host, listen.port()));
             let ok = reqwest::Client::builder()
                 .timeout(std::time::Duration::from_secs(3))

@@ -1,5 +1,5 @@
 //! An open order: one database transaction that stays open across several steps, used by
-//! plain orders and by module code (DEC-119: one transaction per order, writes go straight in,
+//! plain orders and by module code (one transaction per order, writes go straight in,
 //! any error aborts the whole order).
 
 use crate::context::{db, Ctx};
@@ -9,7 +9,7 @@ use i3cm_core::Result;
 use std::collections::{BTreeSet, HashMap};
 use uuid::Uuid;
 
-/// Who acts in an order beyond the account: module, function and tool (DEC-117).
+/// Who acts in an order beyond the account: module, function and tool.
 #[derive(Debug, Clone, Default)]
 pub struct Audit {
     pub module: Option<String>,
@@ -64,6 +64,7 @@ impl Session {
     /// by a `create` (its local name or id).
     pub async fn apply(&mut self, store: &Store, ctx: &mut Ctx, op: &Op) -> Result<Option<Uuid>> {
         if self.state.admin_before.is_none() && self.may_remove_admin(store, ctx, op).await? {
+            crate::admin::lock_admins(self.client(), ctx.tenant).await?;
             let had = store.has_admin(self.client(), ctx.tenant).await?;
             self.state.admin_before = Some(had);
         }

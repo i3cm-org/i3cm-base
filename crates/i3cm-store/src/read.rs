@@ -555,7 +555,7 @@ impl Store {
             None => "NULL::jsonb".to_string(),
         };
         // one branch per part of the access (rooms; each rights path), merged by UNION: no OR
-        // in a single query, so every branch is driven by its own index (REP-018)
+        // in a single query, so every branch is driven by its own index
         let branches = self.rights_branches(&access, ctx, &mut params);
         let branch = |cond: &str, lim: i64| {
             format!(
@@ -869,6 +869,7 @@ impl Store {
         }
         let mut c = self.client().await?;
         let tx = c.transaction().await.map_err(db)?;
+        crate::admin::lock_admins(&*tx, ctx.tenant).await?;
         let had = self.has_admin(&*tx, ctx.tenant).await?;
         let txn: i64 = tx.query_one("SELECT nextval('txn_seq')", &[]).await.map_err(db)?.get(0);
         tx.execute("INSERT INTO txn (tenant_id, id, account) VALUES ($1,$2,$3)", &[&ctx.tenant, &txn, &ctx.me()]).await.map_err(db)?;

@@ -58,7 +58,7 @@ impl Trust {
             Err(_) => None,
         };
         let env = std::env::var("I3CM_TRUSTED_KEYS").unwrap_or_default();
-        let dev = matches!(std::env::var("I3CM_ALLOW_DEVELOPMENT").as_deref(), Ok("true") | Ok("1") | Ok("yes"));
+        let dev = flag("I3CM_ALLOW_DEVELOPMENT")?;
         Ok(Trust::build(BUILTIN_KEYS, extra, &env, file.as_deref(), dev))
     }
 
@@ -72,6 +72,19 @@ impl Trust {
         keys.sort();
         keys.dedup();
         Trust { keys, allow_unsigned: development }
+    }
+}
+
+/// A yes/no setting: unset is no; `true`, `1`, `yes` and `false`, `0`, `no` in any case; anything
+/// else is an error instead of a silent "no".
+pub fn flag(name: &str) -> Result<bool> {
+    match std::env::var(name) {
+        Err(_) => Ok(false),
+        Ok(v) => match v.trim().to_ascii_lowercase().as_str() {
+            "true" | "1" | "yes" => Ok(true),
+            "false" | "0" | "no" | "" => Ok(false),
+            _ => bail!("{name}={v:?} is not a yes/no value; use true or false"),
+        },
     }
 }
 
@@ -387,12 +400,13 @@ fn current_uid() -> String {
 /// line per change.
 pub fn sync_bundled(bundled: &Path, dir: &Path) -> Result<Vec<String>> {
     let mut out = vec![];
-    let mut names: Vec<String> = std::fs::read_dir(bundled)
-        .with_context(|| format!("cannot read the bundled modules in {}", bundled.display()))?
-        .filter_map(|e| e.ok().map(|e| e.path()))
-        .filter(|p| p.extension().is_some_and(|x| x == "json"))
-        .filter_map(|p| p.file_stem().and_then(|s| s.to_str()).map(str::to_string))
-        .collect();
+    let mut names: Vec<String> = vec![];
+    for e in std::fs::read_dir(bundled).with_context(|| format!("cannot read the bundled modules in {}", bundled.display()))? {
+        let p = e.with_context(|| format!("cannot read the bundled modules in {}", bundled.display()))?.path();
+        if p.extension().is_some_and(|x| x == "json") {
+            names.push(p.file_stem().and_then(|s| s.to_str()).map(str::to_string).with_context(|| format!("bad module file name {}", p.display()))?);
+        }
+    }
     names.sort();
     let markers = dir.join(".bundled");
     std::fs::create_dir_all(&markers)?;
@@ -423,30 +437,73 @@ pub fn sync_bundled(bundled: &Path, dir: &Path) -> Result<Vec<String>> {
     Ok(out)
 }
 
-/// Copy one module's files: `<name>.json`, `<name>.wasm`, `ui/<name>.html`, `src/<name>/`.
+/// Copy one module's files (`<name>.json`, `<name>.wasm`, `ui/<name>.html`, `src/<name>/`): all
+/// are staged under temporary names first and renamed into place only when every copy succeeded,
+/// the catalog part last, so that a failure leaves the previous version intact.
 fn copy_module(from: &Path, to: &Path, name: &str) -> Result<()> {
-    for f in [format!("{name}.wasm"), format!("ui/{name}.html")] {
-        let src = from.join(&f);
-        let dst = to.join(&f);
-        if src.exists() {
-            if let Some(p) = dst.parent() {
-                std::fs::create_dir_all(p)?;
+    let tag = format!(".sync-{}", std::process::id());
+    let stage = || -> Result<(Vec<(PathBuf, PathBuf)>, Vec<PathBuf>)> {
+        let mut staged = vec![];
+        let mut removed = vec![];
+        for f in [format!("{name}.wasm"), format!("ui/{name}.html")] {
+            let src = from.join(&f);
+            let dst = to.join(&f);
+            if src.exists() {
+                if let Some(p) = dst.parent() {
+                    std::fs::create_dir_all(p)?;
+                }
+                let tmp = PathBuf::from(format!("{}{tag}", dst.display()));
+                std::fs::copy(&src, &tmp).with_context(|| format!("copying {}", src.display()))?;
+                staged.push((tmp, dst));
+            } else if dst.exists() {
+                removed.push(dst);
             }
-            std::fs::copy(&src, &dst).with_context(|| format!("copying {}", src.display()))?;
+        }
+        let src = from.join("src").join(name);
+        let dst = to.join("src").join(name);
+        if src.exists() {
+            let tmp = to.join("src").join(format!("{name}{tag}"));
+            if tmp.exists() {
+                std::fs::remove_dir_all(&tmp)?;
+            }
+            copy_dir(&src, &tmp)?;
+            staged.push((tmp, dst));
         } else if dst.exists() {
-            std::fs::remove_file(&dst)?;
+            removed.push(dst);
+        }
+        let tmp = to.join(format!("{name}.json{tag}"));
+        std::fs::copy(from.join(format!("{name}.json")), &tmp)?;
+        staged.push((tmp, to.join(format!("{name}.json"))));
+        Ok((staged, removed))
+    };
+    let (staged, removed) = match stage() {
+        Ok(x) => x,
+        Err(e) => {
+            // leave no temporary copies behind; the old version stays as it was
+            for d in [to.to_path_buf(), to.join("ui"), to.join("src")] {
+                for e in std::fs::read_dir(&d).into_iter().flatten().flatten() {
+                    if e.file_name().to_string_lossy().ends_with(&tag) {
+                        let p = e.path();
+                        let _ = if p.is_dir() { std::fs::remove_dir_all(&p) } else { std::fs::remove_file(&p) };
+                    }
+                }
+            }
+            return Err(e);
+        }
+    };
+    for (tmp, dst) in staged {
+        if dst.is_dir() {
+            std::fs::remove_dir_all(&dst)?;
+        }
+        std::fs::rename(&tmp, &dst).with_context(|| format!("placing {}", dst.display()))?;
+    }
+    for p in removed {
+        if p.is_dir() {
+            std::fs::remove_dir_all(&p)?;
+        } else {
+            std::fs::remove_file(&p)?;
         }
     }
-    let src = from.join("src").join(name);
-    let dst = to.join("src").join(name);
-    if dst.exists() {
-        std::fs::remove_dir_all(&dst)?;
-    }
-    if src.exists() {
-        copy_dir(&src, &dst)?;
-    }
-    // the catalog part last: a module counts as present only once its other files are in place
-    std::fs::copy(from.join(format!("{name}.json")), to.join(format!("{name}.json")))?;
     Ok(())
 }
 

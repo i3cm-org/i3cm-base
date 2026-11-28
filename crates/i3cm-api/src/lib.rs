@@ -165,7 +165,7 @@ struct Mods {
     rt: Option<i3cm_wasm::Runtime>,
 }
 
-/// The API with the WebAssembly runtime for module operations and hooks (DEC-119).
+/// The API with the WebAssembly runtime for module operations and hooks.
 pub fn router_with(store: Store, rt: Option<i3cm_wasm::Runtime>) -> Router {
     let mods = Router::new()
         .route("/v1/orders", post(mod_order))
@@ -277,7 +277,7 @@ async fn modules(State(m): State<Mods>, h: HeaderMap) -> R<Json<Value>> {
     Ok(Json(json!(list)))
 }
 
-/// Studio (DEC-136): check uploaded module sources; development tenants only, for guardians
+/// Studio: check uploaded module sources; development tenants only, for guardians
 /// or whoever may write `studio:SourceFile`.
 async fn catalog_check(State(m): State<Mods>, h: HeaderMap, Json(b): Json<dev::CheckBody>) -> R<Json<Value>> {
     let r = auth(&m.store, &h).await?;

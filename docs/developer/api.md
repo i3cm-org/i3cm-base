@@ -125,7 +125,7 @@ rights on named types, at most 3 steps, over any references.
 Rights paths grant read, write and delete on existing objects (create, place and remove need
 unconditional rights). Lists combine the rooms with unconditional rights and each rights path
 as separate branches of one `UNION` (no `OR` in a query) and page by key, so every page costs
-the same (measured: 100,000 objects, page of 50, room plus rights path in REP-018).
+the same (measured: 100,000 objects, page of 50, room plus rights path).
 
 ## References, rights and deletion
 

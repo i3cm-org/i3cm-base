@@ -1,4 +1,4 @@
-//! Self-description (SPEC-004 section 6): an agent needs only the address and a token. All of
+//! Self-description: an agent needs only the address and a token. All of
 //! this is readable without a token and carries no data of any tenant.
 //!
 //! The route list below is the source of `/openapi.json`; a test checks that it names every

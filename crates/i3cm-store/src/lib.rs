@@ -143,7 +143,7 @@ impl Store {
             return Err(unauth("auth.expired_token", "the token has expired"));
         }
         if row.get::<_, bool>(7) {
-            // unused for 90 days: the token lapses (DEC-124, SPEC-004)
+            // unused for 90 days: the token lapses
             return Err(unauth("auth.unused_token", "the token was not used for 90 days"));
         }
         let id: uuid::Uuid = row.get(2);
