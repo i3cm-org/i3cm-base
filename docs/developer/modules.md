@@ -3,6 +3,14 @@
 A module of i3cm can live in a repository of its own (for example `i3cm-org/i3cm-tasks`). The kernel's
 type compiler `typecat` reads it next to the kernel's own types and produces one `catalog.json`.
 
+## Limits
+
+For module code: an order of module code (operation, hook, schedule) has 10 s (`ORDER_TIMEOUT`,
+`module.timeout`), chains of hooks and calls end at depth 16 (`module.depth`), rights paths have at
+most 3 steps (`MAX_RIGHTS_STEPS`). Contents written by module code as base64 are not limited yet; this
+transition ends when module code takes upload handles. All limits of the API with value, reason and
+error: [api.md](api.md#limits).
+
 ## Layout
 
 ```

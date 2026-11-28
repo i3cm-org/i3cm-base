@@ -111,7 +111,15 @@ struct Env {
 }
 
 async fn env() -> Env {
-    let store = Store::connect(&db_url(), test_model(), 16).await.unwrap();
+    env_with(Store::connect(&db_url(), test_model(), 16).await.unwrap().with_files(&data_dir()).unwrap()).await
+}
+
+/// A fresh data directory for one test.
+fn data_dir() -> std::path::PathBuf {
+    std::env::temp_dir().join(format!("i3cm-test-data-{}", Uuid::new_v4()))
+}
+
+async fn env_with(store: Store) -> Env {
     let init = store.init_tenant(&format!("t-{}", Uuid::new_v4()), "admin").await.unwrap();
     let (addr, _task) = serve(store.clone(), "127.0.0.1:0".parse().unwrap()).await.unwrap();
     let admin = Client::new(&format!("http://{addr}"), &init.token);
@@ -1209,4 +1217,205 @@ async fn attaching_an_account_type_cannot_deactivate_the_last_admin() {
     let e = env.admin.order(&o).await.unwrap_err();
     assert_eq!(e.error_id(), Some("tenant.last_admin"), "{e:?}");
     env.admin.me().await.unwrap();
+}
+
+// ---- uploads, file store, idempotency ----
+
+fn sha_hex(b: &[u8]) -> String {
+    use sha2::Digest;
+    hex::encode(sha2::Sha256::digest(b))
+}
+
+async fn http_get(env: &Env, path: &str, range: Option<&str>) -> (u16, reqwest::header::HeaderMap, Vec<u8>) {
+    let mut r = reqwest::Client::new().get(format!("{}/v1{}", env.admin.base_url(), path)).bearer_auth(&env.init.token);
+    if let Some(x) = range {
+        r = r.header("range", x);
+    }
+    let resp = r.send().await.unwrap();
+    let st = resp.status().as_u16();
+    let h = resp.headers().clone();
+    (st, h, resp.bytes().await.unwrap().to_vec())
+}
+
+#[tokio::test]
+async fn upload_in_parts_with_a_repeated_part_and_range_download() {
+    let env = env().await;
+    // 3 parts, the last one shorter: 1 MiB + 1 MiB + 12345 bytes
+    let data: Vec<u8> = (0..(2 * (1 << 20) + 12345)).map(|i: usize| (i * 31 % 251) as u8).collect();
+    let sha = sha_hex(&data);
+    let up = env.admin.upload_open(Some(&sha)).await.unwrap();
+    let id = up["id"].as_str().unwrap().to_string();
+    assert!(id.starts_with("upl_"));
+    let parts: Vec<&[u8]> = data.chunks(1 << 20).collect();
+    env.admin.upload_part(&id, 2, parts[1].to_vec()).await.unwrap();
+    env.admin.upload_part(&id, 1, parts[0].to_vec()).await.unwrap();
+    // the same part again changes nothing; other bytes under the same number are a conflict
+    env.admin.upload_part(&id, 1, parts[0].to_vec()).await.unwrap();
+    assert_eq!(env.admin.upload_part(&id, 1, b"other".to_vec()).await.unwrap_err().error_id(), Some("upload.part_conflict"));
+    // completing with the number of parts names the missing one
+    let e = env.admin.upload_complete(&id, None, Some(3)).await.unwrap_err();
+    assert_eq!(e.error_id(), Some("upload.incomplete"));
+    // without it, the checksum catches the missing last part, and the upload stays open
+    assert_eq!(env.admin.upload_complete(&id, None, None).await.unwrap_err().error_id(), Some("upload.checksum_mismatch"));
+    env.admin.upload_part(&id, 3, parts[2].to_vec()).await.unwrap();
+    let done = env.admin.upload_complete(&id, None, Some(3)).await.unwrap();
+    assert_eq!(done["sha256"], sha);
+    assert_eq!(done["size"], data.len());
+    // completing twice gives the same answer
+    assert_eq!(env.admin.upload_complete(&id, None, None).await.unwrap()["sha256"], sha);
+
+    let mut o = Order::new();
+    o.create("d", None, json!({"sample:Document": {"title": "Big"}}));
+    o.content_upload("d", &id, "application/octet-stream", Some("big.bin"));
+    let r = env.admin.order(&o).await.unwrap();
+    assert!(r.warnings.is_empty());
+    let d = r.created["d"];
+    let back = env.admin.get_content(d).await.unwrap();
+    assert_eq!(sha_hex(&back), sha);
+    // stored as a file of the file store, not in the database
+    assert!(env.store.files().unwrap().has(&sha));
+    let c = env.store.client().await.unwrap();
+    let in_db: i64 = c.query_one("SELECT count(*) FROM blob WHERE sha256=$1", &[&sha]).await.unwrap().get(0);
+    assert_eq!(in_db, 0);
+
+    // ranges
+    let (st, h, body) = http_get(&env, &format!("/objects/{d}/content"), Some("bytes=10-19")).await;
+    assert_eq!(st, 206);
+    assert_eq!(body, data[10..20].to_vec());
+    assert_eq!(h["content-range"], format!("bytes 10-19/{}", data.len()));
+    assert_eq!(h["accept-ranges"], "bytes");
+    let (st, _, body) = http_get(&env, &format!("/objects/{d}/content"), Some("bytes=-100")).await;
+    assert_eq!(st, 206);
+    assert_eq!(body, data[data.len() - 100..].to_vec());
+    let (st, _, body) = http_get(&env, &format!("/objects/{d}/content"), Some(&format!("bytes={}-", (1 << 20) - 5))).await;
+    assert_eq!(st, 206);
+    assert_eq!(body, data[(1 << 20) - 5..].to_vec());
+    let (st, _, _) = http_get(&env, &format!("/objects/{d}/content"), Some(&format!("bytes={}-", data.len() + 5))).await;
+    assert_eq!(st, 416);
+
+    // the handle is used up
+    let mut o = Order::new();
+    o.content_upload(d, &id, "application/octet-stream", None);
+    assert_eq!(env.admin.order(&o).await.unwrap_err().error_id(), Some("upload.consumed"));
+}
+
+#[tokio::test]
+async fn upload_rules_foreign_expired_checksum_and_sweep() {
+    let store = Store::connect(&db_url(), test_model(), 16).await.unwrap().with_files(&data_dir()).unwrap().with_upload_ttl(1).unwrap();
+    let env = env_with(store).await;
+    let (_, lea) = env.person("lea-up", &[]).await;
+    let mut o = Order::new();
+    o.create("d", None, json!({"sample:Document": {"title": "Doc"}}));
+    let d = env.admin.order(&o).await.unwrap().created["d"];
+
+    // a handle of another account does not exist for the caller
+    let theirs = lea.upload(b"from lea").await.unwrap();
+    let mut o = Order::new();
+    o.content_upload(d, &theirs, "text/plain", None);
+    assert_eq!(env.admin.order(&o).await.unwrap_err().error_id(), Some("upload.not_found"));
+    assert_eq!(env.admin.upload_part(&theirs, 1, b"x".to_vec()).await.unwrap_err().error_id(), Some("upload.not_found"));
+
+    // a wrong checksum fails the upload
+    let up = env.admin.upload_open(Some(&sha_hex(b"expected"))).await.unwrap();
+    let id = up["id"].as_str().unwrap();
+    env.admin.upload_part(id, 1, b"something else".to_vec()).await.unwrap();
+    assert_eq!(env.admin.upload_complete(id, None, None).await.unwrap_err().error_id(), Some("upload.checksum_mismatch"));
+
+    // an open upload is not a handle yet
+    let open = env.admin.upload_open(None).await.unwrap()["id"].as_str().unwrap().to_string();
+    env.admin.upload_part(&open, 1, b"half".to_vec()).await.unwrap();
+    let mut o = Order::new();
+    o.content_upload(d, &open, "text/plain", None);
+    assert_eq!(env.admin.order(&o).await.unwrap_err().error_id(), Some("upload.incomplete"));
+
+    // expiry: after the time to live a completed handle is refused, and the sweep empties staging
+    let late = env.admin.upload(b"too late").await.unwrap();
+    tokio::time::sleep(std::time::Duration::from_millis(1500)).await;
+    let mut o = Order::new();
+    o.content_upload(d, &late, "text/plain", None);
+    assert_eq!(env.admin.order(&o).await.unwrap_err().error_id(), Some("upload.expired"));
+    env.store.sweep().await.unwrap();
+    let fs = env.store.files().unwrap();
+    for id in [&late, &open, &theirs] {
+        assert!(!fs.root().join("staging").join(id.as_str()).exists(), "staging of {id} is gone");
+    }
+    let mut o = Order::new();
+    o.content_upload(d, &late, "text/plain", None);
+    assert_eq!(env.admin.order(&o).await.unwrap_err().error_id(), Some("upload.expired"));
+}
+
+#[tokio::test]
+async fn idempotent_orders_write_once() {
+    let env = env().await;
+    let before = env.admin.list("sample:Document", &ListQuery::default()).await.unwrap().len();
+    let mut o = Order::new();
+    o.create("d", None, json!({"sample:Document": {"title": "Once"}}));
+    let key = Uuid::new_v4().to_string();
+    let a = env.admin.order_with_key(&o, &key).await.unwrap();
+    let b = env.admin.order_with_key(&o, &key).await.unwrap();
+    assert_eq!(a.txn, b.txn);
+    assert_eq!(a.created, b.created);
+    assert_eq!(env.admin.list("sample:Document", &ListQuery::default()).await.unwrap().len(), before + 1);
+    // the repeat is marked
+    let resp = reqwest::Client::new()
+        .post(format!("{}/v1/orders", env.admin.base_url()))
+        .bearer_auth(&env.init.token)
+        .header("idempotency-key", &key)
+        .json(&serde_json::to_value(&o).unwrap())
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.headers()["idempotent-replay"], "true");
+    // same key, other body
+    let mut o2 = Order::new();
+    o2.create("d", None, json!({"sample:Document": {"title": "Other"}}));
+    let e = env.admin.order_with_key(&o2, &key).await.unwrap_err();
+    assert_eq!(e.status(), Some(409));
+    assert_eq!(e.error_id(), Some("idempotency.conflict"));
+    // a failed order does not keep its key: fixing the order and retrying with the key works
+    let mut bad = Order::new();
+    bad.create("x", None, json!({"sample:Document": {"title": "X"}})).text("x", "sample:nope", "x");
+    let k2 = Uuid::new_v4().to_string();
+    assert!(env.admin.order_with_key(&bad, &k2).await.is_err());
+    assert!(env.admin.order_with_key(&bad, &k2).await.is_err());
+}
+
+#[tokio::test]
+async fn inline_content_is_limited_and_marked_deprecated() {
+    let env = env().await;
+    let mut o = Order::new();
+    o.create("d", None, json!({"sample:Document": {"title": "Small"}}));
+    o.content("d", b"small", "text/plain", None);
+    let r = env.admin.order(&o).await.unwrap();
+    assert_eq!(r.warnings[0]["warning"], "content.inline_deprecated");
+    let big = vec![7u8; (1 << 20) + 1];
+    let mut o = Order::new();
+    o.content(r.created["d"], &big, "application/octet-stream", None);
+    let e = env.admin.order(&o).await.unwrap_err();
+    assert_eq!(e.error_id(), Some("content.inline_too_large"));
+}
+
+#[tokio::test]
+async fn migrate_blobs_moves_database_content_to_files() {
+    // content written by a server without a data directory stays in the database
+    let plain = env_with(Store::connect(&db_url(), test_model(), 4).await.unwrap()).await;
+    let mut o = Order::new();
+    o.create("d", None, json!({"sample:Document": {"title": "Old"}}));
+    o.content("d", b"old bytes in the database", "text/plain", None);
+    let d = plain.admin.order(&o).await.unwrap().created["d"];
+    let sha = sha_hex(b"old bytes in the database");
+    let c = plain.store.client().await.unwrap();
+    let n: i64 = c.query_one("SELECT count(*) FROM blob WHERE sha256=$1", &[&sha]).await.unwrap().get(0);
+    assert_eq!(n, 1);
+    // a server with a data directory still reads it from the database
+    let dir = data_dir();
+    let with = plain.store.clone().with_files(&dir).unwrap();
+    let ctx = with.ctx(plain.init.tenant, plain.init.admin_account).await.unwrap();
+    assert_eq!(with.get_content(&ctx, d).await.unwrap().0, b"old bytes in the database");
+    // after the migration it reads the file, and the database holds no blob any more
+    assert!(with.migrate_blobs().await.unwrap() >= 1);
+    let n: i64 = c.query_one("SELECT count(*) FROM blob", &[]).await.unwrap().get(0);
+    assert_eq!(n, 0);
+    assert!(with.files().unwrap().has(&sha));
+    assert_eq!(with.get_content(&ctx, d).await.unwrap().0, b"old bytes in the database");
 }

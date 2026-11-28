@@ -27,6 +27,7 @@ struct State {
     /// Whether the tenant had an administrator before the first operation that could remove one
     /// (set lazily; `None` while no such operation ran).
     admin_before: Option<bool>,
+    warnings: Vec<serde_json::Value>,
 }
 
 pub struct Session {
@@ -34,6 +35,8 @@ pub struct Session {
     pub txn: i64,
     state: State,
     seq: i32,
+    /// Largest base64 content in this order (orders of clients; `None` for module code).
+    inline_limit: Option<usize>,
 }
 
 impl Store {
@@ -41,7 +44,8 @@ impl Store {
     pub async fn begin(&self, ctx: &Ctx, audit: &Audit) -> Result<Session> {
         let client = self.client().await?;
         client.batch_execute("BEGIN").await.map_err(db)?;
-        let mut s = Session { client: Some(client), txn: 0, state: State::default(), seq: 0 };
+        let inline_limit = if audit.module.is_none() { Some(crate::files::MAX_INLINE_CONTENT) } else { None };
+        let mut s = Session { client: Some(client), txn: 0, state: State::default(), seq: 0, inline_limit };
         let c = s.client();
         let txn: i64 = c.query_one("SELECT nextval('txn_seq')", &[]).await.map_err(db)?.get(0);
         c.execute(
@@ -72,10 +76,23 @@ impl Session {
         let st = std::mem::take(&mut self.state);
         let client = self.client.as_ref().expect("session is open");
         let admin_before = st.admin_before;
-        let mut ex = Exec { tx: client, m: &store.model, ctx, txn: self.txn, local: st.local, new_objects: st.new_objects, touched: st.touched, detached: st.detached, links: st.links };
+        let mut ex = Exec {
+            store,
+            tx: client,
+            m: &store.model,
+            ctx,
+            txn: self.txn,
+            local: st.local,
+            new_objects: st.new_objects,
+            touched: st.touched,
+            detached: st.detached,
+            links: st.links,
+            inline_limit: self.inline_limit,
+            warnings: st.warnings,
+        };
         let res = ex.apply(op).await;
         let created = ex.new_objects.difference(&before).next().copied();
-        self.state = State { local: ex.local, new_objects: ex.new_objects, touched: ex.touched, detached: ex.detached, links: ex.links, admin_before };
+        self.state = State { local: ex.local, new_objects: ex.new_objects, touched: ex.touched, detached: ex.detached, links: ex.links, admin_before, warnings: ex.warnings };
         res.map(|_| created)
     }
 
@@ -124,8 +141,22 @@ impl Session {
             },
             _ => Ok(()),
         };
+        let warnings = st.warnings;
         let (res, created, links) = {
-            let mut ex = Exec { tx: &client, m: &store.model, ctx, txn: self.txn, local: st.local, new_objects: st.new_objects, touched: st.touched, detached: st.detached, links: st.links };
+            let mut ex = Exec {
+                store,
+                tx: &client,
+                m: &store.model,
+                ctx,
+                txn: self.txn,
+                local: st.local,
+                new_objects: st.new_objects,
+                touched: st.touched,
+                detached: st.detached,
+                links: st.links,
+                inline_limit: self.inline_limit,
+                warnings: vec![],
+            };
             let res = match admin {
                 Ok(()) => ex.check_end_state().await,
                 Err(e) => Err(e),
@@ -135,11 +166,11 @@ impl Session {
         match res {
             Ok(()) if commit => {
                 client.batch_execute("COMMIT").await.map_err(db)?;
-                Ok(OrderResult { txn: self.txn, dry_run: false, created, links })
+                Ok(OrderResult { txn: self.txn, dry_run: false, created, links, warnings })
             }
             Ok(()) => {
                 client.batch_execute("ROLLBACK").await.map_err(db)?;
-                Ok(OrderResult { txn: self.txn, dry_run: true, created, links })
+                Ok(OrderResult { txn: self.txn, dry_run: true, created, links, warnings })
             }
             Err(e) => {
                 let _ = client.batch_execute("ROLLBACK").await;

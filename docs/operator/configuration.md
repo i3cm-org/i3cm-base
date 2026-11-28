@@ -1,5 +1,16 @@
 # Configuration
 
+## Limits
+
+The limits of the API (part and file size of uploads, expiry, open uploads, idempotency, time of module
+code) are listed with value, reason and error in [the API reference](../developer/api.md#limits).
+Changeable by the operator:
+
+| Limit | Default | Variable |
+|---|---|---|
+| unassigned upload expires (`UPLOAD_TTL`) | 24 hours | `I3CM_UPLOAD_TTL` (seconds) |
+| request body behind the bundled nginx | 200 MiB (`client_max_body_size`) | `deploy/ui/nginx.conf`; uploads send parts of at most 64 MiB |
+
 ## Server (`i3cm-server`)
 
 The server has no configuration file. Every value comes from a command line option or, where named,
@@ -10,6 +21,8 @@ the default. The image sets the variables marked "image".
 |---|---|---|---|
 | `--db` | `I3CM_DATABASE_URL` | — (required) | PostgreSQL URL |
 | `--catalog` | `I3CM_CATALOG` | `catalog.json` at the root of the source tree the server was built from; image: `/etc/i3cm/catalog.json` | catalog of the kernel, built by `typecat` |
+| `--data-dir` | `I3CM_DATA_DIR` | — (required to serve); image: `/var/lib/i3cm/data` (a volume) | file store: contents addressed by SHA-256 (`blobs/`) and the staging area of uploads (`staging/`); must be writable, else the server does not start |
+| — | `I3CM_UPLOAD_TTL` | `86400` | seconds an upload may stay unassigned before it expires (`UPLOAD_TTL`); a non-number stops the start |
 | `--modules-dir` | `I3CM_MODULES_DIR` | none (module code, hooks and schedules off); image: `/var/lib/i3cm/modules` (a volume) | installed modules: `<module>.json`, `<module>.wasm`, `ui/`, `src/`; must be writable, else the server does not start |
 | — | `I3CM_BUNDLED_MODULES` | image: `/opt/i3cm/bundled-modules` | modules shipped with the image; copied into the modules directory at start (see [README.md](README.md#upgrades)) |
 | `serve --listen` | `I3CM_LISTEN` | `0.0.0.0:8480` | address of the API |

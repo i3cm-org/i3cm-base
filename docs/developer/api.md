@@ -5,9 +5,34 @@ All requests send `Authorization: Bearer <token>` (401 with `auth.invalid_token`
 otherwise), except the
 self-description: `GET /` (entry page), `/guide/agents` (guide for agents), `/openapi.json`,
 `/skill.zip` (the guide as a skill) and `/v1/version` (version and source revision). Errors are
-`{"error_id": "...", "description": "...", "params": {...}}` with status 400 (invalid),
+`{"error_id": "...", "description": "...", "params": {...}, "hint": "..."}` with status 400 (invalid),
 401 (no or unknown token), 404 (not found or not allowed: both look the same), 409 (conflict,
-integrity), 500.
+integrity), 500. `hint`, where present, says what to do next.
+
+## Limits
+
+Fixed values of the kernel, the reason for them and the error a caller gets. The operator can change
+the ones marked "operator" ([configuration](../operator/configuration.md)).
+
+| Limit | Value | Reason | Error |
+|---|---|---|---|
+| request body (JSON and direct content) | 64 MiB | memory of the server | 413 |
+| part of an upload (`MAX_UPLOAD_PART`) | 64 MiB; any size below, recommended 8 MiB | fits under usual proxy limits | `upload.part_too_large` |
+| file (`MAX_UPLOAD_SIZE`) | 16 GiB | protects the storage from accidents | `upload.too_large` |
+| parts of one upload (`MAX_UPLOAD_PARTS`) | 100 000 | | `upload.bad_part` |
+| unassigned upload (`UPLOAD_TTL`, operator: `I3CM_UPLOAD_TTL`) | expires after 24 hours | interrupted transfers can be resumed within a day | `upload.expired` |
+| open uploads per account (`MAX_OPEN_UPLOADS`) | 100 | protects from forgotten uploads | `upload.too_many_open` |
+| unassigned upload bytes per account (`MAX_STAGED_BYTES`) | 64 GiB | protects the staging area | `upload.staging_full` |
+| content as base64 in an order of a client (`MAX_INLINE_CONTENT`) | 1 MiB (transition; module code is not limited yet) | files go through uploads | `content.inline_too_large` |
+| stored answer of an idempotent request (`IDEMPOTENCY_TTL`) | 24 hours | covers retries after network errors | — (a later repeat runs again) |
+| order of module code (operation, hook, schedule) (`ORDER_TIMEOUT`) | 10 s | one module must not block the instance | `module.timeout` |
+| chain of hooks and calls | depth 16 | stops loops between hooks | `module.depth` |
+| rights path (`MAX_RIGHTS_STEPS`) | 3 steps | cost in SQL | `path.too_long` (catalog) |
+| token lifetime (`TOKEN_TTL_DAYS`, `TOKEN_TTL_MAX_DAYS`) | default 90 days, at most 365 | | `token.bad_ttl` |
+| start token of `init-tenant` (`INIT_TOKEN_TTL_DAYS`) | 1 day | only for issuing lasting tokens | `auth.expired_token` |
+| unused token | lapses after 90 days | | `auth.unused_token` |
+| source check of a development tenant (`MAX_MODULES`, `MAX_FILES`, `MAX_BYTES`) | 16 modules, 400 files, 4 MiB | | `check.too_large` |
+| operator secret | at least 32 characters | | the server does not start |
 
 ## Orders
 
@@ -24,18 +49,58 @@ and rolls back. Object ids are UUIDs or the `ref` of an object created earlier i
   {"op": "detach", "id": "<id>", "type": "base:PersonAccount"},
   {"op": "move", "id": "<id>", "room": "<room id>"},
   {"op": "unlink", "reference": "fibu:JournalLine.account", "id": "<link id>"},
-  {"op": "content", "id": "e", "mediaType": "application/pdf", "filename": "r-1.pdf", "base64": "<data>"},
+  {"op": "content", "id": "e", "mediaType": "application/pdf", "filename": "r-1.pdf", "upload": "upl_…"},
   {"op": "text", "id": "e", "textType": "dms:plain", "content": "..."},
   {"op": "delete", "id": "<id>"}
 ]}
 ```
 
-`content` and `text` write the content (base64) and a text of an object in the same order as the
-structure, so that both are stored or neither. Hooks of modules do not run for them.
+`content` and `text` write the content and a text of an object in the same order as the structure,
+so that both are stored or neither. Hooks of modules do not run for them. The content comes from a
+completed upload (`upload`, see [Uploads](#uploads)); `base64` instead of `upload` is still accepted
+for small contents (see [Limits](#limits)) and answered with the warning `content.inline_deprecated`.
 
-Response: `{"txn": 123, "dry_run": false, "created": {"e": "<id>", ...}, "links": [...]}`.
+Response: `{"txn": 123, "dry_run": false, "created": {"e": "<id>", ...}, "links": [...], "warnings": [...]}`
+(`warnings` only when there are any).
 Integrity violations (preconditions, cardinalities, references needing a detached type) come
 back as `integrity.violated` with a list of violations.
+
+## Uploads
+
+A file is uploaded first and assigned afterwards: the upload takes one file and returns one handle
+`upl_…`, nothing else (no object, no assignment). An order then assigns it with the `content`
+operation. If the order fails, nothing came into being and the handle can be used again.
+
+```sh
+# small files: one request
+curl -X POST -H "Authorization: Bearer $TOKEN" --data-binary @r-1.pdf "$SERVER/v1/uploads?single=1"
+# large files: open, send parts (any order, a repeat of the same part changes nothing), complete
+curl -X POST -H "Authorization: Bearer $TOKEN" -d '{"sha256": "<optional>"}' $SERVER/v1/uploads
+curl -X PUT  -H "Authorization: Bearer $TOKEN" --data-binary @part1 $SERVER/v1/uploads/upl_…/parts/1
+curl -X POST -H "Authorization: Bearer $TOKEN" -d '{"parts": 2}' $SERVER/v1/uploads/upl_…/complete
+```
+
+* Parts are numbered from 1 without gaps; only the last part may be short, no part may exceed the
+  part limit. `complete` with `parts` names missing parts (`upload.incomplete`, `missing`); with a
+  `sha256` (at open or complete) the assembled file is checked, and a mismatch keeps the upload open
+  (`upload.checksum_mismatch`: send a missing last part and complete again). Other bytes under a part
+  number already sent are `upload.part_conflict`.
+* `GET /v1/uploads/{id}` shows state (`open`, `complete`, `consumed`, `expired`) and the parts
+  received, so an interrupted transfer can resume with the missing parts.
+* A handle belongs to the account that opened it; others get `upload.not_found`. It is used up by its
+  first assignment (`upload.consumed`) and expires unassigned after the time in [Limits](#limits)
+  (`upload.expired`).
+
+## Idempotent requests
+
+`POST /v1/orders`, `POST /v1/modules/{name}/ops/{op}`, `POST /v1/uploads` and
+`POST /v1/uploads/{id}/complete` take a header `Idempotency-Key` (1 to 255 visible characters, e.g. a
+UUID). Keys belong to the account. The first request with a key runs; a repeat with the same key on
+the same endpoint and the same body returns the stored answer with `Idempotent-Replay: true` and
+writes nothing. The same key with another endpoint or body is `409 idempotency.conflict`; a repeat
+while the first request still runs is `409 idempotency.in_progress`. Only successful answers are
+stored: after an error (4xx or 5xx) the key is free again. The client library and the tools send a
+fresh key with every order.
 
 ## Endpoints
 
@@ -47,7 +112,9 @@ back as `integrity.violated` with a list of violations.
 | `GET /v1/objects/{id}` | current state, readable parts only; `?at=<version>` for history |
 | `GET /v1/objects/{id}/versions` | versions with time and account |
 | `GET /v1/objects/{id}/ends/{end}` | objects at a named reference end (`limit`, `offset`) |
-| `PUT`/`GET /v1/objects/{id}/content` | binary content (`Content-Type`, `X-Filename`) |
+| `GET /v1/objects/{id}/content` | binary content, streamed; `Range: bytes=…` gives 206 with `Content-Range`; `ETag` is the SHA-256 |
+| `PUT /v1/objects/{id}/content` | write content directly (`Content-Type`, `X-Filename`); deprecated, answered with `Deprecation: true`: use uploads |
+| `POST /v1/uploads`, `PUT /v1/uploads/{id}/parts/{n}`, `POST /v1/uploads/{id}/complete`, `GET /v1/uploads/{id}` | uploads (see [Uploads](#uploads)) |
 | `PUT`/`GET /v1/objects/{id}/texts/{textType}` | texts, e.g. `base:mail.md` |
 | `POST /v1/references`, `DELETE /v1/references/{reference}/{id}` | link / unlink |
 | `GET /v1/me`, `GET /v1/me/groups` | me and my groups (resolved through subgroups); `GET /v1/me` carries `_tenant: {id, name, development}` |
@@ -172,18 +239,6 @@ tenant without an active account able to grant rights at the root room is refuse
 `tenant.last_admin` (deleting, deactivating or detaching that account, deleting or unlinking its group
 or membership, ending the profile assignment or adding one with `-` or `block` rights). A deactivated
 account cannot act through module code either (impersonation, schedules). Add another administrator first.
-
-## Limits
-
-| Limit | Value | Error |
-|---|---|---|
-| request body | 64 MiB | 413 |
-| order of module code (operation, hook, schedule) | 10 s | `module.timeout` |
-| chain of hooks and calls | depth 16 | `module.depth` |
-| rights path | 3 steps | `path.too_long` (catalog) |
-| token lifetime | default 90 days, at most 365 | `token.bad_ttl` |
-| unused token | lapses after 90 days | `auth.unused_token` |
-| operator secret | at least 32 characters | the server does not start |
 
 ## Modules
 

@@ -747,11 +747,10 @@ impl Store {
         if !self.may_obj(&**c, ctx, Art::Write, &t, &path, id).await? {
             return Err(BaseError::not_found("rights.denied", "not allowed or not found").with("art", "write").with("type", t));
         }
-        let sha = hex::encode(<sha2::Sha256 as sha2::Digest>::digest(data));
         let tx = c.transaction().await.map_err(db)?;
+        let sha = self.store_bytes(&*tx, data).await?;
         let txn: i64 = tx.query_one("SELECT nextval('txn_seq')", &[]).await.map_err(db)?.get(0);
         tx.execute("INSERT INTO txn (tenant_id, id, account) VALUES ($1,$2,$3)", &[&ctx.tenant, &txn, &ctx.me()]).await.map_err(db)?;
-        tx.execute("INSERT INTO blob (sha256, data) VALUES ($1,$2) ON CONFLICT DO NOTHING", &[&sha, &data]).await.map_err(db)?;
         tx.execute("UPDATE content SET valid_to=$3 WHERE tenant_id=$1 AND object_id=$2 AND valid_to IS NULL", &[&ctx.tenant, &id, &txn]).await.map_err(db)?;
         let size = data.len() as i64;
         tx.execute(
@@ -764,21 +763,31 @@ impl Store {
         Ok(txn)
     }
 
-    pub async fn get_content(&self, ctx: &Ctx, id: Uuid) -> Result<(Vec<u8>, String, Option<String>)> {
+    /// Content of an object with where its bytes are (file store or database), for streaming.
+    pub async fn content_info(&self, ctx: &Ctx, id: Uuid) -> Result<crate::uploads::ContentInfo> {
         let c = self.client().await?;
         let (t, path, _) = self.type_with(&**c, ctx, id, |t| self.model.type_def(t).map(|d| d.content.is_some()).unwrap_or(false)).await?;
         if !self.may_obj(&**c, ctx, Art::Read, &t, &path, id).await? {
             return Err(BaseError::not_found("rights.denied", "not allowed or not found"));
         }
         let r = c
-            .query_opt(
-                "SELECT b.data, c.media_type, c.filename FROM content c JOIN blob b ON b.sha256=c.sha256 WHERE c.tenant_id=$1 AND c.object_id=$2 AND c.valid_to IS NULL",
-                &[&ctx.tenant, &id],
-            )
+            .query_opt("SELECT sha256, media_type, filename, size FROM content WHERE tenant_id=$1 AND object_id=$2 AND valid_to IS NULL", &[&ctx.tenant, &id])
             .await
             .map_err(db)?
             .ok_or_else(|| BaseError::not_found("content.none", "the object has no content"))?;
-        Ok((r.get(0), r.get(1), r.get(2)))
+        let (sha, size): (String, i64) = (r.get(0), r.get(3));
+        let body = self.body_of(&**c, &sha, size as u64).await?;
+        Ok(crate::uploads::ContentInfo { body, media_type: r.get(1), filename: r.get(2), sha256: sha, size: size as u64 })
+    }
+
+    /// Content of an object as bytes (read whole; streaming callers use `content_info`).
+    pub async fn get_content(&self, ctx: &Ctx, id: Uuid) -> Result<(Vec<u8>, String, Option<String>)> {
+        let info = self.content_info(ctx, id).await?;
+        let data = match info.body {
+            crate::uploads::ContentBody::Bytes(b) => b,
+            crate::uploads::ContentBody::File { path, .. } => tokio::fs::read(&path).await.map_err(|e| BaseError::internal(format!("file store: read: {e}")))?,
+        };
+        Ok((data, info.media_type, info.filename))
     }
 
     pub async fn put_text(&self, ctx: &Ctx, id: Uuid, text_type: &str, content: &str) -> Result<i64> {

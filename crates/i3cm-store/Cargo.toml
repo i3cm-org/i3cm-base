@@ -6,11 +6,14 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
-i3cm-core = { version = "0.8.4", path = "../i3cm-core" }
-i3cm-tools = { version = "0.8.4", path = "../i3cm-tools" }
+i3cm-core = { version = "0.9.0-a", path = "../i3cm-core" }
+i3cm-tools = { version = "0.9.0-a", path = "../i3cm-tools" }
 chrono = { version = "0.4.45", features = ["serde"] }
 deadpool-postgres = "0.14.2"
 base64 = "0.22.1"
+bytes = "1.12.2"
+futures-core = "0.3.34"
+futures-util = "0.3.34"
 hex = "0.4.3"
 rust_decimal = { version = "1.43.0", features = ["db-tokio-postgres"] }
 serde = { version = "1.0.229", features = ["derive"] }

@@ -6,6 +6,7 @@ pub const REVISION: &str = env!("I3CM_REV");
 
 pub mod describe;
 pub mod dev;
+mod files;
 use axum::body::Bytes;
 use axum::extract::{Path, Query, State};
 use axum::http::{header, HeaderMap, StatusCode};
@@ -196,6 +197,10 @@ fn base_router(store: Store) -> Router {
         .route("/v1/objects/{id}/versions", get(versions))
         .route("/v1/objects/{id}/ends/{end}", get(ends))
         .route("/v1/objects/{id}/content", get(get_content).put(put_content))
+        .route("/v1/uploads", post(files::open_upload))
+        .route("/v1/uploads/{id}", get(files::upload_info))
+        .route("/v1/uploads/{id}/parts/{n}", axum::routing::put(files::put_part))
+        .route("/v1/uploads/{id}/complete", post(files::complete))
         .route("/v1/objects/{id}/texts/{tt}", get(get_text).put(put_text))
         .route("/v1/references", post(link))
         .route("/v1/references/{reference}/{id}", delete(unlink))
@@ -246,15 +251,19 @@ async fn run(s: &Store, h: &HeaderMap, order: Order) -> R<Json<Value>> {
     Ok(Json(serde_json::to_value(res).unwrap_or_default()))
 }
 
-async fn mod_order(State(m): State<Mods>, h: HeaderMap, Json(o): Json<Order>) -> R<Json<Value>> {
-    match &m.rt {
-        Some(rt) => {
-            let mut r = auth(&m.store, &h).await?;
-            let res = rt.execute(&mut r.ctx, &o).await?;
-            Ok(Json(serde_json::to_value(res).unwrap_or_default()))
+async fn mod_order(State(m): State<Mods>, h: HeaderMap, Json(o): Json<Order>) -> R<Response> {
+    let mut r = auth(&m.store, &h).await?;
+    let idem = files::idem_start(&m.store, &r.ctx, &h, "orders", &serde_json::to_vec(&o).unwrap_or_default()).await?;
+    let res = match &idem {
+        files::Idem::Replay(_) => Ok(Value::Null),
+        _ => match &m.rt {
+            Some(rt) => rt.execute(&mut r.ctx, &o).await,
+            None => m.store.execute(&mut r.ctx, &o).await,
         }
-        None => run(&m.store, &h, o).await,
-    }
+        .map(|res| serde_json::to_value(res).unwrap_or_default())
+        .map_err(ApiError::from),
+    };
+    files::idem_end(&m.store, &r.ctx, idem, res).await
 }
 
 async fn modules(State(m): State<Mods>, h: HeaderMap) -> R<Json<Value>> {
@@ -313,14 +322,19 @@ async fn activate(State(m): State<Mods>, h: HeaderMap, Path(name): Path<String>)
     Ok(Json(serde_json::to_value(a).unwrap_or_default()))
 }
 
-async fn module_op(State(m): State<Mods>, h: HeaderMap, Path((name, op)): Path<(String, String)>, body: Option<Json<Value>>) -> R<Json<Value>> {
+async fn module_op(State(m): State<Mods>, h: HeaderMap, Path((name, op)): Path<(String, String)>, body: Option<Json<Value>>) -> R<Response> {
     let r = auth(&m.store, &h).await?;
     let rt = m.rt.as_ref().ok_or_else(|| BaseError::not_found("module.no_runtime", "this server runs without module code"))?;
     if r.ctx.inactive.contains(&name) {
         return Err(BaseError::not_found("module.inactive", "module is not active in the tenant").with("module", name).into());
     }
     let params = body.map(|Json(v)| v).unwrap_or(Value::Null);
-    Ok(Json(rt.run_op(&r.ctx, &name, &op, &params, Some("api")).await?))
+    let idem = files::idem_start(&m.store, &r.ctx, &h, &format!("op:{name}/{op}"), &serde_json::to_vec(&params).unwrap_or_default()).await?;
+    let res = match &idem {
+        files::Idem::Replay(_) => Ok(Value::Null),
+        _ => rt.run_op(&r.ctx, &name, &op, &params, Some("api")).await.map_err(ApiError::from),
+    };
+    files::idem_end(&m.store, &r.ctx, idem, res).await
 }
 
 async fn create(State(s): State<Store>, h: HeaderMap, Query(d): Query<DryRun>, Json(b): Json<CreateBody>) -> R<Json<Value>> {
@@ -374,21 +388,21 @@ async fn ends(State(s): State<Store>, h: HeaderMap, Path((id, end)): Path<(Uuid,
 
 async fn get_content(State(s): State<Store>, h: HeaderMap, Path(id): Path<Uuid>) -> R<Response> {
     let r = auth(&s, &h).await?;
-    let (data, media, filename) = s.get_content(&r.ctx, id).await?;
-    let mut resp = (StatusCode::OK, [(header::CONTENT_TYPE, media)], data).into_response();
-    if let Some(f) = filename
-        && let Ok(v) = format!("attachment; filename=\"{}\"", f.replace('"', "")).parse() {
-            resp.headers_mut().insert(header::CONTENT_DISPOSITION, v);
-        }
-    Ok(resp)
+    let info = s.content_info(&r.ctx, id).await?;
+    files::stream(&h, info, true).await
 }
 
-async fn put_content(State(s): State<Store>, h: HeaderMap, Path(id): Path<Uuid>, body: Bytes) -> R<Json<Value>> {
+/// Raw content (transition): kept for small files, answers with the warning header
+/// `Deprecation` and a pointer to uploads.
+async fn put_content(State(s): State<Store>, h: HeaderMap, Path(id): Path<Uuid>, body: Bytes) -> R<Response> {
     let r = auth(&s, &h).await?;
     let media = h.get(header::CONTENT_TYPE).and_then(|v| v.to_str().ok()).unwrap_or("application/octet-stream").to_string();
     let filename = h.get("x-filename").and_then(|v| v.to_str().ok()).map(|s| s.to_string());
     let txn = s.put_content(&r.ctx, id, &body, &media, filename.as_deref()).await?;
-    Ok(Json(json!({"txn": txn})))
+    let warning = json!({"warning": "content.inline_deprecated", "description": "writing content directly is deprecated; upload the file with POST /v1/uploads and assign it with an order (`content` with `upload`)"});
+    let mut resp = Json(json!({"txn": txn, "warnings": [warning]})).into_response();
+    resp.headers_mut().insert("deprecation", axum::http::HeaderValue::from_static("true"));
+    Ok(resp)
 }
 
 async fn get_text(State(s): State<Store>, h: HeaderMap, Path((id, tt)): Path<(Uuid, String)>) -> R<Response> {
@@ -614,8 +628,10 @@ fn xlsx(sheet: &str, head: &[String], rows: &[Vec<String>]) -> Result<Vec<u8>, r
 async fn aspect_file(State(s): State<Store>, h: HeaderMap, Path(a): Path<String>, Query(q): Query<NodeQ>) -> R<Response> {
     let r = auth(&s, &h).await?;
     let name = q.name.ok_or_else(|| BaseError::invalid("aspect.no_file", "name required"))?;
-    let (data, media) = s.aspect_file(&r.ctx, &a, &q.node, &name).await?;
-    Ok((StatusCode::OK, [(header::CONTENT_TYPE, media)], data).into_response())
+    match s.aspect_file_source(&r.ctx, &a, &q.node, &name).await? {
+        i3cm_store::aspect::FileSource::Content(info) => files::stream(&h, info, false).await,
+        i3cm_store::aspect::FileSource::Text(data, media) => Ok((StatusCode::OK, [(header::CONTENT_TYPE, media)], data).into_response()),
+    }
 }
 
 async fn eval_path(State(s): State<Store>, h: HeaderMap, Path(id): Path<Uuid>, Query(q): Query<ExprQ>) -> R<Json<Value>> {

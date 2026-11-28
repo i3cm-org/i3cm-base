@@ -118,6 +118,11 @@ impl Order {
         self.ops.push(json!({"op": "content", "id": id.id_ref(), "mediaType": media_type, "filename": filename, "base64": b64}));
         self
     }
+    /// New content of an object from a completed upload (`Client::upload`).
+    pub fn content_upload(&mut self, id: impl IdRef, upload: &str, media_type: &str, filename: Option<&str>) -> &mut Self {
+        self.ops.push(json!({"op": "content", "id": id.id_ref(), "mediaType": media_type, "filename": filename, "upload": upload}));
+        self
+    }
     /// New version of a text of an object.
     pub fn text(&mut self, id: impl IdRef, text_type: &str, content: &str) -> &mut Self {
         self.ops.push(json!({"op": "text", "id": id.id_ref(), "textType": text_type, "content": content}));
@@ -131,6 +136,8 @@ pub struct OrderResult {
     pub dry_run: bool,
     pub created: BTreeMap<String, Uuid>,
     pub links: Vec<Uuid>,
+    #[serde(default)]
+    pub warnings: Vec<Value>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -341,8 +348,48 @@ impl Client {
         Ok(Self::check(self.req(reqwest::Method::POST, path).json(body).send().await?).await?.json().await?)
     }
 
+    /// Send an order with a fresh `Idempotency-Key` (a retry after a network error does not
+    /// write twice when it reuses the key: see `order_with_key`).
     pub async fn order(&self, o: &Order) -> Result<OrderResult> {
-        self.post("/orders", &serde_json::to_value(o).unwrap()).await
+        self.order_with_key(o, &Uuid::new_v4().to_string()).await
+    }
+
+    /// Send an order with the given `Idempotency-Key`.
+    pub async fn order_with_key(&self, o: &Order, key: &str) -> Result<OrderResult> {
+        let r = self.req(reqwest::Method::POST, "/orders").header("idempotency-key", key).json(&serde_json::to_value(o).unwrap());
+        Ok(Self::check(r.send().await?).await?.json().await?)
+    }
+
+    /// Open an upload (`sha256` is checked on completion).
+    pub async fn upload_open(&self, sha256: Option<&str>) -> Result<Value> {
+        self.post("/uploads", &json!({"sha256": sha256})).await
+    }
+
+    /// Send part `n` (from 1) of an upload.
+    pub async fn upload_part(&self, id: &str, n: i32, data: Vec<u8>) -> Result<Value> {
+        Ok(Self::check(self.req(reqwest::Method::PUT, &format!("/uploads/{id}/parts/{n}")).body(data).send().await?).await?.json().await?)
+    }
+
+    /// Complete an upload.
+    pub async fn upload_complete(&self, id: &str, sha256: Option<&str>, parts: Option<i32>) -> Result<Value> {
+        self.post(&format!("/uploads/{id}/complete"), &json!({"sha256": sha256, "parts": parts})).await
+    }
+
+    /// Upload bytes and return the handle: one request up to 8 MiB, parts of 8 MiB above.
+    pub async fn upload(&self, data: &[u8]) -> Result<String> {
+        const PART: usize = 8 << 20;
+        if data.len() <= PART {
+            let r = self.req(reqwest::Method::POST, "/uploads").query(&[("single", "1")]).body(data.to_vec());
+            let v: Value = Self::check(r.send().await?).await?.json().await?;
+            return Ok(v["id"].as_str().unwrap_or_default().to_string());
+        }
+        let v = self.upload_open(None).await?;
+        let id = v["id"].as_str().unwrap_or_default().to_string();
+        for (i, chunk) in data.chunks(PART).enumerate() {
+            self.upload_part(&id, i as i32 + 1, chunk.to_vec()).await?;
+        }
+        self.upload_complete(&id, None, Some(data.chunks(PART).count() as i32)).await?;
+        Ok(id)
     }
 
     pub async fn get_object(&self, id: Uuid, at: Option<i64>) -> Result<ObjectView> {

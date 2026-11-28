@@ -7,6 +7,7 @@
 
 pub mod admin;
 pub mod aspect;
+pub mod files;
 pub mod fs;
 pub mod context;
 pub mod order;
@@ -16,6 +17,7 @@ pub mod schema;
 pub mod session;
 pub mod sql;
 pub mod tenant;
+pub mod uploads;
 pub mod write;
 
 use i3cm_core::i18n::I18n;
@@ -44,6 +46,9 @@ pub struct Store {
     pub trigram: bool,
     /// Hooks of module code for every order, when a module runtime is loaded.
     runner: Arc<std::sync::RwLock<Option<Arc<dyn OrderRunner>>>>,
+    /// File store for content and uploads (`I3CM_DATA_DIR`); without one, content stays in the
+    /// database and uploads are unavailable.
+    pub files: Option<Arc<files::FileStore>>,
 }
 
 /// An authenticated request: tenant, account and the token used.
@@ -72,7 +77,7 @@ impl Store {
         cfg.pool = Some(deadpool_postgres::PoolConfig::new(pool_size));
         let pool = cfg.create_pool(Some(Runtime::Tokio1), NoTls).map_err(|e| BaseError::internal(format!("pool: {e}")))?;
         let i18n = I18n::new(&model)?;
-        let mut store = Store { pool, model: Arc::new(model), i18n: Arc::new(i18n), trigram: false, runner: Default::default() };
+        let mut store = Store { pool, model: Arc::new(model), i18n: Arc::new(i18n), trigram: false, runner: Default::default(), files: None };
         store.trigram = store.migrate().await?;
         Ok(store)
     }

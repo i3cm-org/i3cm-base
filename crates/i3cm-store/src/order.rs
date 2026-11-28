@@ -59,14 +59,18 @@ pub enum Op {
         rank: Option<i32>,
     },
     Unlink { reference: String, id: Uuid },
-    /// New content version of an object (base64), in the same order as structure changes.
+    /// New content version of an object, in the same order as structure changes: from a
+    /// completed upload (`upload`), or as base64 (transition, small contents only).
     Content {
         id: String,
         #[serde(rename = "mediaType")]
         media_type: String,
         #[serde(default)]
         filename: Option<String>,
-        base64: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        upload: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        base64: Option<String>,
     },
     /// New version of a text of an object.
     Text {
@@ -89,6 +93,9 @@ pub struct OrderResult {
     pub dry_run: bool,
     pub created: BTreeMap<String, Uuid>,
     pub links: Vec<Uuid>,
+    /// Notes about the order that did not stop it (deprecated forms).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub warnings: Vec<Value>,
 }
 
 pub(crate) const GROUP_MEMBERSHIP: &str = "base:GroupMembership";
@@ -99,6 +106,7 @@ fn create_art(t: &str) -> Art {
 }
 
 pub(crate) struct Exec<'a> {
+    pub(crate) store: &'a Store,
     pub(crate) tx: &'a Client,
     pub(crate) m: &'a Model,
     pub(crate) ctx: &'a mut Ctx,
@@ -108,6 +116,10 @@ pub(crate) struct Exec<'a> {
     pub(crate) touched: BTreeSet<Uuid>,
     pub(crate) detached: BTreeSet<Uuid>,
     pub(crate) links: Vec<Uuid>,
+    /// Largest base64 content (orders of clients; module code keeps the older limit until it
+    /// uses handles).
+    pub(crate) inline_limit: Option<usize>,
+    pub(crate) warnings: Vec<Value>,
 }
 
 /// One end of a reference in a rights check: object, its room path, its types.
@@ -625,16 +637,29 @@ impl Exec<'_> {
                 self.touched.insert(a);
                 self.touched.insert(b);
             }
-            Op::Content { id, media_type, filename, base64 } => {
-                use base64::Engine as _;
-                let data = base64::engine::general_purpose::STANDARD
-                    .decode(base64.as_bytes())
-                    .map_err(|_| BaseError::invalid("content.bad_base64", "content is not valid base64"))?;
-                let sha = hex::encode(<sha2::Sha256 as sha2::Digest>::digest(&data));
-                self.tx.execute("INSERT INTO blob (sha256, data) VALUES ($1,$2) ON CONFLICT DO NOTHING", &[&sha, &data]).await.map_err(db)?;
-                let size = data.len() as i64;
-                self.set_content(id, &sha, media_type, size, filename).await?;
-            }
+            Op::Content { id, media_type, filename, upload, base64 } => match (upload, base64) {
+                (Some(u), None) => {
+                    let (sha, size) = self.store.consume_upload(self.tx, self.ctx, u, self.txn).await?;
+                    self.set_content(id, &sha, media_type, size, filename).await?;
+                }
+                (None, Some(b64)) => {
+                    use base64::Engine as _;
+                    let data = base64::engine::general_purpose::STANDARD
+                        .decode(b64.as_bytes())
+                        .map_err(|_| BaseError::invalid("content.bad_base64", "content is not valid base64"))?;
+                    if let Some(limit) = self.inline_limit
+                        && data.len() > limit {
+                            return Err(BaseError::invalid("content.inline_too_large", "content as base64 is limited")
+                                .hint("upload the file with POST /v1/uploads and pass its handle as `upload`")
+                                .with("limit", limit.to_string()));
+                        }
+                    let sha = self.store.store_bytes(self.tx, &data).await?;
+                    let size = data.len() as i64;
+                    self.set_content(id, &sha, media_type, size, filename).await?;
+                    self.warnings.push(json!({"warning": "content.inline_deprecated", "description": "content as base64 is deprecated; upload the file with POST /v1/uploads and pass its handle as `upload`"}));
+                }
+                _ => return Err(BaseError::invalid("content.source", "give exactly one of `upload` or `base64`").hint("pass a handle from POST /v1/uploads as `upload`")),
+            },
             Op::SetContent { id, sha256, media_type, size, filename } => {
                 self.set_content(id, sha256, media_type, *size, filename).await?;
             }

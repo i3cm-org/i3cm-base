@@ -20,10 +20,10 @@ docker compose -f deploy/compose.yaml up -d --build
 docker compose -f deploy/compose.yaml exec server i3cm-server init-tenant acme
 ```
 
-The server runs as user `i3cm` (uid 10001). Installed modules are state: the compose files keep the
-modules directory on the volume `modules` (`/var/lib/i3cm/modules`), so modules installed later survive
-a new container. When you run the image yourself, mount a volume there that uid 10001 can write; the
-server refuses to start otherwise. A volume created earlier by root (or restored from a backup) gets the
+The server runs as user `i3cm` (uid 10001). Installed modules and contents are state: the compose files
+keep the modules directory on the volume `modules` (`/var/lib/i3cm/modules`) and the file store on the
+volume `data` (`/var/lib/i3cm/data`), so both survive a new container. When you run the image
+yourself, mount volumes there that uid 10001 can write; the server refuses to start otherwise. A volume created earlier by root (or restored from a backup) gets the
 right owner with `docker run --rm -v <volume>:/d debian chown -R 10001:10001 /d`. The image has a health check (`i3cm-server health`, which asks the
 local `GET /health`); compose restarts the server unless it was stopped.
 
@@ -53,6 +53,11 @@ when they are missing there, or when the copy there came from an older image (al
 are compared); a version the operator installed over them, or a copy that did not come from an image,
 is kept (the log says so: `bundled modules: …`). A new image therefore updates the
 mandatory modules without touching modules you installed.
+
+Upgrading from a version that kept contents in the database (before the file store): add the `data`
+volume, start the new version (it reads old contents from the database), then move them once with
+`docker compose -f deploy/compose.yaml exec server i3cm-server migrate-blobs` (prints `{"moved": n}`;
+safe to repeat and to run while the server serves).
 
 After an upgrade, compare `GET /v1/version` with the version and revision you meant to deploy; the start
 log ends with a line `ready` that names address, version and revision.

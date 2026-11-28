@@ -100,6 +100,26 @@ for (const d of docs) {
   }
 }
 
+// --- limits: every kernel constant MAX_…, …_TIMEOUT, …_TTL… is listed in a section "## Limits" ---
+const limitsText = docs
+  .map((d) => {
+    const t = read(d);
+    const i = t.indexOf("\n## Limits\n");
+    if (i < 0) return "";
+    const rest = t.slice(i + 1);
+    const j = rest.indexOf("\n## ", 3);
+    return j < 0 ? rest : rest.slice(0, j);
+  })
+  .join("\n");
+const consts = new Set();
+for (const f of walk(path.join(root, "crates"), (p) => p.endsWith(".rs") && !p.includes("/tests/"))) {
+  for (const m of read(f).matchAll(/^pub const ([A-Z][A-Z0-9_]*)\s*:/gm)) {
+    if (/^MAX_|_TIMEOUT$|_TTL(_[A-Z]+)*$/.test(m[1])) consts.add(m[1]);
+  }
+}
+checked.limits = consts;
+for (const c of consts) if (!new RegExp(`\\b${c}\\b`).test(limitsText)) problems.push(`limit ${c} is not listed in a "## Limits" section`);
+
 if (list) {
   for (const [k, v] of Object.entries(checked)) console.log(`${k} (${v.size}): ${[...v].sort().join(" ")}`);
 }

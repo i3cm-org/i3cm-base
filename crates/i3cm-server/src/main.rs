@@ -16,6 +16,9 @@ struct Cli {
     /// Directory with module code (`<module>.wasm`); without it, module operations and hooks are off
     #[arg(long, env = "I3CM_MODULES_DIR", global = true)]
     modules_dir: Option<PathBuf>,
+    /// Data directory for content and uploads (a volume); required to serve
+    #[arg(long, env = "I3CM_DATA_DIR", global = true)]
+    data_dir: Option<PathBuf>,
     #[command(subcommand)]
     cmd: Cmd,
 }
@@ -46,6 +49,8 @@ enum Cmd {
         #[arg(long)]
         ttl: Option<i64>,
     },
+    /// Move content still held in the database to the data directory (once, after upgrading)
+    MigrateBlobs,
     /// Catalog: check a catalog.json with the server's checker, without a database
     Catalog {
         #[command(subcommand)]
@@ -96,6 +101,25 @@ enum ModuleCmd {
     },
 }
 
+/// Use the data directory for content and uploads.
+fn with_data(store: i3cm_store::Store, dir: &std::path::Path) -> Result<i3cm_store::Store> {
+    store.with_files(dir).map_err(|e| anyhow::anyhow!("{}: {}", e.error_id, e.description))
+}
+
+/// Expire unassigned uploads and clean the staging area every minute.
+fn spawn_sweep(store: i3cm_store::Store) {
+    tokio::spawn(async move {
+        loop {
+            match store.sweep().await {
+                Ok(n) if n > 0 => tracing::info!(expired = n, "uploads expired"),
+                Ok(_) => {}
+                Err(e) => tracing::warn!(error = %e.description, "upload sweep failed"),
+            }
+            tokio::time::sleep(std::time::Duration::from_secs(60)).await;
+        }
+    });
+}
+
 /// The operator allows development tenants (and unsigned module packages) on this instance.
 fn development_allowed() -> Result<bool> {
     flag("I3CM_ALLOW_DEVELOPMENT")
@@ -139,7 +163,11 @@ async fn main() -> Result<()> {
                     }
                 }
             }
-            let store = connect_with(&db()?, &catalog, cli.modules_dir.as_deref(), pool).await?;
+            let data_dir = cli.data_dir.clone().ok_or_else(|| {
+                anyhow::anyhow!("I3CM_DATA_DIR is not set: set it to a writable directory on a volume (content and uploads are stored there)")
+            })?;
+            let store = with_data(connect_with(&db()?, &catalog, cli.modules_dir.as_deref(), pool).await?, &data_dir)?;
+            spawn_sweep(store.clone());
             // bring tenants to the installed module versions (new profiles, rights, carriers)
             match store.sync_modules_all().await {
                 Ok(all) => {
@@ -180,6 +208,12 @@ async fn main() -> Result<()> {
             tracing::info!(%addr, version = env!("CARGO_PKG_VERSION"), revision = i3cm_api::REVISION, operator, "ready");
             task.await?;
         }
+        Cmd::MigrateBlobs => {
+            let d = cli.data_dir.clone().ok_or_else(|| anyhow::anyhow!("--data-dir or I3CM_DATA_DIR required"))?;
+            let store = with_data(connect_with(&db()?, &catalog, cli.modules_dir.as_deref(), 4).await?, &d)?;
+            let n = store.migrate_blobs().await.map_err(|e| anyhow::anyhow!("{e}"))?;
+            println!("{}", serde_json::json!({"moved": n}));
+        }
         Cmd::Catalog { cmd: CatalogCmd::Check { file } } => {
             let path = file.unwrap_or(catalog);
             let json = std::fs::read_to_string(&path).map_err(|e| anyhow::anyhow!("cannot read {}: {e}", path.display()))?;
@@ -214,7 +248,10 @@ async fn main() -> Result<()> {
             if development && !development_allowed()? {
                 anyhow::bail!("development tenants are not allowed on this instance (operator: I3CM_ALLOW_DEVELOPMENT=true)");
             }
-            let store = connect_with(&db()?, &catalog, cli.modules_dir.as_deref(), 4).await?;
+            let mut store = connect_with(&db()?, &catalog, cli.modules_dir.as_deref(), 4).await?;
+            if let Some(d) = &cli.data_dir {
+                store = with_data(store, d)?;
+            }
             let init = store.init_tenant_with(&name, &admin, development).await.map_err(|e| anyhow::anyhow!("{e}"))?;
             println!("{}", serde_json::to_string_pretty(&init)?);
         }
@@ -251,7 +288,9 @@ async fn main() -> Result<()> {
         Cmd::Dev { data, listen } => {
             let pg = EmbeddedDb::start(Some(std::fs::canonicalize(".").unwrap_or_default().join(data))).await?;
             let url = pg.database("i3cm").await?;
-            let store = connect(&url, &catalog, 32).await?;
+            let dir = cli.data_dir.clone().unwrap_or_else(|| std::fs::canonicalize(".").unwrap_or_default().join(".data"));
+            let store = with_data(connect(&url, &catalog, 32).await?, &dir)?;
+            spawn_sweep(store.clone());
             match store.tenant_by_name("dev").await {
                 Ok(_) => tracing::info!("tenant dev exists; use create-token for a new token"),
                 Err(_) => {

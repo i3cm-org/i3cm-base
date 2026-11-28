@@ -1510,10 +1510,11 @@ dependencies = [
 
 [[package]]
 name = "i3cm-api"
-version = "0.8.4"
+version = "0.9.0-a"
 dependencies = [
  "axum",
  "base64 0.22.1",
+ "futures-util",
  "hex",
  "i3cm-core",
  "i3cm-store",
@@ -1524,13 +1525,14 @@ dependencies = [
  "serde_json",
  "sha2 0.11.1",
  "tokio",
+ "tokio-util",
  "tracing",
  "uuid",
 ]
 
 [[package]]
 name = "i3cm-cli"
-version = "0.8.4"
+version = "0.9.0-a"
 dependencies = [
  "base64 0.22.1",
  "fuser",
@@ -1550,7 +1552,7 @@ dependencies = [
 
 [[package]]
 name = "i3cm-client"
-version = "0.8.4"
+version = "0.9.0-a"
 dependencies = [
  "base64 0.22.1",
  "reqwest",
@@ -1562,7 +1564,7 @@ dependencies = [
 
 [[package]]
 name = "i3cm-core"
-version = "0.8.4"
+version = "0.9.0-a"
 dependencies = [
  "chrono",
  "fluent-bundle",
@@ -1576,7 +1578,7 @@ dependencies = [
 
 [[package]]
 name = "i3cm-loadtest"
-version = "0.8.4"
+version = "0.9.0-a"
 dependencies = [
  "anyhow",
  "chrono",
@@ -1592,7 +1594,7 @@ dependencies = [
 
 [[package]]
 name = "i3cm-server"
-version = "0.8.4"
+version = "0.9.0-a"
 dependencies = [
  "anyhow",
  "axum",
@@ -1621,11 +1623,14 @@ dependencies = [
 
 [[package]]
 name = "i3cm-store"
-version = "0.8.4"
+version = "0.9.0-a"
 dependencies = [
  "base64 0.22.1",
+ "bytes",
  "chrono",
  "deadpool-postgres",
+ "futures-core",
+ "futures-util",
  "hex",
  "i3cm-core",
  "i3cm-tools",
@@ -1642,7 +1647,7 @@ dependencies = [
 
 [[package]]
 name = "i3cm-tools"
-version = "0.8.4"
+version = "0.9.0-a"
 dependencies = [
  "base64 0.22.1",
  "chrono",
@@ -1655,7 +1660,7 @@ dependencies = [
 
 [[package]]
 name = "i3cm-wasm"
-version = "0.8.4"
+version = "0.9.0-a"
 dependencies = [
  "chrono",
  "i3cm-core",

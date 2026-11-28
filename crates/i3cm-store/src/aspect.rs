@@ -17,6 +17,12 @@ use std::collections::{BTreeSet, HashMap};
 use std::sync::{Arc, Mutex};
 use uuid::Uuid;
 
+/// A file of an object node: content (streamed from where it is stored) or a text.
+pub enum FileSource {
+    Content(crate::uploads::ContentInfo),
+    Text(Vec<u8>, String),
+}
+
 const MAX_LIST: i64 = 1000;
 
 /// Built-in view: every object by its id (the stable address; the root lists nothing).
@@ -819,28 +825,28 @@ impl Store {
         self.files_of(&nav, id, n, &attrs).await
     }
 
+    /// Content of a file of an object node: (bytes, media type).
     pub async fn aspect_file(&self, ctx: &Ctx, aspect: &str, node: &str, name: &str) -> Result<(Vec<u8>, String)> {
-        if is_builtin(aspect) {
-            return self.builtin_file(ctx, node, name).await;
-        }
-        let a = self.aspect_def(aspect)?;
-        let nav = StoreNav::new(self, ctx);
-        let NodeRef::Object(id) = parse_node(node)? else {
-            return Err(BaseError::invalid("aspect.bad_node", "files belong to object nodes"));
-        };
-        let (v, _, n) = self.node_def(&nav, a, id).await?;
-        let n = n.ok_or_else(|| BaseError::not_found("aspect.no_file", "no such file"))?;
-        let attrs = StoreNav::attrs(&v);
-        let files = self.files_of(&nav, id, n, &attrs).await?;
-        let (_, it) = files.into_iter().find(|(f, _)| f == name).ok_or_else(|| BaseError::not_found("aspect.no_file", "no such file").with("name", name))?;
-        match it {
-            Item::Content(x) => {
-                let (data, media, _) = self.get_content(ctx, x).await?;
+        match self.aspect_file_source(ctx, aspect, node, name).await? {
+            FileSource::Text(b, m) => Ok((b, m)),
+            FileSource::Content(info) => {
+                let media = info.media_type.clone();
+                let data = match info.body {
+                    crate::uploads::ContentBody::Bytes(b) => b,
+                    crate::uploads::ContentBody::File { path, .. } => tokio::fs::read(&path).await.map_err(|e| BaseError::internal(format!("file store: read: {e}")))?,
+                };
                 Ok((data, media))
             }
+        }
+    }
+
+    /// A file of an object node for streaming: the content with its location, or a text.
+    pub async fn aspect_file_source(&self, ctx: &Ctx, aspect: &str, node: &str, name: &str) -> Result<FileSource> {
+        match self.file_item(ctx, aspect, node, name).await? {
+            Item::Content(x) => Ok(FileSource::Content(self.content_info(ctx, x).await?)),
             Item::Text(x, tt) => {
                 let (content, media) = self.get_text(ctx, x, &tt).await?;
-                Ok((content.into_bytes(), format!("{media}; charset=utf-8")))
+                Ok(FileSource::Text(content.into_bytes(), format!("{media}; charset=utf-8")))
             }
             _ => Err(BaseError::not_found("aspect.no_file", "no such file")),
         }
@@ -1001,26 +1007,6 @@ impl Store {
                 Ok(NodeDetail { node: out, attributes, tabs: vec![], files, functions: vec![] })
             }
             _ => Err(BaseError::invalid("aspect.bad_node", "details exist for objects and types")),
-        }
-    }
-
-    async fn builtin_file(&self, ctx: &Ctx, node: &str, name: &str) -> Result<(Vec<u8>, String)> {
-        let nav = StoreNav::new(self, ctx);
-        let NodeRef::Object(id) = parse_node(node)? else {
-            return Err(BaseError::invalid("aspect.bad_node", "files belong to object nodes"));
-        };
-        let v = nav.view(id).await?.ok_or_else(|| BaseError::not_found("object.not_found", "object not found"))?;
-        let (_, it) = Self::plain_files(&v).into_iter().find(|(f, _)| f == name).ok_or_else(|| BaseError::not_found("aspect.no_file", "no such file").with("name", name))?;
-        match it {
-            Item::Content(x) => {
-                let (data, media, _) = self.get_content(ctx, x).await?;
-                Ok((data, media))
-            }
-            Item::Text(x, tt) => {
-                let (content, media) = self.get_text(ctx, x, &tt).await?;
-                Ok((content.into_bytes(), format!("{media}; charset=utf-8")))
-            }
-            _ => Err(BaseError::not_found("aspect.no_file", "no such file")),
         }
     }
 

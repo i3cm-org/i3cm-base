@@ -25,8 +25,12 @@ pub const ROUTES: &[(&str, &str, &str)] = &[
     ("post", "/v1/objects/{id}/move", "Move to another room"),
     ("get", "/v1/objects/{id}/versions", "History"),
     ("get", "/v1/objects/{id}/ends/{end}", "Objects at a reference end"),
-    ("get", "/v1/objects/{id}/content", "Binary content"),
-    ("put", "/v1/objects/{id}/content", "Store binary content"),
+    ("get", "/v1/objects/{id}/content", "Binary content, streamed, with Range"),
+    ("put", "/v1/objects/{id}/content", "Store binary content directly (deprecated; use uploads)"),
+    ("post", "/v1/uploads", "Open an upload (JSON {sha256?}); with ?single=1 the body is a whole small file; returns a handle"),
+    ("get", "/v1/uploads/{id}", "State and parts of an upload"),
+    ("put", "/v1/uploads/{id}/parts/{n}", "Send part n (from 1) of an upload as the body"),
+    ("post", "/v1/uploads/{id}/complete", "Complete an upload (JSON {sha256?, parts?})"),
     ("get", "/v1/objects/{id}/texts/{tt}", "A text"),
     ("put", "/v1/objects/{id}/texts/{tt}", "Store a text"),
     ("get", "/v1/objects/{id}/eval", "Evaluate a path expression at an object"),
@@ -147,8 +151,12 @@ etc. work on tree paths without a mount (working path: `i3cm-cd PATH` or `I3CM_P
 Every write is one order: rights, required attributes and checks apply, all or nothing.
 
 * Orders: `POST /v1/orders` with operations create, update, attach, detach, delete, move,
-  link, unlink, content (binary content, base64) and text; objects created in the same order
-  are referenced by their `ref`.
+  link, unlink, content and text; objects created in the same order are referenced by their
+  `ref`. Send a header `Idempotency-Key` (e.g. a UUID) and reuse it when you retry after a
+  network error: the order is then written once.
+* Files: upload first, assign afterwards. `POST /v1/uploads?single=1` with the file as body
+  returns a handle `upl_…` (large files: open, `PUT …/parts/{n}`, `…/complete`); the order's
+  `content` operation takes it as `upload`. Base64 content is deprecated and limited.
 * Through views and files (also in a mount):
   - a file of a node (`PUT /v1/aspects/{a}/file?node=&name=`) writes the content or text
     behind it;
@@ -253,6 +261,7 @@ mod tests {
     fn every_route_is_described() {
         let src = include_str!("lib.rs");
         let mut missing = vec![];
+        assert!(src.contains("files::open_upload"), "upload routes are listed in lib.rs");
         for line in src.lines().map(str::trim).filter(|l| l.starts_with(".route(\"")) {
             let path = line.trim_start_matches(".route(\"").split('"').next().unwrap();
             let methods: Vec<&str> = ["get", "post", "put", "patch", "delete"].into_iter().filter(|m| line.contains(&format!("{m}("))).collect();
@@ -276,9 +285,10 @@ mod tests {
     fn api_handlers_only_call_the_store() {
         // structural test (proposal one-operation-many-surfaces): no SQL and no database
         // access in the API surface; every action is an operation of the store
-        let src = include_str!("lib.rs");
-        for bad in ["tokio_postgres", "SELECT ", "INSERT ", "UPDATE ", ".query("] {
-            assert!(!src.contains(bad), "API surface contains {bad:?}");
+        for src in [include_str!("lib.rs"), include_str!("files.rs")] {
+            for bad in ["tokio_postgres", "SELECT ", "INSERT ", "UPDATE ", ".query("] {
+                assert!(!src.contains(bad), "API surface contains {bad:?}");
+            }
         }
     }
 }

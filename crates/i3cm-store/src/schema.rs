@@ -34,6 +34,12 @@ CREATE INDEX IF NOT EXISTS object_state_room_id ON object_state (tenant_id, room
 CREATE TABLE IF NOT EXISTS object_type (tenant_id uuid NOT NULL, object_id uuid NOT NULL, type_name text NOT NULL, implied boolean NOT NULL, deleted_at timestamptz, valid_from bigint NOT NULL, valid_to bigint, PRIMARY KEY (tenant_id, object_id, type_name, valid_from));
 CREATE INDEX IF NOT EXISTS object_type_cur ON object_type (tenant_id, object_id) WHERE valid_to IS NULL;
 CREATE TABLE IF NOT EXISTS blob (sha256 text PRIMARY KEY, data bytea NOT NULL);
+CREATE TABLE IF NOT EXISTS upload (id text PRIMARY KEY, tenant_id uuid NOT NULL, account uuid NOT NULL, state text NOT NULL, created_at timestamptz NOT NULL DEFAULT now(), expires_at timestamptz NOT NULL, sha256 text, size bigint, expect_sha256 text, consumed_txn bigint);
+CREATE INDEX IF NOT EXISTS upload_owner ON upload (tenant_id, account, state);
+CREATE INDEX IF NOT EXISTS upload_expiry ON upload (expires_at);
+CREATE TABLE IF NOT EXISTS upload_part (upload_id text NOT NULL, n int NOT NULL, sha256 text NOT NULL, size bigint NOT NULL, PRIMARY KEY (upload_id, n));
+CREATE TABLE IF NOT EXISTS idempotency (tenant_id uuid NOT NULL, account uuid NOT NULL, key text NOT NULL, scope text NOT NULL, body_sha text NOT NULL, state text NOT NULL, status int, response jsonb, created_at timestamptz NOT NULL DEFAULT now(), PRIMARY KEY (tenant_id, account, key));
+CREATE INDEX IF NOT EXISTS idempotency_age ON idempotency (created_at);
 CREATE TABLE IF NOT EXISTS content (tenant_id uuid NOT NULL, object_id uuid NOT NULL, sha256 text NOT NULL, media_type text NOT NULL, size bigint NOT NULL, filename text, valid_from bigint NOT NULL, valid_to bigint, PRIMARY KEY (tenant_id, object_id, valid_from));
 CREATE TABLE IF NOT EXISTS text_part (tenant_id uuid NOT NULL, object_id uuid NOT NULL, text_type text NOT NULL, content text NOT NULL, media_type text NOT NULL, valid_from bigint NOT NULL, valid_to bigint, PRIMARY KEY (tenant_id, object_id, text_type, valid_from));
 CREATE TABLE IF NOT EXISTS profile (tenant_id uuid NOT NULL, name text NOT NULL, guardian boolean NOT NULL, PRIMARY KEY (tenant_id, name));

@@ -10,6 +10,9 @@ pub struct BaseError {
     pub description: String,
     #[serde(default)]
     pub params: Map<String, Value>,
+    /// What the caller can do next (optional; filled where the next step is known).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hint: Option<String>,
     #[serde(skip)]
     pub kind: ErrorKind,
 }
@@ -27,12 +30,17 @@ pub enum ErrorKind {
 
 impl BaseError {
     pub fn new(kind: ErrorKind, id: &str, description: impl Into<String>) -> Self {
-        BaseError { error_id: id.to_string(), description: description.into(), params: Map::new(), kind }
+        BaseError { error_id: id.to_string(), description: description.into(), params: Map::new(), hint: None, kind }
     }
     pub fn invalid(id: &str, d: impl Into<String>) -> Self { Self::new(ErrorKind::Invalid, id, d) }
     pub fn not_found(id: &str, d: impl Into<String>) -> Self { Self::new(ErrorKind::NotFound, id, d) }
     pub fn conflict(id: &str, d: impl Into<String>) -> Self { Self::new(ErrorKind::Conflict, id, d) }
     pub fn internal(d: impl Into<String>) -> Self { Self::new(ErrorKind::Internal, "internal", d) }
+    /// Set the next step for the caller.
+    pub fn hint(mut self, h: impl Into<String>) -> Self {
+        self.hint = Some(h.into());
+        self
+    }
     pub fn with(mut self, k: &str, v: impl Into<Value>) -> Self {
         self.params.insert(k.to_string(), v.into());
         self

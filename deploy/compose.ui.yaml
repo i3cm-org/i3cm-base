@@ -18,8 +18,9 @@ services:
     build: { context: .., dockerfile: deploy/Dockerfile }
     environment:
       I3CM_DATABASE_URL: postgresql://postgres:i3cm@db:5432/i3cm
-    # installed modules are state: they survive a new container only on a volume
-    volumes: [modules:/var/lib/i3cm/modules]
+    # installed modules and the file store (contents, uploads) are state: they survive a new
+    # container only on volumes
+    volumes: [modules:/var/lib/i3cm/modules, data:/var/lib/i3cm/data]
     restart: unless-stopped
     init: true
     depends_on:
@@ -36,3 +37,4 @@ services:
 volumes:
   pgdata: {}
   modules: {}
+  data: {}

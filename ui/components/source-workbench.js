@@ -8,6 +8,11 @@ import "./code-editor.js";
 import "./diagram.js";
 import "./issue-list.js";
 
+/** A random key for `Idempotency-Key` (crypto.randomUUID needs a secure context). */
+function idempotencyKey() {
+  return globalThis.crypto?.randomUUID?.() ?? `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}${Math.random().toString(36).slice(2)}`;
+}
+
 /**
  * <base-source-workbench>: edit source files that are stored as objects with content, check them
  * with the server, and show the catalog as packages and as a diagram. Built from
@@ -75,7 +80,8 @@ export class BaseSourceWorkbench extends HTMLElement {
   get api() { return this._api; }
 
   async json(path, opts) { return (await this._api(path, opts)).json(); }
-  order(ops) { return this.json("/v1/orders", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ ops }) }); }
+  // a fresh Idempotency-Key per save: a retry of the same request does not write twice
+  order(ops) { return this.json("/v1/orders", { method: "POST", headers: { "Content-Type": "application/json", "Idempotency-Key": idempotencyKey() }, body: JSON.stringify({ ops }) }); }
 
   async start() {
     this.started = true;

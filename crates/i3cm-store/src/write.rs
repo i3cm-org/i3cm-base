@@ -96,10 +96,8 @@ impl Store {
     }
 
     async fn put_blob(&self, data: &[u8]) -> Result<String> {
-        let sha = hex::encode(<sha2::Sha256 as sha2::Digest>::digest(data));
         let c = self.client().await?;
-        c.execute("INSERT INTO blob (sha256, data) VALUES ($1,$2) ON CONFLICT DO NOTHING", &[&sha, &data]).await.map_err(db)?;
-        Ok(sha)
+        self.store_bytes(&**c, data).await
     }
 
     /// Attribute changes from the front matter of an object index. References in the body
