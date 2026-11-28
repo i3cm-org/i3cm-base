@@ -723,11 +723,9 @@ impl Exec<'_> {
     }
 
     /// Rights to link or unlink: references have no direction.
-    /// - normal reference: write (create for an object of this order) on one of the two objects
-    ///   and read on the other;
-    /// - rights-relevant reference (a rights path of some profile runs over it): in addition the
-    ///   right to grant rights on each existing object at an end a rights path leaves from, since
-    ///   its access changes; objects created in the same order have no access to change yet;
+    /// - any reference, rights-relevant or not: write (create for an object of this order) on one
+    ///   of the two objects and read on the other. Writing data never grants rights: profiles
+    ///   decide who may write which object, and the tenant administrator who gets a profile;
     /// - technical group memberships need the right to grant rights on the membership, and the
     ///   room tree (`base:Room.parent`) needs write on the child room, as before.
     async fn check_link_rights(&self, def: &RefDef, a: End3<'_>, b: End3<'_>) -> Result<()> {
@@ -752,12 +750,6 @@ impl Exec<'_> {
             let ok = (wa && self.may_read_end(target, b).await?) || (wb && self.may_read_end(holder, a).await?);
             if !ok {
                 return Err(denied(Art::Read, if wa { target } else { holder }));
-            }
-        }
-        let (gh, gt) = self.m.grant_sides(&def.name);
-        for (need, end, from) in [(holder, a, gh), (target, b, gt)] {
-            if from && !self.new_objects.contains(&end.0) && !self.end_candidates(need, end.2).iter().any(|t| self.ctx.subject.may(Art::Grant, t, end.1)) {
-                return Err(denied(Art::Grant, need).with("reference", def.name.clone()));
             }
         }
         Ok(())

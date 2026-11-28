@@ -129,15 +129,13 @@ the same (measured: 100,000 objects, page of 50, room plus rights path in REP-01
 
 References have no direction; the end that declares a reference in TypeScript only names it.
 
-* **Linking or unlinking** an ordinary reference needs write on one of the two objects (create for an
-  object of the same order; rights paths count) and read on the other, from either side.
+* **Linking or unlinking** a reference needs write on one of the two objects (create for an object of
+  the same order; rights paths count) and read on the other, from either side.
 * A reference is **rights-relevant** when a rights path of some profile runs over it. Linking or
-  unlinking it changes who may access the object at the end the path leaves from (for
-  `applicant.team.leader = %me`: the request at `applicant`, the staff member at `team`, the team at
-  `leader`). That needs, in addition, the unconditional right `grant` on that object, so that write on a
-  project does not let anyone make themselves its lead. An object created in the same order has no
-  access to change yet: there the unconditional `create` suffices, consistent with creating objects,
-  where rights paths do not count either.
+  unlinking it needs nothing more than any other reference: writing data never grants rights. The
+  profiles decide who may write which object (who may set `Team.leader` is whoever may write the
+  team), and the tenant administrator decides who gets a profile. A module should therefore not give
+  write on objects its own rights paths depend on to the people those paths favour.
 * Group memberships need `grant` on the membership; the room tree (`base:Room.parent`) needs write on
   the child room.
 * **Deleting** an object ends all its references at both ends. It is refused only if an object at the

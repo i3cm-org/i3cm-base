@@ -84,7 +84,7 @@ pub struct RightsPath {
 
 /// Parse and check a rights-path condition for objects of type `t`: `<path> = %me`, 1 to 3
 /// steps over any references. The references a path uses become rights-relevant (see
-/// `Model::grant_sides`).
+/// `Model::is_rights_relevant`).
 pub fn rights_path(m: &Model, t: &str, src: &str) -> Result<RightsPath> {
     let e = fhirpath::parse(src)?;
     let path = match &e {

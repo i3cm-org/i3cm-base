@@ -86,6 +86,8 @@ fn test_model() -> Model {
                 {"name": "t:read-persons", "rights": [{"sign": "+", "art": ["read"], "types": ["base:Person"], "room": "root"}]},
                 {"name": "t:team-writer", "rights": [{"sign": "+", "art": ["create", "write"], "types": ["t:Team"], "room": "root"}]},
                 {"name": "t:team-granter", "rights": [{"sign": "+", "art": ["write", "grant"], "types": ["t:Team"], "room": "root"}]},
+                {"name": "t:task-worker", "rights": [{"sign": "+", "art": ["read", "write"], "types": ["sample:Task"], "room": "root", "when": "assignees = %me"},
+                    {"sign": "+", "art": ["read"], "types": ["base:Person"], "room": "root"}]},
                 {"name": "t:person-writer", "rights": [{"sign": "+", "art": ["write"], "types": ["base:Person"], "room": "root"},
                     {"sign": "+", "art": ["read"], "types": ["t:Team"], "room": "root"}]}
             ]
@@ -848,36 +850,29 @@ async fn rights_path_team_leader_sees_team_requests() {
 }
 
 #[tokio::test]
-async fn rights_relevant_links_need_grant_and_references_have_no_direction() {
+async fn rights_relevant_links_need_only_write_and_references_have_no_direction() {
     let env = env().await;
     let mut o = Order::new();
     o.create("team", None, json!({"t:Team": {"name": "x"}}));
     let team = env.admin.order(&o).await.unwrap().created["team"];
-    // t:Team.leader is rights-relevant (the path applicant.team.leader leaves from the team):
-    // write on the team is not enough to make oneself its leader
+    // t:Team.leader is rights-relevant (the path applicant.team.leader runs over it). Writing data
+    // never grants rights: write on the team and read on the person suffice to set the leader,
+    // and to remove it again
     let (w, cw) = env.person("writer", &[]).await;
     env.admin.assign("t:team-writer", w).await.unwrap();
     env.admin.assign("t:read-persons", w).await.unwrap();
     let mut o = Order::new();
     o.link("t:Team.leader", team, w);
-    let e = cw.order(&o).await.unwrap_err();
-    assert!(format!("{e}").contains("grant"), "{e}");
-    // with the right to grant rights on teams it is allowed, and so is unlinking
-    let (g, cg) = env.person("granter", &[]).await;
-    env.admin.assign("t:team-granter", g).await.unwrap();
-    env.admin.assign("t:read-persons", g).await.unwrap();
-    let mut o = Order::new();
-    o.link("t:Team.leader", team, g);
-    let link = cg.order(&o).await.unwrap().links[0];
+    let link = cw.order(&o).await.expect("write on the team is enough").links[0];
     let mut o = Order::new();
     o.unlink("t:Team.leader", link);
-    assert!(cw.order(&o).await.is_err(), "unlinking needs grant too");
-    assert!(cg.order(&o).await.is_ok());
-    // an object created in the same order has no access to change yet: create suffices
-    let mut o = Order::new();
-    o.create("own", None, json!({"t:Team": {"name": "own"}}));
-    o.link("t:Team.leader", "own", w);
     assert!(cw.order(&o).await.is_ok());
+    // without write on the team it is refused (read on the person alone is not enough)
+    let (n, cn) = env.person("none", &[]).await;
+    env.admin.assign("t:read-persons", n).await.unwrap();
+    let mut o = Order::new();
+    o.link("t:Team.leader", team, n);
+    assert!(cn.order(&o).await.is_err(), "read on both sides is not enough");
     // an ordinary reference: write on either object and read on the other, from either side
     let (pw, cpw) = env.person("pw", &[]).await;
     env.admin.assign("t:person-writer", pw).await.unwrap();
@@ -887,11 +882,31 @@ async fn rights_relevant_links_need_grant_and_references_have_no_direction() {
     let mut o = Order::new();
     o.unlink("t:Team.mascot", link);
     assert!(cpw.order(&o).await.is_ok());
-    let (n, cn) = env.person("none", &[]).await;
-    env.admin.assign("t:read-persons", n).await.unwrap();
     let mut o = Order::new();
     o.link("t:Team.mascot", team, n);
     assert!(cn.order(&o).await.is_err(), "read on both sides is not enough");
+}
+
+#[tokio::test]
+async fn an_assignee_assigns_others_with_write_only() {
+    let env = env().await;
+    let (w, cw) = env.person("worker", &[]).await;
+    let (other, _) = env.person("other", &[]).await;
+    env.admin.assign("t:task-worker", w).await.unwrap();
+    let mut o = Order::new();
+    o.create("mine", None, json!({"sample:Task": {"subject": "mine", "status": "open"}}));
+    o.link("sample:Task.assignees", "mine", w);
+    o.create("foreign", None, json!({"sample:Task": {"subject": "foreign", "status": "open"}}));
+    let r = env.admin.order(&o).await.unwrap();
+    let (mine, foreign) = (r.created["mine"], r.created["foreign"]);
+    // write through the rights path on the task and read on the person suffice
+    let mut o = Order::new();
+    o.link("sample:Task.assignees", mine, other);
+    cw.order(&o).await.expect("an assignee adds another assignee");
+    // a task the worker cannot write stays out of reach: no write, no link
+    let mut o = Order::new();
+    o.link("sample:Task.assignees", foreign, w);
+    assert!(cw.order(&o).await.is_err(), "no write on a foreign task");
 }
 
 #[tokio::test]

@@ -2,7 +2,7 @@
 
 use crate::error::{BaseError, Result};
 use serde::{Deserialize, Serialize};
-use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
 pub const FORMAT: u32 = 1;
 /// Pseudo type name for "any object" (reference targets) and "all types" (rights).
@@ -297,7 +297,7 @@ pub struct RefDef {
     pub part_of: bool,
     pub ordered: bool,
     /// Former `@rightsRelevant` marker; ignored. Which references are rights-relevant follows from
-    /// the rights paths of the profiles (`Model::grant_sides`).
+    /// the rights paths of the profiles (`Model::is_rights_relevant`).
     #[serde(rename = "rightsRelevant", default, skip_serializing_if = "std::ops::Not::not")]
     pub rights_relevant: bool,
 }
@@ -337,10 +337,9 @@ pub struct Model {
     refs: HashMap<String, usize>,
     /// direct subtypes
     children: HashMap<String, Vec<String>>,
-    /// Rights-relevant references: per reference, whether a rights path of some profile leaves
-    /// from the holder end (`.0`) and/or from the target end (`.1`). Linking or unlinking an
-    /// existing object at such an end changes its access and needs the right to grant rights.
-    grant_sides: HashMap<String, (bool, bool)>,
+    /// Rights-relevant references: those a rights path of some profile runs over. Linking them
+    /// needs no more than any other reference; writing data never grants rights.
+    rights_relevant: HashSet<String>,
 }
 
 impl Model {
@@ -363,24 +362,20 @@ impl Model {
                 children.entry(p.clone()).or_default().push(t.name.clone());
             }
         }
-        let mut m = Model { catalog, types, refs, children, grant_sides: HashMap::new() };
+        let mut m = Model { catalog, types, refs, children, rights_relevant: HashSet::new() };
         crate::checker::check(&m)?;
-        let mut sides: HashMap<String, (bool, bool)> = HashMap::new();
+        let mut relevant: HashSet<String> = HashSet::new();
         for p in m.profiles() {
             for r in &p.rights {
                 let Some(w) = &r.when else { continue };
                 for t in &r.types {
-                    // the checker accepted every condition; an error here must not be swallowed,
-                    // or a reference a path runs over would escape the grant check
+                    // the checker accepted every condition; an error here must not be swallowed
                     let rp = crate::paths::rights_path(&m, t, w).map_err(|e| e.with("profile", p.name.clone()))?;
-                    for st in &rp.steps {
-                        let e = sides.entry(st.reference.clone()).or_default();
-                        if st.from_holder { e.0 = true } else { e.1 = true }
-                    }
+                    relevant.extend(rp.steps.iter().map(|st| st.reference.clone()));
                 }
             }
         }
-        m.grant_sides = sides;
+        m.rights_relevant = relevant;
         Ok(m)
     }
 
@@ -399,15 +394,9 @@ impl Model {
     pub fn require_type(&self, name: &str) -> Result<&TypeDef> {
         self.type_def(name).ok_or_else(|| BaseError::invalid("type.unknown", "unknown type").with("type", name))
     }
-    /// Ends of a reference from which a rights path leaves: (holder end, target end). Linking an
-    /// existing object at such an end needs the right to grant rights on it.
-    pub fn grant_sides(&self, reference: &str) -> (bool, bool) {
-        self.grant_sides.get(reference).copied().unwrap_or((false, false))
-    }
-
     /// Is the reference used by some rights path?
     pub fn is_rights_relevant(&self, reference: &str) -> bool {
-        self.grant_sides.contains_key(reference)
+        self.rights_relevant.contains(reference)
     }
 
     pub fn ref_def(&self, name: &str) -> Option<&RefDef> {

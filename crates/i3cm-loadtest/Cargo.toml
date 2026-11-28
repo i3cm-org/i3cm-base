@@ -7,8 +7,8 @@ repository.workspace = true
 
 [dependencies]
 anyhow = "1.0.105"
-i3cm-client = { version = "0.8.2", path = "../i3cm-client" }
-i3cm-server = { version = "0.8.2", path = "../i3cm-server" }
+i3cm-client = { version = "0.8.3", path = "../i3cm-client" }
+i3cm-server = { version = "0.8.3", path = "../i3cm-server" }
 chrono = "0.4.45"
 clap = { version = "4.6.9", features = ["derive"] }
 futures = "0.3.34"
