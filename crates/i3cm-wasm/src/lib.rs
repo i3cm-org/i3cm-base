@@ -47,6 +47,7 @@ const MAX_DEPTH: u32 = 16;
 const REFS_PER_END: i64 = 100;
 
 /// A `connection` handle: identity (its context), the frame it belongs to, read or write.
+#[derive(Clone)]
 pub struct ConnRep {
     ctx: Ctx,
     module: String,
@@ -60,6 +61,22 @@ struct Shared {
     store: Store,
     session: Mutex<Option<Session>>,
     deadline_tick: u64,
+    /// Room tree of the open transaction, once an operation changed it: every frame, handle and
+    /// hook of the order works on this one (rooms created anywhere stay known everywhere).
+    rooms: std::sync::Mutex<Option<i3cm_store::context::RoomTree>>,
+}
+
+impl Shared {
+    /// Take the order's current room tree into `ctx`.
+    fn rooms_in(&self, ctx: &mut Ctx) {
+        if let Some(r) = self.rooms.lock().unwrap_or_else(|e| e.into_inner()).as_ref() {
+            ctx.rooms = r.clone();
+        }
+    }
+    /// Publish the room tree of `ctx` as the order's current one.
+    fn rooms_out(&self, ctx: &Ctx) {
+        *self.rooms.lock().unwrap_or_else(|e| e.into_inner()) = Some(ctx.rooms.clone());
+    }
 }
 
 struct HostState {
@@ -188,7 +205,7 @@ impl Runtime {
 
 fn shared_with(inner: &Inner, store: &Store, session: Session) -> Arc<Shared> {
     let now = inner.ticks.load(Ordering::SeqCst);
-    Arc::new(Shared { store: store.clone(), session: Mutex::new(Some(session)), deadline_tick: now + ORDER_TIMEOUT.as_millis() as u64 / TICK_MS })
+    Arc::new(Shared { store: store.clone(), session: Mutex::new(Some(session)), deadline_tick: now + ORDER_TIMEOUT.as_millis() as u64 / TICK_MS, rooms: std::sync::Mutex::new(None) })
 }
 
 async fn execute_with(inner: &Arc<Inner>, store: &Store, ctx: &mut Ctx, order: &Order) -> IResult<OrderResult> {
@@ -274,6 +291,7 @@ fn hooks_for<'a>(model: &'a Model, on: &str, phase: &str, types: &[String]) -> V
 /// Before hooks get read-only handles and may reject the order; after hooks may write in the
 /// same order. Any failing hook aborts the order.
 async fn apply_with_hooks(rt: &Arc<Inner>, shared: &Arc<Shared>, ctx: &mut Ctx, op: &Op, depth: u32) -> IResult<Option<Uuid>> {
+    shared.rooms_in(ctx);
     let ev = hook_event(shared, ctx, op).await?;
     let op_json = serde_json::to_value(op).unwrap_or(Value::Null);
     if let Some((on, types, id)) = &ev {
@@ -285,13 +303,17 @@ async fn apply_with_hooks(rt: &Arc<Inner>, shared: &Arc<Shared>, ctx: &mut Ctx, 
     let created = {
         let mut g = shared.session.lock().await;
         let s = g.as_mut().ok_or_else(|| BaseError::internal("order lost its session"))?;
-        s.apply(&shared.store, ctx, op).await?
+        let r = s.apply(&shared.store, ctx, op).await;
+        // also after a failed operation: what it did stays in the open transaction
+        shared.rooms_out(ctx);
+        r?
     };
     if let Some((on, types, id)) = &ev {
         let id = id.or(created);
         for (module, h) in hooks_for(&rt.model, on, "after", types) {
             let params = json!({ "phase": "after", "on": on, "type": h.type_name, "id": id, "op": op_json });
             hook_frame(rt, shared, ctx, module, &h.op, depth, true, params).await?;
+            shared.rooms_in(ctx);
         }
     }
     Ok(created)
@@ -331,8 +353,12 @@ async fn run_frame(rt: Arc<Inner>, order: Arc<Shared>, ctx: Ctx, module: String,
 impl Host for HostState {}
 
 impl HostState {
-    fn conn(&self, r: &Resource<ConnRep>) -> wasmtime::Result<&ConnRep> {
-        Ok(self.table.get(r)?)
+    /// The handle, with the order's current room tree (rooms created by other frames, hooks or
+    /// handles of the same order are known to reads and writes alike).
+    fn conn(&self, r: &Resource<ConnRep>) -> wasmtime::Result<ConnRep> {
+        let mut c = self.table.get(r)?.clone();
+        self.order.rooms_in(&mut c.ctx);
+        Ok(c)
     }
 }
 
@@ -436,6 +462,8 @@ impl HostConnection for HostState {
             Err(e) => return Ok(Err(err(BaseError::invalid("order.bad_ops", "ops must be a JSON array of operations").with("detail", e.to_string())))),
         };
         let mut created = Map::new();
+        // rooms created or moved anywhere in this order (other calls, hooks, other handles)
+        self.order.rooms_in(&mut ctx);
         for (i, op) in ops.iter().enumerate() {
             match apply_with_hooks(&self.rt, &self.order, &mut ctx, op, depth).await {
                 Ok(Some(id)) => {
@@ -446,7 +474,10 @@ impl HostConnection for HostState {
                     created.insert(key, Value::String(id.to_string()));
                 }
                 Ok(None) => {}
-                Err(e) => return Ok(Err(err(e.with("op_index", i)))),
+                Err(e) => {
+                    self.table.get_mut(&s)?.ctx.rooms = ctx.rooms.clone();
+                    return Ok(Err(err(e.with("op_index", i))));
+                }
             }
             let mut g = self.order.session.lock().await;
             if let Some(sess) = g.as_mut() {

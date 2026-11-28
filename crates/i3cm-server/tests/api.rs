@@ -62,7 +62,7 @@ fn test_model() -> Model {
     c.types.push(ty("t:Team", json!([at("name", "string")]), &[]));
     c.types.push(ty("t:Staff", json!([]), &["base:Person"]));
     c.types.push(ty("t:LeaveRequest", json!([at("days", "int"), at("status", "string")]), &[]));
-    // a subtype (rights on the supertype cover it) and an attachable type (filters on the host read it)
+    // a subtype (rights on the supertype cover its supertype part) and an attachable type (filters on the host read it)
     let mut special: serde_json::Value = serde_json::to_value(ty("t:SpecialLeave", json!([at("reason", "string")]), &[]) as i3cm_core::catalog::TypeDef).unwrap();
     special["extends"] = json!("t:LeaveRequest");
     c.types.push(serde_json::from_value(special).unwrap());
@@ -89,11 +89,14 @@ fn test_model() -> Model {
                 "nodes": {"t:LeaveRequest": {"attributes": [], "subNodes": [], "files": [], "tabs": [], "functions": [], "filesFirst": true}}},
                 {"name": "t:unmarked", "entry": {"type": "t:LeaveRequest", "groupBy": [], "where": "mark.empty()"},
                 "nodes": {"t:LeaveRequest": {"attributes": [], "subNodes": [], "files": [], "tabs": [], "functions": [], "filesFirst": true}}},
+                {"name": "t:not-ok", "entry": {"type": "t:LeaveRequest", "groupBy": [], "where": "not(mark = 'ok')"},
+                "nodes": {"t:LeaveRequest": {"attributes": [], "subNodes": [], "files": [], "tabs": [], "functions": [], "filesFirst": true}}},
                 {"name": "t:team-leaves", "entry": {"type": "t:LeaveRequest", "groupBy": [], "where": "applicant.team.name = 'a'"},
                 "nodes": {"t:LeaveRequest": {"attributes": [], "subNodes": [], "files": [], "tabs": [], "functions": [], "filesFirst": true}}},
                 {"name": "t:mail-nomd", "entry": {"type": "sample:Mail", "groupBy": [], "where": "_texts.`mail.md`.empty() and _content.mediaType in ('message/rfc822') and _content.size > 3"},
                 "nodes": {"sample:Mail": {"attributes": [], "subNodes": [{"label": "attachments", "path": "attachments", "folder": true}],
-                    "files": [{"name": "mail.md", "path": "_texts.`mail.md`", "fallback": ["_texts.`body.html`"]}], "tabs": [], "functions": [], "filesFirst": true}}},
+                    "files": [{"name": "mail.md", "path": "_texts.`mail.md`", "fallback": ["_texts.`body.html`"]},
+                              {"name": "mail.eml", "path": "_content", "fallback": ["_texts.`body.html`"]}], "tabs": [], "functions": [], "filesFirst": true}}},
                 {"name": "t:due-mine", "entry": {"type": "sample:Task", "groupBy": [], "where": "due <= now() and status != 'done' and assignees = %me"},
                 "nodes": {"sample:Task": {"attributes": [{"label": "subject", "path": "subject"}], "subNodes": [], "files": [], "tabs": [], "functions": [], "filesFirst": true}}}],
             "profiles": [
@@ -104,6 +107,12 @@ fn test_model() -> Model {
                 {"name": "t:perf-lead", "rights": [{"sign": "+", "art": ["read"], "types": ["t:LeaveRequest"], "room": "root", "when": "(days > 5 or not(status = 'done')) and applicant.team.leader = %me"}]},
                 {"name": "t:read-leave", "rights": [{"sign": "+", "art": ["read"], "types": ["t:LeaveRequest"], "room": "root"}]},
                 {"name": "t:team-mover", "rights": [{"sign": "+", "art": ["read", "remove", "place"], "types": ["t:Team"], "room": "root"}]},
+                {"name": "t:leave-mover", "rights": [{"sign": "+", "art": ["read", "remove", "place"], "types": ["t:LeaveRequest"], "room": "root"}]},
+                {"name": "t:special-mover", "rights": [{"sign": "+", "art": ["read", "remove", "place"], "types": ["t:SpecialLeave"], "room": "root"}]},
+                {"name": "t:read-special", "rights": [{"sign": "+", "art": ["read"], "types": ["t:SpecialLeave"], "room": "root"}]},
+                {"name": "t:attach-sub", "rights": [{"sign": "+", "art": ["create", "write", "read"], "types": ["sample:MailAttachment"], "room": "tsub"},
+                    {"sign": "+", "art": ["read", "write"], "types": ["sample:MailAttachment"], "room": "root"},
+                    {"sign": "+", "art": ["read"], "types": ["sample:Mail"], "room": "root"}]},
                 {"name": "t:read-persons", "rights": [{"sign": "+", "art": ["read"], "types": ["base:Person"], "room": "root"}]},
                 {"name": "t:team-writer", "rights": [{"sign": "+", "art": ["create", "write"], "types": ["t:Team"], "room": "root"}]},
                 {"name": "t:team-granter", "rights": [{"sign": "+", "art": ["write", "grant"], "types": ["t:Team"], "room": "root"}]},
@@ -1695,6 +1704,15 @@ fn filter_language_limits() {
     assert!(view_filter(&m, "t:LeaveRequest", "@team-a").is_ok());
     // a subtype inherits the named filters of its supertype
     assert!(view_filter(&m, "t:SpecialLeave", "@big and reason.exists()").is_ok());
+    // joins over all paths together
+    let joins = (0..4).map(|i| format!("applicant.team.name = '{i}'")).collect::<Vec<_>>().join(" or ");
+    assert_eq!(view_filter(&m, "t:LeaveRequest", &joins).unwrap_err().error_id, "filter.too_complex", "four paths of two steps exceed six joins");
+    // a named filter of another module is found by its qualified name only
+    assert!(i3cm_core::paths::filter_in(&m, "t:LeaveRequest", "@big", Origin::Catalog, "base", &Default::default()).is_err());
+    assert!(i3cm_core::paths::filter_in(&m, "t:LeaveRequest", "@t:big", Origin::Catalog, "base", &Default::default()).is_ok());
+    // named filters of inactive modules and their attachable types do not exist
+    let off: std::collections::BTreeSet<String> = ["t".to_string()].into();
+    assert_eq!(i3cm_core::paths::filter_in(&m, "t:LeaveRequest", "@t:big", Origin::Catalog, "t", &off).unwrap_err().error_id, "filter.unknown");
 }
 
 /// Texts and content in filters, and a file with a fallback: read from the first source present,
@@ -1715,6 +1733,17 @@ async fn texts_content_filters_and_file_fallback() {
     env.admin.put_aspect_file("t:mail-nomd", &node, "mail.md", b"# written".to_vec()).await.unwrap();
     assert_eq!(env.admin.get_text(r.created["a"], "sample:mail.md").await.unwrap(), "# written", "written to the first source");
     assert_eq!(env.admin.get_text(r.created["a"], "sample:body.html").await.unwrap(), "<p>hi</p>", "fallback unchanged");
+    // first source `_content` not there yet: read from the fallback, writing creates the content
+    let mut o = Order::new();
+    o.create("c", None, json!({"sample:Mail": {"receivedAt": "2026-11-28T10:00:00Z", "sender": "x@example.org", "subject": "c"}}));
+    o.text("c", "sample:body.html", "<p>c</p>");
+    let c = env.admin.order(&o).await.unwrap().created["c"];
+    let cnode = format!("o:{c}");
+    assert_eq!(env.admin.aspect_file("t:mail-nomd", &cnode, "mail.eml").await.unwrap(), b"<p>c</p>");
+    env.admin.put_aspect_file("t:mail-nomd", &cnode, "mail.eml", b"From: c\r\n\r\nc".to_vec()).await.unwrap();
+    assert_eq!(env.admin.get_content(c).await.unwrap(), b"From: c\r\n\r\nc");
+    assert_eq!(env.admin.get_text(c, "sample:body.html").await.unwrap(), "<p>c</p>", "fallback unchanged");
+    assert_eq!(env.admin.get_object(c, None).await.unwrap().content.unwrap()["mediaType"], "message/rfc822");
     // folders keep their technical name in paths, whatever the language
     let de = env.admin.clone().with_lang("de");
     let kids = de.aspect_children("t:mail-nomd", &format!("o:{}", r.created["a"])).await.unwrap();
@@ -1730,15 +1759,27 @@ async fn subtype_rights_and_move_per_type() {
     o.create("s", None, json!({"t:SpecialLeave": {"days": 2, "reason": "x"}}));
     o.create("team", None, json!({"t:Team": {"name": "a"}}));
     o.create("p", None, json!({"base:Person": {"firstName": "P", "lastName": "p"}}));
+    o.create("tp", None, json!({"t:Team": {"name": "b"}, "base:Person": {"firstName": "T", "lastName": "p"}}));
     let r = env.admin.order(&o).await.unwrap();
     let (u, cu) = env.person("reader", &[]).await;
     assert!(cu.get_object(r.created["s"], None).await.is_err());
+    // a right on the supertype reads the object and its supertype part, not the subtype's own part
     env.admin.assign("t:read-leave", u).await.unwrap();
     let v = cu.get_object(r.created["s"], None).await.unwrap();
-    assert!(v.attr("reason").is_some(), "a right on the supertype covers the subtype's part");
-    // move: remove and place on the team's type suffice; another type is refused
-    env.admin.assign("t:team-mover", u).await.unwrap();
+    assert_eq!(v.attr("days"), Some(&json!(2)));
+    assert!(v.attr("reason").is_none(), "the subtype's own attribute stays hidden");
+    assert!(v.has_type("t:SpecialLeave"), "the object shows as of its type");
     let sub = env.rooms["tsub"];
+    // move: remove and place per type of the object; a right on the supertype does not move a subtype object
+    let (lm, clm) = env.person("leave-mover", &[]).await;
+    env.admin.assign("t:leave-mover", lm).await.unwrap();
+    let mut o = Order::new();
+    o.move_to(r.created["s"], sub);
+    assert!(clm.order(&o).await.is_err(), "remove/place on the supertype do not move a subtype object");
+    let (sm, csm) = env.person("special-mover", &[]).await;
+    env.admin.assign("t:special-mover", sm).await.unwrap();
+    csm.order(&o).await.unwrap();
+    env.admin.assign("t:team-mover", u).await.unwrap();
     let mut o = Order::new();
     o.move_to(r.created["team"], sub);
     cu.order(&o).await.unwrap();
@@ -1746,6 +1787,96 @@ async fn subtype_rights_and_move_per_type() {
     let mut o = Order::new();
     o.move_to(r.created["p"], sub);
     assert!(cu.order(&o).await.is_err(), "no remove/place on base:Person");
+    let mut o = Order::new();
+    o.move_to(r.created["tp"], sub);
+    assert!(cu.order(&o).await.is_err(), "rights on one of two types do not move the object");
+}
+
+/// Linking a part to a whole in another room moves the part: it needs remove (existing part)
+/// and place (or create, for a part created in the same order) like a move.
+#[tokio::test]
+async fn part_of_link_needs_move_rights() {
+    let env = env().await;
+    let sub = env.rooms["tsub"];
+    let mut o = Order::new();
+    o.create("m", None, json!({"sample:Mail": {"receivedAt": "2026-11-28T10:00:00Z", "sender": "x@example.org", "subject": "m"}}));
+    o.create("m2", Some(sub), json!({"sample:Mail": {"receivedAt": "2026-11-28T10:00:00Z", "sender": "x@example.org", "subject": "m2"}}));
+    o.create("a", Some(sub), json!({"sample:MailAttachment": {"filename": "a.pdf"}}));
+    o.link("sample:MailAttachment.mail", "a", "m2");
+    let r = env.admin.order(&o).await.unwrap();
+    let link = r.links[0];
+    let (u, cu) = env.person("attacher", &[]).await;
+    env.admin.assign("t:attach-sub", u).await.unwrap();
+    // an existing part in tsub, linked over to a whole in root: no remove there, no place in root
+    let mut o = Order::new();
+    o.unlink("sample:MailAttachment.mail", link);
+    o.link("sample:MailAttachment.mail", r.created["a"], r.created["m"]);
+    assert!(cu.order(&o).await.is_err(), "linking an existing part moves it: remove and place needed");
+    // a new part created in tsub: no create or place in root
+    let mut o = Order::new();
+    o.create("n", Some(sub), json!({"sample:MailAttachment": {"filename": "n.pdf"}}));
+    o.link("sample:MailAttachment.mail", "n", r.created["m"]);
+    assert!(cu.order(&o).await.is_err(), "a new part needs create or place where its whole is");
+    // the admin may: the part and its whole share the room afterwards
+    let mut o = Order::new();
+    o.unlink("sample:MailAttachment.mail", link);
+    o.link("sample:MailAttachment.mail", r.created["a"], r.created["m"]);
+    env.admin.order(&o).await.unwrap();
+    assert_eq!(env.admin.get_object(r.created["a"], None).await.unwrap().room, env.admin.get_object(r.created["m"], None).await.unwrap().room);
+}
+
+/// `not()` is two-valued (an absent value makes a comparison false, its negation true), and a
+/// free query or a module's find counts values of other type parts only where they are readable.
+#[tokio::test]
+async fn not_with_absent_values_and_query_guards() {
+    let env = env().await;
+    let mut o = Order::new();
+    o.create("team", None, json!({"t:Team": {"name": "a"}}));
+    o.create("m", None, json!({"base:Person": {"firstName": "M", "lastName": "a"}, "t:Staff": {}}));
+    o.link("t:Staff.team", "m", "team");
+    o.create("nostatus", None, json!({"t:LeaveRequest": {"days": 2}}));
+    o.link("t:LeaveRequest.applicant", "nostatus", "m");
+    o.create("done", None, json!({"t:LeaveRequest": {"days": 2, "status": "done"}}));
+    o.link("t:LeaveRequest.applicant", "done", "m");
+    o.create("sp", None, json!({"t:SpecialLeave": {"days": 7, "reason": "y"}}));
+    let r = env.admin.order(&o).await.unwrap();
+    let (lead, cl) = env.person("lead", &[]).await;
+    let mut o = Order::new();
+    o.link("t:Team.leader", r.created["team"], lead);
+    o.attach(r.created["nostatus"], "t:LeaveNote", json!({"mark": "secret"}));
+    env.admin.order(&o).await.unwrap();
+    env.admin.assign("t:perf-lead", lead).await.unwrap();
+    // `(days > 5 or not(status = 'done'))`: a request without status is not done
+    let seen: Vec<Uuid> = cl.list("t:LeaveRequest", &i3cm_client::ListQuery::default()).await.unwrap().iter().map(|s| s.id).collect();
+    assert_eq!(seen, vec![r.created["nostatus"]]);
+    // `not(mark = 'ok')` holds where the attachable type is absent
+    let mut kids: Vec<Uuid> = env.admin.aspect_children("t:not-ok", "").await.unwrap().iter().filter_map(|n| n.id).collect();
+    kids.sort();
+    let mut want = vec![r.created["nostatus"], r.created["done"], r.created["sp"]];
+    want.sort();
+    assert_eq!(kids, want);
+    // free query: the attached t:LeaveNote is not readable for a reader of t:LeaveRequest
+    let (u, _) = env.person("reader", &[]).await;
+    env.admin.assign("t:read-leave", u).await.unwrap();
+    let c = env.store.client().await.unwrap();
+    let ctx = env.store.ctx(env.init.tenant, u).await.unwrap();
+    let admin_ctx = env.store.ctx(env.init.tenant, env.init.admin_account).await.unwrap();
+    let store = &env.store;
+    let q = |ctx: &i3cm_store::Ctx, e: &str| {
+        let (c, ctx, e) = (&c, ctx.clone(), e.to_string());
+        async move { store.query_in(c, &ctx, "t:LeaveRequest", &e, None, 50, "en").await.unwrap().0.iter().map(|v| v.id).collect::<Vec<Uuid>>() }
+    };
+    assert_eq!(q(&admin_ctx, "mark = 'secret'").await, vec![r.created["nostatus"]]);
+    assert!(q(&ctx, "mark = 'secret'").await.is_empty(), "no oracle on an unreadable attached type");
+    assert_eq!(q(&ctx, "not(mark = 'secret')").await.len(), 3);
+    assert!(q(&ctx, "mark.exists()").await.is_empty());
+    // find of module code: the inherited `days` of a t:SpecialLeave is not readable with a right on the subtype only
+    let (s, _) = env.person("special", &[]).await;
+    env.admin.assign("t:read-special", s).await.unwrap();
+    let sctx = env.store.ctx(env.init.tenant, s).await.unwrap();
+    let f: serde_json::Map<String, serde_json::Value> = json!({"days": 7}).as_object().unwrap().clone();
+    assert_eq!(env.store.find_in(&c, &admin_ctx, "t:SpecialLeave", &f, 10, "en").await.unwrap().len(), 1);
+    assert!(env.store.find_in(&c, &sctx, "t:SpecialLeave", &f, 10, "en").await.unwrap().is_empty(), "no oracle on an unreadable supertype part");
 }
 
 /// Performance of a rights condition with `or`, `not()` and a path of three steps over 100,000
@@ -1805,7 +1936,7 @@ async fn perf_filter_rights_list() {
     let p95 = lat[(lat.len() as f64 * 0.95) as usize - 1];
     eprintln!("list p95 {:.1} ms (page of {n}, p50 {:.1} ms)", p95.as_secs_f64() * 1000.0, lat[lat.len() / 2].as_secs_f64() * 1000.0);
     assert!(n > 0);
-    assert!(p95.as_millis() <= 30, "DEC-141 target: list p95 <= 30 ms, got {p95:?}");
+    assert!(p95.as_millis() <= 30, "list p95 <= 30 ms, got {p95:?}");
     // worst case: the profile without any team led, nothing matches (the whole set is examined)
     let (other, co) = env.person("perf-none", &[]).await;
     env.admin.assign("t:perf-lead", other).await.unwrap();
@@ -1820,6 +1951,6 @@ async fn perf_filter_rights_list() {
     lat.sort();
     let p95 = lat[(lat.len() as f64 * 0.95) as usize - 1];
     eprintln!("empty result p95 {:.1} ms", p95.as_secs_f64() * 1000.0);
-    assert!(p95.as_millis() <= 30, "DEC-141 target for an empty result: got {p95:?}");
+    assert!(p95.as_millis() <= 30, "empty result p95 <= 30 ms, got {p95:?}");
 }
 

@@ -203,29 +203,38 @@ Built-in views need no definition and are listed before the module aspects:
 One filter language serves the condition `when` of a right, the `where` of an aspect, named filters
 and queries. It translates into SQL; what does not translate is refused when the catalog is loaded.
 
-* comparisons of attributes with literals, `now()`, `today()` and date arithmetic (`today() + 7 days`),
-  `=`, `!=`, `<`, `<=`, `>`, `>=`; `x in ('a', 'b')` (one term);
-* `exists()`, `empty()` on attributes and reference ends; `and`, `or`, `not()` (also `not(x)`);
+* comparisons of attributes with literals, `now()`, `today()` and date arithmetic (`today() + 7 days`,
+  `due + 7 days < now()`, one quantity on a date, a date-time, `now()` or `today()`), `=`, `!=`, `<`,
+  `<=`, `>`, `>=`; `x in ('a', 'b')` (one term); both sides must be of the same kind (numbers with
+  numbers, dates and date-times with each other) and literals must be valid values of the attribute,
+  otherwise the filter is refused (`path.bad_filter`);
+* `exists()`, `empty()` on attributes and reference ends; `and`, `or`, `not()` (also `not(x)`); the
+  logic is two-valued: a comparison with an absent value is false, so its `not()` is true;
 * paths over reference ends with at most 3 steps, to `%me` (`applicant.team.leader = %me`) or to an
   attribute of the object reached (`applicant.team.name = 'a'`, true when some object reached matches);
 * texts and content: `_texts.<text type>.exists()` / `.empty()`, `_content.exists()`,
   `_content.mediaType in (…)`, `_content.size > n`, `_content.sha256 = '…'`;
 * attributes of attachable types (`@requires` on the entry type) by their name; when the type is not
   attached the attribute is absent (`empty()` is true, comparisons are false);
-* named filters: `@name` (own module) or `@ns:name`, defined in the module's catalog (see
-  [modules](modules.md)); a named filter on a type applies to its subtypes as well.
+* named filters: `@name` (a filter of the module that writes the condition, view or filter) or
+  `@ns:name`, defined in the module's catalog (see [modules](modules.md)); a named filter on a type
+  applies to its subtypes as well. Named filters and attachable types of modules not active in the
+  tenant do not exist for its filters.
 
 `%me` is the account or any of its groups. A **right with a condition** applies only to objects for
 which it holds; conditions are plus rights on named types and grant read, write and delete on existing
-objects (create, place and remove need unconditional rights). A right on a type also covers its
-subtypes. A **query** over the API or from module code (`where` of `query`) may follow one reference to
-`%me` but no longer paths (`query.path_not_allowed`), also not inside a named filter it refers to:
-paths in queries could reveal objects the caller cannot read. Module code can
-ask `query` for the references of each result with `"references": true`.
+objects (create, place and remove need unconditional rights). A right on a type applies to that
+type's part of every object carrying it, also of objects of a subtype; the subtype's own part needs a
+right on the subtype. A **query** over the API or from module code (`where` of `query`) may follow one
+reference to `%me` but no longer paths (`query.path_not_allowed`), also not inside a named filter it
+refers to: paths in queries could reveal objects the caller cannot read. For the same reason values of
+other type parts of the object (supertype, host and attached types, their texts) count in a query, and
+in the attribute filter of `find`, only where the caller may read that part; elsewhere they are
+absent. Module code can ask `query` for the references of each result with `"references": true`.
 
 Lists combine the rooms with unconditional rights and each condition as separate branches of one
 `UNION` (no `OR` in a query) and page by key, so every page costs the same. Measured with 100,000
-objects, pages of 50, a condition with `or`, `not()` and a path of three steps: p95 3.4 ms (2.4 ms
+objects, pages of 50, a condition with `or`, `not()` and a path of three steps: p95 3.8 ms (2.9 ms
 when nothing matches).
 
 ## References, rights and deletion

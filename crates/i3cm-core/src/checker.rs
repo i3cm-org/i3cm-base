@@ -144,11 +144,19 @@ pub fn check(m: &Model) -> Result<()> {
                     if right.sign != crate::catalog::Sign::Plus {
                         return Err(err("profile.conditional_sign", "only plus rights may carry a rights path").with("profile", r.name.clone()));
                     }
+                    // conditions limit reading and changing an object; creating, placing, removing
+                    // and granting have no object to test them on
+                    if let Some(a) = right.art.iter().find(|a| !matches!(a, crate::catalog::Art::Read | crate::catalog::Art::Write | crate::catalog::Art::Delete)) {
+                        return Err(err("profile.conditional_art", "a condition applies to read, write and delete only")
+                            .with("profile", r.name.clone())
+                            .with("art", a.as_str()));
+                    }
                     for t in &right.types {
                         if t == crate::catalog::ANY {
                             return Err(err("profile.conditional_any", "a rights path needs named types, not *").with("profile", r.name.clone()));
                         }
-                        crate::paths::rights_cond(m, t, w).map_err(|e| e.with("profile", r.name.clone()))?;
+                        // named filters without namespace are those of the profile's module
+                        crate::paths::rights_cond_in(m, t, w, &module.name, &BTreeSet::new()).map_err(|e| e.with("profile", r.name.clone()))?;
                     }
                 }
             }
@@ -181,7 +189,7 @@ pub fn check(m: &Model) -> Result<()> {
     }
     for module in &c.modules {
         for f in &module.filters {
-            crate::paths::view_filter(m, &f.type_name, &f.filter).map_err(|e| e.with("filter", f.name.clone()))?;
+            crate::paths::filter_in(m, &f.type_name, &f.filter, crate::paths::Origin::Catalog, &module.name, &BTreeSet::new()).map_err(|e| e.with("filter", f.name.clone()))?;
         }
     }
     for a in m.aspects() {
@@ -226,7 +234,7 @@ fn check_aspect(m: &Model, a: &crate::catalog::AspectDef) -> Result<()> {
         return Err(err("aspect.unknown_type", "aspect names an unknown type").with("aspect", a.name.clone()).with("type", entry.clone()));
     }
     if let Some(w) = &a.entry.filter {
-        crate::paths::view_filter(m, entry, w).map_err(|e| e.with("aspect", a.name.clone()))?;
+        crate::paths::filter_in(m, entry, w, crate::paths::Origin::Catalog, Model::module_of(&a.name), &BTreeSet::new()).map_err(|e| e.with("aspect", a.name.clone()))?;
     }
     for g in &a.entry.group_by {
         let e = check_path(m, &a.name, Some(entry), g)?;

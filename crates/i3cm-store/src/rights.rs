@@ -11,7 +11,7 @@ use crate::schema::ref_table;
 use crate::sql::Param;
 use crate::Store;
 use i3cm_core::catalog::Art;
-use i3cm_core::paths::{rights_cond, RightsCond, RightsPath};
+use i3cm_core::paths::{rights_cond_in, RightsCond, RightsPath};
 use i3cm_core::Result;
 use std::collections::BTreeMap;
 use tokio_postgres::GenericClient;
@@ -79,7 +79,7 @@ impl Store {
             }
         }
         for (c, rooms) in by_cond {
-            a.paths.push((rights_cond(&self.model, t, &c)?, rooms));
+            a.paths.push((rights_cond_in(&self.model, t, &c, i3cm_core::Model::module_of(t), &ctx.inactive)?, rooms));
         }
         Ok(a)
     }
@@ -148,7 +148,7 @@ impl Store {
             return Ok(true);
         }
         for cond in ctx.subject.conds(art, t, path) {
-            let hit: bool = match rights_cond(&self.model, t, &cond)? {
+            let hit: bool = match rights_cond_in(&self.model, t, &cond, i3cm_core::Model::module_of(t), &ctx.inactive)? {
                 RightsCond::Path(rp) => {
                     let sql = format!("SELECT EXISTS (SELECT 1 WHERE $2::uuid IN ({}))", path_ids_sql(&rp, &self.model, 3));
                     c.query_one(&sql, &[&ctx.tenant, &id, &ctx.subject.carriers]).await.map_err(db)?.get(0)
@@ -157,7 +157,7 @@ impl Store {
                     let mut params: Vec<Param> = vec![Box::new(ctx.tenant), Box::new(id)];
                     let cond_sql = self.filter_sql(&f, t, ctx, &mut params)?;
                     let tb = crate::schema::type_table(self.model.require_type(t)?);
-                    let sql = format!("SELECT EXISTS (SELECT 1 FROM {tb} x WHERE x.tenant_id=$1 AND x.object_id=$2 AND x.valid_to IS NULL AND {cond_sql})");
+                    let sql = format!("SELECT EXISTS (SELECT 1 FROM {tb} x WHERE x.tenant_id=$1 AND x.object_id=$2 AND x.valid_to IS NULL AND x.deleted_at IS NULL AND {cond_sql})");
                     c.query_one(&sql, &crate::sql::refs(&params)).await.map_err(db)?.get(0)
                 }
             };
@@ -176,6 +176,15 @@ use crate::sql::param;
 use i3cm_core::paths::{AttrRef, Filter, Operand, Step};
 use i3cm_core::values::{to_val, Col};
 use i3cm_core::BaseError;
+
+/// State of one filter translation: entry type, request, whether other type parts are guarded
+/// by read rights (free queries), and the guards built so far.
+pub(crate) struct FilterSql<'a> {
+    pub t: &'a str,
+    pub ctx: &'a Ctx,
+    pub guard: bool,
+    pub readable: BTreeMap<String, String>,
+}
 
 impl Store {
     /// Joins over the reference tables of `steps`, starting at the entry object `x`. Returns
@@ -206,11 +215,6 @@ impl Store {
         d.attributes.iter().find(|x| x.name == a.name).cloned().ok_or_else(|| BaseError::invalid("path.unknown_attribute", "no attribute with this name").with("name", a.name.clone()))
     }
 
-    /// Column expression of an attribute reached without steps, for entry type `t`.
-    fn own_attr_sql(&self, t: &str, a: &AttrRef) -> String {
-        self.attr_col(t, &a.owner, &a.name)
-    }
-
     /// Wrap `cond` (on alias `o`, the object reached over `a.steps`) as an existence test.
     fn over_path(&self, a: &AttrRef, cond: &str) -> Result<String> {
         let (from, last) = self.path_sql(&a.steps);
@@ -230,6 +234,12 @@ impl Store {
     /// A literal as a parameter typed like the operand it is compared with.
     fn lit_param(&self, other: Option<&Operand>, v: &serde_json::Value, params: &mut Vec<Param>) -> Result<String> {
         match other {
+            // a date compared with a shifted operand: as a point in time
+            Some(Operand::Now | Operand::Today | Operand::Shifted(..)) => {
+                let s = v.as_str().ok_or_else(|| BaseError::invalid("path.bad_filter", "a point in time is compared with a date or date-time"))?;
+                params.push(Box::new(s.to_string()));
+                return Ok(format!("${}::timestamptz", params.len()));
+            }
             Some(Operand::Attr(a)) => {
                 let mut ad = self.attr_def_of(a)?;
                 ad.required = false;
@@ -249,9 +259,9 @@ impl Store {
     }
 
     /// SQL of an operand; attributes over a path appear as `o.<col>` (the caller wraps them).
-    fn operand_sql(&self, t: &str, o: &Operand, other: Option<&Operand>, params: &mut Vec<Param>) -> Result<String> {
+    fn operand_sql(&self, q: &mut FilterSql, o: &Operand, other: Option<&Operand>, params: &mut Vec<Param>) -> Result<String> {
         Ok(match o {
-            Operand::Attr(a) if a.steps.is_empty() => self.own_attr_sql(t, a),
+            Operand::Attr(a) if a.steps.is_empty() => self.entry_attr(q, a, params)?,
             Operand::Attr(a) => format!("o.{}", col(&a.name)),
             Operand::Content(f) => Self::content_sql(f),
             Operand::Now => "now()".into(),
@@ -260,7 +270,7 @@ impl Store {
                 let b = match base.as_ref() {
                     Operand::Now => "now()".to_string(),
                     Operand::Today => "current_date".to_string(),
-                    Operand::Attr(a) if a.steps.is_empty() => self.own_attr_sql(t, a),
+                    Operand::Attr(a) if a.steps.is_empty() => self.entry_attr(q, a, params)?,
                     Operand::Attr(a) => format!("o.{}", col(&a.name)),
                     _ => return Err(BaseError::invalid("path.bad_filter", "a quantity is added to now(), today() or a date attribute")),
                 };
@@ -271,15 +281,58 @@ impl Store {
         })
     }
 
-    /// SQL for a filter on the entry object `x` of type `t`; `$1` is the tenant.
+    /// SQL for a filter of the catalog on the entry object `x` of type `t`; `$1` is the tenant.
     pub fn filter_sql(&self, f: &Filter, t: &str, ctx: &Ctx, params: &mut Vec<Param>) -> Result<String> {
-        let path_attr = |o: &Operand| -> Option<AttrRef> { if let Operand::Attr(a) = o { (!a.steps.is_empty()).then(|| a.clone()) } else { None } };
+        self.fsql(&mut FilterSql { t, ctx, guard: false, readable: BTreeMap::new() }, f, params)
+    }
+
+    /// SQL for a free query's filter on `x` of type `t`: values of other type parts of the
+    /// object (supertypes, hosts, attached types, their texts) count only where the caller may
+    /// read that part; elsewhere they are absent, so the result reveals nothing about them.
+    pub fn query_filter_sql(&self, f: &Filter, t: &str, ctx: &Ctx, params: &mut Vec<Param>) -> Result<String> {
+        self.fsql(&mut FilterSql { t, ctx, guard: true, readable: BTreeMap::new() }, f, params)
+    }
+
+    /// Condition: the caller may read type part `owner` of the entry object `x` (built once per
+    /// filter and owner).
+    pub(crate) fn readable_part(&self, q: &mut FilterSql, owner: &str, params: &mut Vec<Param>) -> Result<String> {
+        if let Some(c) = q.readable.get(owner) {
+            return Ok(c.clone());
+        }
+        let a = self.access(q.ctx, Art::Read, owner)?;
+        let c = if a.is_empty() {
+            "false".to_string()
+        } else {
+            let clause = self.rights_clause(&a, q.ctx, params)?;
+            let tb = type_table(self.model.require_type(owner)?);
+            format!(
+                "x.object_id IN (SELECT x.object_id FROM {tb} x JOIN object_state s ON s.tenant_id=x.tenant_id AND s.object_id=x.object_id AND s.valid_to IS NULL AND s.deleted_at IS NULL \
+                 WHERE x.tenant_id=$1 AND x.valid_to IS NULL AND x.deleted_at IS NULL AND {clause})"
+            )
+        };
+        q.readable.insert(owner.to_string(), c.clone());
+        Ok(c)
+    }
+
+    /// An attribute of the entry object (own, inherited, host or attached), guarded if asked.
+    fn entry_attr(&self, q: &mut FilterSql, a: &AttrRef, params: &mut Vec<Param>) -> Result<String> {
+        let v = self.attr_col(q.t, &a.owner, &a.name);
+        if !q.guard || a.owner == q.t {
+            return Ok(v);
+        }
+        let r = self.readable_part(q, &a.owner, params)?;
+        Ok(format!("(CASE WHEN {r} THEN {v} END)"))
+    }
+
+    fn fsql(&self, q: &mut FilterSql, f: &Filter, params: &mut Vec<Param>) -> Result<String> {
+        let path_attr = |o: &Operand| -> Option<AttrRef> { o.path_attr().cloned() };
         Ok(match f {
-            Filter::And(a, b) => format!("({} AND {})", self.filter_sql(a, t, ctx, params)?, self.filter_sql(b, t, ctx, params)?),
-            Filter::Or(a, b) => format!("({} OR {})", self.filter_sql(a, t, ctx, params)?, self.filter_sql(b, t, ctx, params)?),
-            Filter::Not(a) => format!("NOT ({})", self.filter_sql(a, t, ctx, params)?),
+            Filter::And(a, b) => format!("({} AND {})", self.fsql(q, a, params)?, self.fsql(q, b, params)?),
+            Filter::Or(a, b) => format!("({} OR {})", self.fsql(q, a, params)?, self.fsql(q, b, params)?),
+            // two-valued: an absent value makes a comparison false, so its negation true
+            Filter::Not(a) => format!("(({}) IS NOT TRUE)", self.fsql(q, a, params)?),
             Filter::RefMe(steps) => {
-                params.push(Box::new(ctx.subject.carriers.clone()));
+                params.push(Box::new(q.ctx.subject.carriers.clone()));
                 let me = params.len();
                 let (from, last) = self.path_sql(steps);
                 format!("EXISTS (SELECT 1 {from} AND {last} = ANY(${me}))")
@@ -290,16 +343,18 @@ impl Store {
             }
             Filter::AttrExists(a, yes) => {
                 if a.steps.is_empty() {
-                    format!("{} IS {}NULL", self.own_attr_sql(t, a), if *yes { "NOT " } else { "" })
+                    format!("{} IS {}NULL", self.entry_attr(q, a, params)?, if *yes { "NOT " } else { "" })
                 } else {
                     let e = self.over_path(a, &format!("o.{} IS NOT NULL", col(&a.name)))?;
                     if *yes { e } else { format!("NOT {e}") }
                 }
             }
             Filter::Text(tt, yes) => {
+                let owner = self.model.catalog.text_types.iter().find(|x| &x.name == tt).map(|x| x.owner.clone()).unwrap_or_default();
+                let guard = if q.guard && owner != q.t { format!("{} AND ", self.readable_part(q, &owner, params)?) } else { String::new() };
                 params.push(Box::new(tt.clone()));
                 format!(
-                    "{}EXISTS (SELECT 1 FROM text_part tp WHERE tp.tenant_id=x.tenant_id AND tp.object_id=x.object_id AND tp.text_type=${} AND tp.valid_to IS NULL)",
+                    "{}({guard}EXISTS (SELECT 1 FROM text_part tp WHERE tp.tenant_id=x.tenant_id AND tp.object_id=x.object_id AND tp.text_type=${} AND tp.valid_to IS NULL))",
                     if *yes { "" } else { "NOT " },
                     params.len()
                 )
@@ -309,7 +364,7 @@ impl Store {
                 if *yes { "" } else { "NOT " }
             ),
             Filter::In(o, vals) => {
-                let lhs = self.operand_sql(t, o, None, params)?;
+                let lhs = self.operand_sql(q, o, None, params)?;
                 let mut items = vec![];
                 for v in vals {
                     items.push(self.lit_param(Some(o), v, params)?);
@@ -321,8 +376,8 @@ impl Store {
                 }
             }
             Filter::Cmp(a, op, b) => {
-                let l = self.operand_sql(t, a, Some(b), params)?;
-                let r = self.operand_sql(t, b, Some(a), params)?;
+                let l = self.operand_sql(q, a, Some(b), params)?;
+                let r = self.operand_sql(q, b, Some(a), params)?;
                 let cond = format!("({l} {} {r})", if *op == "!=" { "<>" } else { op });
                 match path_attr(a).or_else(|| path_attr(b)) {
                     Some(p) => self.over_path(&p, &cond)?,

@@ -387,7 +387,7 @@ impl Model {
                 let Some(w) = &r.when else { continue };
                 for t in &r.types {
                     // the checker accepted every condition; an error here must not be swallowed
-                    let rc = crate::paths::rights_cond(&m, t, w).map_err(|e| e.with("profile", p.name.clone()))?;
+                    let rc = crate::paths::rights_cond_in(&m, t, w, Model::module_of(&p.name), &std::collections::BTreeSet::new()).map_err(|e| e.with("profile", p.name.clone()))?;
                     relevant.extend(rc.steps().iter().map(|st| st.reference.clone()));
                 }
             }

@@ -96,7 +96,8 @@ export const mailbox = aspect("mailbox", {
 ```
 
 A file may name a list of sources, `"mail.md": ["_texts.md", "_texts.txt"]`: the first one present
-is read; writing the file always writes the first source, never a fallback.
+is read; writing the file always writes the first source, never a fallback (a missing first source is
+created; content takes its media type from the file name).
 
 Display texts within an aspect: `<ns>-<aspect>--<ns>-<Type>-name`/`-description` override the
 global texts; `<ns>-<aspect>--label-<key>` names attributes, folders, tabs, columns and functions.

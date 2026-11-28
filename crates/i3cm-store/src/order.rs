@@ -191,6 +191,52 @@ impl Exec<'_> {
         self.store.may_obj(self.tx, self.ctx, art, t, path, id).await
     }
 
+    /// Rights to take an object and its parts (transitively) out of room path `from` and put
+    /// them into `to`: remove and place per explicit type of each (a right on `*` covers every
+    /// type, a right on a type its subtypes; implied types follow their carrier). An object
+    /// created in this order needs no remove, and create in the target serves instead of place.
+    async fn check_relocate(&self, id: Uuid, from: &[Uuid], to: &[Uuid]) -> Result<()> {
+        let mut todo = vec![id];
+        let mut seen = BTreeSet::new();
+        while let Some(x) = todo.pop() {
+            if !seen.insert(x) {
+                continue;
+            }
+            let types = types_of(self.tx, self.tenant(), x, None).await?;
+            let mut explicit: Vec<&str> = types.iter().filter(|(_, implied)| !**implied).map(|(t, _)| t.as_str()).collect();
+            if explicit.is_empty() {
+                explicit.push(ANY);
+            }
+            let new = self.new_objects.contains(&x);
+            for t in explicit {
+                if !new {
+                    self.check(Art::Remove, t, from)?;
+                }
+                let placed = self.ctx.subject.may(Art::Place, t, to) || (new && t != ANY && self.ctx.subject.may(create_art(t), t, to));
+                if !placed {
+                    return Err(denied(Art::Place, t));
+                }
+            }
+            todo.extend(self.parts_of(x).await?);
+        }
+        Ok(())
+    }
+
+    /// Put an object and its parts (transitively) into room `target`.
+    async fn relocate(&mut self, id: Uuid, target: Uuid) -> Result<()> {
+        let mut todo = vec![id];
+        let mut seen = BTreeSet::new();
+        while let Some(x) = todo.pop() {
+            if !seen.insert(x) {
+                continue;
+            }
+            self.version_state(x, Some(target), false).await?;
+            self.touched.insert(x);
+            todo.extend(self.parts_of(x).await?);
+        }
+        Ok(())
+    }
+
     async fn check_on(&self, art: Art, t: &str, path: &[Uuid], id: Uuid) -> Result<()> {
         if self.allowed_on(art, t, path, id).await? { Ok(()) } else { Err(denied(art, t)) }
     }
@@ -591,23 +637,8 @@ impl Exec<'_> {
                 let target = self.resolve(room)?;
                 let (_, from) = self.live(id).await?;
                 let to = self.ctx.rooms.path(target)?;
-                // remove and place per type of the object (a right on `*` covers every type,
-                // a right on a type covers its subtypes)
-                let types = types_of(self.tx, tenant, id, None).await?;
-                let explicit: Vec<&String> = types.iter().filter(|(_, implied)| !**implied).map(|(t, _)| t).collect();
-                if explicit.is_empty() {
-                    self.check(Art::Remove, ANY, &from)?;
-                    self.check(Art::Place, ANY, &to)?;
-                }
-                for t in explicit {
-                    self.check(Art::Remove, t, &from)?;
-                    self.check(Art::Place, t, &to)?;
-                }
-                let mut todo = vec![id];
-                while let Some(x) = todo.pop() {
-                    self.version_state(x, Some(target), false).await?;
-                    todo.extend(self.parts_of(x).await?);
-                }
+                self.check_relocate(id, &from, &to).await?;
+                self.relocate(id, target).await?;
                 self.touched.insert(id);
             }
             Op::Link { reference, from, to, rank } => {
@@ -640,10 +671,12 @@ impl Exec<'_> {
                     }
                 }
                 if def.part_of {
-                    // parts live in the room of their whole
+                    // parts live in the room of their whole: linking a part moves it (with its
+                    // own parts), which needs the same rights as moving it
                     let (room_a, _) = self.live(a).await?;
                     if room_a != room_b {
-                        self.version_state(a, Some(room_b), false).await?;
+                        self.check_relocate(a, &pa, &pb).await?;
+                        self.relocate(a, room_b).await?;
                     }
                 }
                 self.links.push(rid);

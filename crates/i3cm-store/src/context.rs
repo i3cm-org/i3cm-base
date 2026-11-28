@@ -106,16 +106,13 @@ impl Store {
                 _ => Sign::Block,
             };
             let arts: Vec<Art> = r.get::<_, Vec<String>>(2).iter().filter_map(|a| Art::parse(a)).collect();
-            // a right on a type also covers its subtypes (a right on a document covers a mail)
-            let mut types: Vec<String> = vec![];
-            for t in r.get::<_, Vec<String>>(3) {
-                for x in if t == i3cm_core::catalog::ANY { vec![t.clone()] } else { self.model.subtypes_closure(&t) } {
-                    if !types.contains(&x) {
-                        types.push(x);
-                    }
-                }
-            }
-            profile_rights.entry(profile.clone()).or_default().push(EffRight { sign, arts, types, room: r.get(4), profile, cond: r.get(5) });
+            // a right on a type applies to that type's part of every object carrying it, also
+            // of objects of a subtype (their supertype part); never to the subtype's own part
+            let types: Vec<String> = r.get(3);
+            // named filters without namespace belong to the profile's module, also where the
+            // right applies to a subtype of another module
+            let cond: Option<String> = r.get::<_, Option<String>>(5).map(|c| i3cm_core::paths::qualify_named(&c, i3cm_core::Model::module_of(&profile)));
+            profile_rights.entry(profile.clone()).or_default().push(EffRight { sign, arts, types, room: r.get(4), profile, cond });
         }
         let expand = |profile: &str| -> BTreeSet<String> {
             let mut set: BTreeSet<String> = [profile.to_string()].into();

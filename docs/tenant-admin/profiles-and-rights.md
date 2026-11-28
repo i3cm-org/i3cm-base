@@ -36,8 +36,13 @@ the caller turn business roles into rights without a separate mechanism:
 
 `%me` is the calling account and every group it belongs to. A path has at most three steps and may run
 over any reference; conditions give `read`, `write` and `delete` on existing objects, never `create`,
-`place` or `remove`. A right on a type also covers its subtypes (a right on documents covers mails,
-which are documents). Moving an object needs `remove` and `place` on its types (or on `*`).
+`place` or `remove`. A right on a type covers that type's part of every object carrying it, also of
+objects of a subtype: a right to read documents reads mails as documents (they show in document
+lists, with their document attributes, texts and content), but not what only mails have (sender,
+recipients, headers); that needs a right on mails. Moving an object needs `remove` and `place` on
+each of its types (or on `*`), and so does linking a part to a whole in another room, since the part
+moves with it (a part created in the same order needs `create` or `place` where the whole is).
+Deleting an object needs `delete` on `*`.
 
 Writing data never grants rights: setting a reference a path runs over (making someone a team
 leader, assigning a task) needs only write on one object and read on the other, like any reference.

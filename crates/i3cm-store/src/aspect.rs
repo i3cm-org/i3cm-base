@@ -30,7 +30,7 @@ pub const VIEW_ID: &str = "_id";
 /// Built-in view: objects by type (type, then objects; sub-nodes are files and named ends).
 pub const VIEW_TYPE: &str = "_type";
 
-fn is_builtin(a: &str) -> bool {
+pub(crate) fn is_builtin(a: &str) -> bool {
     a == VIEW_ID || a == VIEW_TYPE
 }
 
@@ -532,7 +532,7 @@ impl Store {
             }
         }
         if let Some(w) = &a.entry.filter {
-            let f = i3cm_core::paths::view_filter(&self.model, &a.entry.type_name, w)?;
+            let f = i3cm_core::paths::filter_in(&self.model, &a.entry.type_name, w, i3cm_core::paths::Origin::Catalog, i3cm_core::Model::module_of(&a.name), &ctx.inactive)?;
             conds.push_str(&format!(" AND {}", self.filter_sql(&f, &a.entry.type_name, ctx, &mut params)?));
         }
         let from = format!(
@@ -635,23 +635,23 @@ impl Store {
         let nav = StoreNav::new(self, ctx);
         let NodeRef::Object(id) = parse_node(node)? else { return Ok(None) };
         let a = self.aspect_def(aspect)?;
-        let (v, _, n) = self.node_def(&nav, a, id).await?;
+        let (v, node_type, n) = self.node_def(&nav, a, id).await?;
         let Some(n) = n else { return Ok(None) };
         let attrs = StoreNav::attrs(&v);
         let Some(f) = n.files.iter().find(|f| Self::file_name(&f.name, &attrs) == name) else { return Ok(None) };
-        let e = expr(&f.path)?;
-        if let Some(it) = eval(&nav, &e, &[Item::Obj(id)]).await?.into_iter().next() {
-            return Ok(Some(it));
+        // the first source, resolved from the node's type (present or not): never a fallback,
+        // never a text of the same local name owned by another type of the object
+        if f.path == "_content" {
+            return Ok(Some(Item::Content(id)));
         }
-        Ok(if f.path == "_content" {
-            Some(Item::Content(id))
-        } else {
+        if let Some(tt) = f.path.strip_prefix("_texts.") {
+            let tt = tt.trim_matches('`');
+            let own: std::collections::BTreeSet<String> = self.model.path_types(&node_type).iter().map(|d| d.name.clone()).collect();
             let set: std::collections::BTreeSet<String> = v.types.iter().map(|t| t.type_name.clone()).collect();
-            f.path
-                .strip_prefix("_texts.")
-                .and_then(|tt| self.model.text_type_for(&set, tt.trim_matches('`')))
-                .map(|tt| Item::Text(id, tt.name.clone()))
-        })
+            return Ok(self.model.text_type_for(&own, tt).or_else(|| self.model.text_type_for(&set, tt)).map(|x| Item::Text(id, x.name.clone())));
+        }
+        let e = expr(&f.path)?;
+        Ok(eval(&nav, &e, &[Item::Obj(id)]).await?.into_iter().next())
     }
 
     pub async fn aspect_children(&self, ctx: &Ctx, aspect: &str, node: &str, lang: &str) -> Result<Vec<NodeOut>> {

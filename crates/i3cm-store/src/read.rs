@@ -196,7 +196,9 @@ impl Store {
         }
         let mut types = vec![];
         for (t, implied) in &set {
-            if !readable.contains_key(t) {
+            // the object shows as of its type when its own part or a supertype part is readable
+            // (a right on a supertype reads the object as a whole, not the subtype's own part)
+            if !self.model.ancestors(t).iter().any(|a| readable.contains_key(&a.name)) {
                 continue;
             }
             let mut merged = Map::new();
@@ -277,21 +279,21 @@ impl Store {
         let def = self.model.require_type(t)?;
         let tb = type_table(def);
         let mut cond = vec![];
-        let mut params: Vec<Param> = vec![];
+        let mut params: Vec<Param> = vec![Box::new(ctx.tenant)];
+        let mut q = crate::rights::FilterSql { t, ctx, guard: true, readable: Default::default() };
         for (k, v) in filter {
             // own, inherited or guaranteed host attributes
             let owner = self.model.path_defining_type(t, k).ok_or_else(|| BaseError::invalid("query.unknown_attribute", "unknown attribute").with("attribute", k.clone()))?;
             let a = owner.attributes.iter().find(|a| &a.name == k).expect("defining type has the attribute");
             let val = to_val(a, v).map_err(|e| e.with("attribute", k.clone()))?;
+            // another type part counts only where the caller may read it (no oracle)
+            let guard = if owner.name != t { format!("{} AND ", self.readable_part(&mut q, &owner.name, &mut params)?) } else { String::new() };
             params.push(param(&val, Col::of(&a.vt), a.list));
-            cond.push(format!("{} = ${}", self.attr_col(t, &owner.name, k), params.len() + 1));
+            cond.push(format!("{guard}{} = ${}", self.attr_col(t, &owner.name, k), params.len()));
         }
         let wh = if cond.is_empty() { String::new() } else { format!(" AND {}", cond.join(" AND ")) };
         let sql = format!("SELECT x.object_id FROM {tb} x WHERE x.tenant_id=$1 AND x.valid_to IS NULL AND x.deleted_at IS NULL{wh} ORDER BY x.object_id LIMIT {limit}");
-        let mut args: Vec<&(dyn tokio_postgres::types::ToSql + Sync)> = vec![&ctx.tenant];
-        let pr = refs(&params);
-        args.extend(pr.iter().copied());
-        let rows = c.query(&sql, &args).await.map_err(db)?;
+        let rows = c.query(&sql, &refs(&params)).await.map_err(db)?;
         let mut out = vec![];
         for r in rows {
             if let Ok(v) = self.view(c, ctx, r.get(0), None, lang).await {
@@ -315,8 +317,8 @@ impl Store {
         let mut params: Vec<Param> = vec![Box::new(ctx.tenant)];
         let mut conds = String::new();
         if !expr.trim().is_empty() {
-            let f = i3cm_core::paths::filter(&self.model, t, expr, i3cm_core::paths::Origin::Query)?;
-            conds.push_str(&format!(" AND {}", self.filter_sql(&f, t, ctx, &mut params)?));
+            let f = i3cm_core::paths::filter_in(&self.model, t, expr, i3cm_core::paths::Origin::Query, i3cm_core::Model::module_of(t), &ctx.inactive)?;
+            conds.push_str(&format!(" AND {}", self.query_filter_sql(&f, t, ctx, &mut params)?));
         }
         if let Some(a) = after {
             params.push(Box::new(a));

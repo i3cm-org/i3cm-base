@@ -72,7 +72,7 @@ for i in range(2):
 print("persons, companies, documents: done")
 
 # one mail with many attachments: a grid with several pages
-ops = [{"op": "create", "ref": "scan", "types": {"mail:Mail": {"receivedAt": "2026-11-25T18:00:00+01:00", "title": "Scan batch", "sender": "scanner@example.org", "subject": "Scan batch", "recipients": ["anna@example.org"]}}}]
+ops = [{"op": "create", "ref": "scan", "types": {"mail:Mail": {"receivedAt": "2026-11-25T18:00:00+01:00", "title": "Scan batch", "sender": "scanner@example.org", "from": "scanner@example.org", "subject": "Scan batch", "recipients": ["anna@example.org"]}}}]
 for j in range(60):
     ops.append({"op": "create", "ref": f"s{j}", "types": {"mail:MailAttachment": {"title": f"scan-{j:03d}.pdf", "inline": False}}})
     ops.append({"op": "link", "reference": "mail:MailAttachment.mail", "from": f"s{j}", "to": "scan"})

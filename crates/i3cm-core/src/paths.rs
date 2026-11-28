@@ -7,6 +7,7 @@
 use crate::catalog::{Model, ANY};
 use crate::error::{BaseError, Result};
 use crate::fhirpath::{self, Expr};
+use std::collections::BTreeSet;
 
 /// Most steps a rights path may take.
 pub const MAX_RIGHTS_STEPS: usize = 3;
@@ -138,6 +139,21 @@ pub enum Operand {
     Shifted(Box<Operand>, &'static str, f64, String),
 }
 
+impl Operand {
+    /// The attribute this operand reads, also through a shift (`due + 7 days`).
+    pub fn attr_ref(&self) -> Option<&AttrRef> {
+        match self {
+            Operand::Attr(a) => Some(a),
+            Operand::Shifted(b, ..) => b.attr_ref(),
+            _ => None,
+        }
+    }
+    /// The attribute this operand reads over a path of references, if any.
+    pub fn path_attr(&self) -> Option<&AttrRef> {
+        self.attr_ref().filter(|a| !a.steps.is_empty())
+    }
+}
+
 /// A condition in the filter language (rights `when`, aspect `where`, named filters, queries);
 /// only what translates into SQL.
 #[derive(Debug, Clone, PartialEq)]
@@ -171,7 +187,7 @@ impl Filter {
     }
     /// Number of reference joins over all paths.
     pub fn joins(&self) -> usize {
-        let op = |o: &Operand| if let Operand::Attr(a) = o { a.steps.len() } else { 0 };
+        let op = |o: &Operand| o.attr_ref().map_or(0, |a| a.steps.len());
         match self {
             Filter::And(a, b) | Filter::Or(a, b) => a.joins() + b.joins(),
             Filter::Not(a) => a.joins(),
@@ -185,7 +201,7 @@ impl Filter {
     /// All steps of all paths (rights relevance).
     pub fn steps(&self) -> Vec<&Step> {
         fn op(o: &Operand) -> Vec<&Step> {
-            if let Operand::Attr(a) = o { a.steps.iter().collect() } else { vec![] }
+            o.attr_ref().map_or(vec![], |a| a.steps.iter().collect())
         }
         match self {
             Filter::And(a, b) | Filter::Or(a, b) => a.steps().into_iter().chain(b.steps()).collect(),
@@ -216,15 +232,22 @@ pub enum Origin {
     Query,
 }
 
-/// Parse and check a filter of the catalog (aspect `where`, named filter) for entry type `t`.
+/// Parse and check a filter of the catalog (aspect `where`, named filter) for entry type `t`;
+/// `@name` without namespace refers to the module of `t`.
 pub fn view_filter(m: &Model, t: &str, src: &str) -> Result<Filter> {
     filter(m, t, src, Origin::Catalog)
 }
 
-/// Parse and check a filter for entry type `t`.
+/// Parse and check a filter for entry type `t`; `@name` without namespace refers to the module of `t`.
 pub fn filter(m: &Model, t: &str, src: &str, origin: Origin) -> Result<Filter> {
+    filter_in(m, t, src, origin, Model::module_of(t), &BTreeSet::new())
+}
+
+/// Parse and check a filter for entry type `t`, written in module `ns` (where `@name` without
+/// namespace refers to); types and named filters of `inactive` modules do not exist for it.
+pub fn filter_in(m: &Model, t: &str, src: &str, origin: Origin, ns: &str, inactive: &BTreeSet<String>) -> Result<Filter> {
     let e = fhirpath::parse(src)?;
-    let f = Lower { m, src, origin, ns: Model::module_of(t).to_string(), depth: 0 }.lower(t, &e)?;
+    let f = Lower { m, src, origin, ns: ns.to_string(), inactive, depth: 0 }.lower(t, &e)?;
     if f.terms() > MAX_FILTER_TERMS || f.joins() > MAX_FILTER_JOINS {
         return Err(bad("filter.too_complex", "the filter has too many terms or path joins", src)
             .with("terms", f.terms().to_string())
@@ -252,10 +275,60 @@ impl RightsCond {
 
 /// Parse and check the condition `when` of a right on type `t`.
 pub fn rights_cond(m: &Model, t: &str, src: &str) -> Result<RightsCond> {
+    rights_cond_in(m, t, src, Model::module_of(t), &BTreeSet::new())
+}
+
+/// Parse and check the condition `when` of a right on type `t`, written in module `ns`.
+pub fn rights_cond_in(m: &Model, t: &str, src: &str, ns: &str, inactive: &BTreeSet<String>) -> Result<RightsCond> {
     if let Ok(rp) = rights_path(m, t, src) {
         return Ok(RightsCond::Path(rp));
     }
-    Ok(RightsCond::Filter(filter(m, t, src, Origin::Catalog)?))
+    Ok(RightsCond::Filter(filter_in(m, t, src, Origin::Catalog, ns, inactive)?))
+}
+
+/// `src` with every named filter `@name` without namespace qualified as `@ns:name`, so the
+/// condition keeps its meaning wherever it is evaluated (e.g. on a subtype of another module).
+pub fn qualify_named(src: &str, ns: &str) -> String {
+    let cs: Vec<char> = src.chars().collect();
+    let mut out = String::with_capacity(src.len() + 8);
+    let mut i = 0;
+    // inside a string or a delimited identifier: its closing character
+    let mut quoted: Option<char> = None;
+    while i < cs.len() {
+        let c = cs[i];
+        if let Some(q) = quoted {
+            out.push(c);
+            if c == '\\' && q == '\'' && i + 1 < cs.len() {
+                out.push(cs[i + 1]);
+                i += 1;
+            } else if c == q {
+                quoted = None;
+            }
+            i += 1;
+            continue;
+        }
+        if c == '\'' || c == '`' {
+            quoted = Some(c);
+        }
+        if c == '@' && cs.get(i + 1).is_some_and(|x| x.is_ascii_alphabetic()) {
+            let mut j = i + 1;
+            while j < cs.len() && (cs[j].is_ascii_alphanumeric() || cs[j] == '_' || cs[j] == '-' || cs[j] == ':') {
+                j += 1;
+            }
+            let name: String = cs[i + 1..j].iter().collect();
+            out.push('@');
+            if !name.contains(':') {
+                out.push_str(ns);
+                out.push(':');
+            }
+            out.push_str(&name);
+            i = j;
+            continue;
+        }
+        out.push(c);
+        i += 1;
+    }
+    out
 }
 
 struct Lower<'a> {
@@ -264,6 +337,8 @@ struct Lower<'a> {
     origin: Origin,
     /// Module whose named filters `@name` refers to without namespace.
     ns: String,
+    /// Modules not active in the tenant: their types and named filters do not exist here.
+    inactive: &'a BTreeSet<String>,
     depth: usize,
 }
 
@@ -299,11 +374,66 @@ impl Lower<'_> {
         if let Some(d) = self.m.path_types(t).into_iter().find(|d| scalar(d)) {
             return Ok(Some(d.name.clone()));
         }
-        let att: Vec<_> = self.m.attachable_types(t).into_iter().filter(|d| scalar(d)).collect();
+        let att: Vec<_> = self.attachable(t).into_iter().filter(|d| scalar(d)).collect();
         match att.len() {
             0 => Ok(None),
             1 => Ok(Some(att[0].name.clone())),
             _ => Err(self.bad("path.ambiguous", "several attachable types have this attribute").with("name", name)),
+        }
+    }
+
+    /// Attachable types of `t` from active modules.
+    fn attachable(&self, t: &str) -> Vec<&crate::catalog::TypeDef> {
+        self.m.attachable_types(t).into_iter().filter(|d| !self.inactive.contains(Model::module_of(&d.name))).collect()
+    }
+
+    /// Column kind of an attribute operand.
+    fn col_of(&self, a: &AttrRef) -> Option<crate::values::Col> {
+        self.m.type_def(&a.owner)?.attributes.iter().find(|x| x.name == a.name).map(|x| crate::values::Col::of(&x.vt))
+    }
+
+    /// Kind of value an operand yields (`None` for literals, which take the other side's kind).
+    fn kind(&self, o: &Operand) -> Option<crate::values::Col> {
+        use crate::values::Col;
+        match o {
+            Operand::Attr(a) => self.col_of(a),
+            Operand::Content("size") => Some(Col::Int),
+            Operand::Content(_) => Some(Col::Text),
+            Operand::Now => Some(Col::Ts),
+            Operand::Today => Some(Col::Date),
+            Operand::Shifted(b, ..) => match self.kind(b) {
+                Some(Col::Date) | Some(Col::Ts) => Some(Col::Ts),
+                k => k,
+            },
+            Operand::Lit(_) => None,
+        }
+    }
+
+    /// Can a literal stand for a value of `o`? Checked like a value written to the attribute.
+    fn lit_fits(&self, o: &Operand, v: &serde_json::Value) -> Result<()> {
+        let fits = match o.attr_ref() {
+            Some(a) if !matches!(o, Operand::Shifted(..)) => {
+                let ad = self.m.type_def(&a.owner).and_then(|d| d.attributes.iter().find(|x| x.name == a.name)).cloned();
+                match ad {
+                    Some(mut ad) => {
+                        ad.required = false;
+                        crate::values::to_val(&ad, v).is_ok()
+                    }
+                    None => false,
+                }
+            }
+            Some(_) => v.is_string(),
+            None => match o {
+                Operand::Content("size") => v.is_i64() || v.is_u64(),
+                Operand::Content(_) => v.is_string(),
+                Operand::Now | Operand::Today => v.is_string(),
+                _ => false,
+            },
+        };
+        if fits {
+            Ok(())
+        } else {
+            Err(self.bad("path.bad_filter", "the literal does not fit the value it is compared with").with("value", v.to_string()))
         }
     }
 
@@ -322,8 +452,9 @@ impl Lower<'_> {
             Expr::Bin(op @ ("+" | "-"), a, b) => match b.as_ref() {
                 Expr::Lit(q) if q.get("quantity").is_some() => {
                     let base = self.operand(t, a)?;
-                    if matches!(base, Operand::Lit(_)) {
-                        return Err(self.bad("path.bad_filter", "a quantity is added to now(), today() or a date attribute"));
+                    let date_attr = matches!(&base, Operand::Attr(x) if matches!(self.col_of(x), Some(crate::values::Col::Date | crate::values::Col::Ts)));
+                    if !(date_attr || matches!(base, Operand::Now | Operand::Today)) {
+                        return Err(self.bad("path.bad_filter", "a quantity is added to now(), today() or a date attribute (once)"));
                     }
                     let n = q["quantity"].as_f64().unwrap_or(0.0);
                     Ok(Operand::Shifted(Box::new(base), op, n, q["unit"].as_str().unwrap_or("day").to_string()))
@@ -347,7 +478,11 @@ impl Lower<'_> {
 
     fn named(&self, t: &str, name: &str) -> Result<Filter> {
         let n = name.trim_start_matches('@');
-        let def = self.m.named_filter(n, &self.ns).ok_or_else(|| self.bad("filter.unknown", "no named filter with this name").with("filter", n))?;
+        let def = self
+            .m
+            .named_filter(n, &self.ns)
+            .filter(|d| !self.inactive.contains(Model::module_of(&d.name)))
+            .ok_or_else(|| self.bad("filter.unknown", "no named filter with this name").with("filter", n))?;
         if !self.m.is_a(t, &def.type_name) {
             return Err(self.bad("filter.wrong_type", "the named filter is defined on another type").with("filter", def.name.clone()).with("type", t));
         }
@@ -357,7 +492,7 @@ impl Lower<'_> {
         let e = fhirpath::parse(&def.filter)?;
         // inside a free query the same restriction holds for the named filter: no paths over
         // objects the caller might not read (the result could reveal them)
-        Lower { m: self.m, src: &def.filter, origin: self.origin, ns: Model::module_of(&def.name).to_string(), depth: self.depth + 1 }.lower(t, &e)
+        Lower { m: self.m, src: &def.filter, origin: self.origin, ns: Model::module_of(&def.name).to_string(), inactive: self.inactive, depth: self.depth + 1 }.lower(t, &e)
     }
 
     fn lower(&self, t: &str, e: &Expr) -> Result<Filter> {
@@ -424,17 +559,33 @@ impl Lower<'_> {
                 if !matches!(o, Operand::Attr(_) | Operand::Content(_)) {
                     return Err(self.bad("path.bad_filter", "`in` tests an attribute or a content field"));
                 }
+                for v in &vals {
+                    self.lit_fits(&o, v)?;
+                }
                 Ok(Filter::In(o, vals))
             }
             Expr::Bin(op, a, b) if ["=", "!=", "<", "<=", ">", ">="].contains(op) => {
                 let l = self.operand(t, a)?;
                 let r = self.operand(t, b)?;
-                let paths = [&l, &r].iter().filter(|o| matches!(o, Operand::Attr(x) if !x.steps.is_empty())).count();
+                let paths = [&l, &r].iter().filter(|o| o.path_attr().is_some()).count();
                 if paths > 1 {
                     return Err(self.bad("path.bad_filter", "only one side of a comparison may follow references"));
                 }
-                if !matches!(l, Operand::Attr(_) | Operand::Content(_)) && !matches!(r, Operand::Attr(_) | Operand::Content(_)) {
+                let reads = |o: &Operand| o.attr_ref().is_some() || matches!(o, Operand::Content(_));
+                if !reads(&l) && !reads(&r) {
                     return Err(self.bad("path.bad_filter", "a comparison needs an attribute or a content field"));
+                }
+                // both sides must be of the same kind (dates and times compare with each other)
+                use crate::values::Col;
+                let time = |k: Col| matches!(k, Col::Date | Col::Ts);
+                let num = |k: Col| matches!(k, Col::Int | Col::Num);
+                match (self.kind(&l), self.kind(&r)) {
+                    (Some(a), Some(b)) if a == b || (time(a) && time(b)) || (num(a) && num(b)) => {}
+                    (Some(Col::Json), _) | (_, Some(Col::Json)) => return Err(self.bad("path.bad_filter", "structured values cannot be compared")),
+                    (Some(_), Some(_)) => return Err(self.bad("path.bad_filter", "the two sides of the comparison are of different kinds")),
+                    (Some(_), None) => self.lit_fits(&l, match &r { Operand::Lit(v) => v, _ => unreachable!() })?,
+                    (None, Some(_)) => self.lit_fits(&r, match &l { Operand::Lit(v) => v, _ => unreachable!() })?,
+                    (None, None) => return Err(self.bad("path.bad_filter", "a comparison needs an attribute or a content field")),
                 }
                 Ok(Filter::Cmp(l, op, r))
             }
@@ -444,7 +595,7 @@ impl Lower<'_> {
 
     /// Qualified name of the text type `name` (local or qualified) owned by `t` or a type it shares objects with.
     fn text_type(&self, t: &str, name: &str) -> Result<String> {
-        let owners: Vec<String> = self.m.path_types(t).iter().map(|d| d.name.clone()).chain(self.m.attachable_types(t).iter().map(|d| d.name.clone())).collect();
+        let owners: Vec<String> = self.m.path_types(t).iter().map(|d| d.name.clone()).chain(self.attachable(t).iter().map(|d| d.name.clone())).collect();
         self.m
             .catalog
             .text_types
@@ -472,6 +623,26 @@ mod host_type_tests {
                       t("m:Deadline", json!([a("direction", json!({"kind": "string"}))]), &["m:Task"])],
             "references": [], "textTypes": []});
         Model::from_json(&cat.to_string()).unwrap()
+    }
+
+    #[test]
+    fn named_filters_are_qualified_outside_strings() {
+        assert_eq!(super::qualify_named("@big and x = '@a' or @m:f or `@q` = 1", "dms"), "@dms:big and x = '@a' or @m:f or `@q` = 1");
+        assert_eq!(super::qualify_named("a = 'it\\'s @x' and @y", "n"), "a = 'it\\'s @x' and @n:y");
+    }
+
+    #[test]
+    fn shifts_and_kinds_are_checked() {
+        let m = model();
+        assert!(super::view_filter(&m, "m:Task", "due + 7 days < now()").is_ok(), "a shifted date attribute against now()");
+        assert!(super::view_filter(&m, "m:Task", "due - 1 day > '2026-01-01T00:00:00Z'").is_ok());
+        let bad = |src: &str| super::view_filter(&m, "m:Task", src).unwrap_err().error_id;
+        assert_eq!(bad("status + 7 days < now()"), "path.bad_filter", "only dates are shifted");
+        assert_eq!(bad("today() + 1 day + 2 hours < due"), "path.bad_filter", "one shift");
+        assert_eq!(bad("status < now()"), "path.bad_filter", "text against a time");
+        assert_eq!(bad("due = status"), "path.bad_filter", "different kinds");
+        assert_eq!(bad("due = 'abc'"), "path.bad_filter", "the literal is no date");
+        assert_eq!(bad("due in ('x')"), "path.bad_filter");
     }
 
     #[test]

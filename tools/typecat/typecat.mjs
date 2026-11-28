@@ -457,7 +457,11 @@ function aspectOf(name, def) {
       attributes: pairs(n.attributes).map(([label, path]) => ({ label, path })),
       subNodes: pairs(n.subNodes).map(([label, v]) => ({ label, path: v.path, folder: !!v.folder, ...(v.dropType ? { dropType: v.dropType } : {}) })),
       // a list of sources: the first present is read, writing goes to the first
-      files: pairs(n.files).map(([name, path]) => (Array.isArray(path) ? { name, path: path[0], ...(path.length > 1 ? { fallback: path.slice(1) } : {}) } : { name, path })),
+      files: pairs(n.files).map(([name, path]) => {
+        if (!Array.isArray(path)) return { name, path };
+        if (path.length === 0) throw new CatError("aspect.empty_sources", "a file needs at least one source", { file: name });
+        return { name, path: path[0], ...(path.length > 1 ? { fallback: path.slice(1) } : {}) };
+      }),
       tabs: pairs(n.tabs).map(([label, v]) => ({ label, path: v.path, columns: pairs(v.columns).map(([l, p]) => ({ label: l, path: p })) })),
       functions: pairs(n.functions).map(([name, v]) => ({ name, url: v.url })),
       filesFirst: !("subNodes" in n) || !("files" in n) || Object.keys(n).indexOf("files") < Object.keys(n).indexOf("subNodes"),

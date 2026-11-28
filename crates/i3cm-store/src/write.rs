@@ -77,10 +77,17 @@ impl Store {
                 None => ops.extend(self.index_ops(ctx, w, lang).await?),
                 Some(name) => match match self.file_write_item(ctx, &w.aspect, &w.node, name).await? {
                     Some(it) => it,
+                    // files of module aspects are written to their first source only
+                    None if !crate::aspect::is_builtin(&w.aspect) => return Err(BaseError::not_found("aspect.no_file", "no such file").with("name", name.clone())),
                     None => self.file_item(ctx, &w.aspect, &w.node, name).await?,
                 } {
                     Item::Content(id) => {
-                        let (_, media, filename) = self.get_content(ctx, id).await?;
+                        // no content yet: the file's name gives media type and file name
+                        let (media, filename) = match self.get_content(ctx, id).await {
+                            Ok((_, media, filename)) => (media, filename),
+                            Err(e) if e.error_id == "content.none" => (media_type_of(name).to_string(), Some(name.clone())),
+                            Err(e) => return Err(e),
+                        };
                         let sha = self.put_blob(&w.data).await?;
                         ops.push(Op::SetContent { id: id.to_string(), sha256: sha, media_type: media, size: w.data.len() as i64, filename });
                     }
