@@ -58,8 +58,8 @@ impl Store {
                     Some(code) if code == "23505" => BaseError::conflict("tenant.exists", "tenant name already used").with("name", name),
                     _ => db(e),
                 })?;
-            let txn: i64 = tx.query_one("SELECT nextval('txn_seq')", &[]).await.map_err(db)?.get(0);
-            tx.execute("INSERT INTO txn (tenant_id, id) VALUES ($1,$2)", &[&tenant, &txn]).await.map_err(db)?;
+            let (txn, seq) = crate::session::clock(&*tx, tenant).await?;
+            tx.execute("INSERT INTO txn (tenant_id, id, seq) VALUES ($1,$2,$3)", &[&tenant, &txn, &seq]).await.map_err(db)?;
             tx.execute("INSERT INTO object (tenant_id, id, created_txn) VALUES ($1,$2,$3)", &[&tenant, &root, &txn]).await.map_err(db)?;
             tx.execute("INSERT INTO object_state (tenant_id, object_id, room_id, valid_from) VALUES ($1,$2,$2,$3)", &[&tenant, &root, &txn]).await.map_err(db)?;
             tx.execute("INSERT INTO object_type (tenant_id, object_id, type_name, implied, valid_from) VALUES ($1,$2,'base:Room',false,$3)", &[&tenant, &root, &txn])
@@ -126,8 +126,8 @@ impl Store {
                 tx.execute("INSERT INTO profile_include (tenant_id, profile, includes) VALUES ($1,$2,$3)", &[&tenant, &profile.name, inc]).await.map_err(db)?;
             }
         }
-        let txn: i64 = tx.query_one("SELECT nextval('txn_seq')", &[]).await.map_err(db)?.get(0);
-        tx.execute("INSERT INTO txn (tenant_id, id) VALUES ($1,$2)", &[&tenant, &txn]).await.map_err(db)?;
+        let (txn, seq) = crate::session::clock(&*tx, tenant).await?;
+        tx.execute("INSERT INTO txn (tenant_id, id, seq) VALUES ($1,$2,$3)", &[&tenant, &txn, &seq]).await.map_err(db)?;
         let admins = created["admins"];
         tx.execute(
             "INSERT INTO assignment (tenant_id, id, profile, carrier, valid_from) VALUES ($1,$2,'base:admin',$3,$4)",

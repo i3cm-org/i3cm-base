@@ -749,8 +749,8 @@ impl Store {
         }
         let tx = c.transaction().await.map_err(db)?;
         let sha = self.store_bytes(&*tx, data).await?;
-        let txn: i64 = tx.query_one("SELECT nextval('txn_seq')", &[]).await.map_err(db)?.get(0);
-        tx.execute("INSERT INTO txn (tenant_id, id, account) VALUES ($1,$2,$3)", &[&ctx.tenant, &txn, &ctx.me()]).await.map_err(db)?;
+        let (txn, seq) = crate::session::clock(&*tx, ctx.tenant).await?;
+        tx.execute("INSERT INTO txn (tenant_id, id, account, seq) VALUES ($1,$2,$3,$4)", &[&ctx.tenant, &txn, &ctx.me(), &seq]).await.map_err(db)?;
         tx.execute("UPDATE content SET valid_to=$3 WHERE tenant_id=$1 AND object_id=$2 AND valid_to IS NULL", &[&ctx.tenant, &id, &txn]).await.map_err(db)?;
         let size = data.len() as i64;
         tx.execute(
@@ -798,8 +798,8 @@ impl Store {
             return Err(BaseError::not_found("rights.denied", "not allowed or not found").with("art", "write").with("type", t));
         }
         let tx = c.transaction().await.map_err(db)?;
-        let txn: i64 = tx.query_one("SELECT nextval('txn_seq')", &[]).await.map_err(db)?.get(0);
-        tx.execute("INSERT INTO txn (tenant_id, id, account) VALUES ($1,$2,$3)", &[&ctx.tenant, &txn, &ctx.me()]).await.map_err(db)?;
+        let (txn, seq) = crate::session::clock(&*tx, ctx.tenant).await?;
+        tx.execute("INSERT INTO txn (tenant_id, id, account, seq) VALUES ($1,$2,$3,$4)", &[&ctx.tenant, &txn, &ctx.me(), &seq]).await.map_err(db)?;
         tx.execute("UPDATE text_part SET valid_to=$4 WHERE tenant_id=$1 AND object_id=$2 AND text_type=$3 AND valid_to IS NULL", &[&ctx.tenant, &id, &text_type, &txn])
             .await
             .map_err(db)?;
@@ -844,10 +844,10 @@ impl Store {
         }
         let tx = c.transaction().await.map_err(db)?;
         // a profile with `-` or `block` rights can take the right to grant away as well
+        let (txn, seq) = crate::session::clock(&*tx, ctx.tenant).await?;
+        tx.execute("INSERT INTO txn (tenant_id, id, account, seq) VALUES ($1,$2,$3,$4)", &[&ctx.tenant, &txn, &ctx.me(), &seq]).await.map_err(db)?;
         crate::admin::lock_admins(&*tx, ctx.tenant).await?;
         let had = self.has_admin(&*tx, ctx.tenant).await?;
-        let txn: i64 = tx.query_one("SELECT nextval('txn_seq')", &[]).await.map_err(db)?.get(0);
-        tx.execute("INSERT INTO txn (tenant_id, id, account) VALUES ($1,$2,$3)", &[&ctx.tenant, &txn, &ctx.me()]).await.map_err(db)?;
         let id = Uuid::new_v4();
         tx.execute("INSERT INTO assignment (tenant_id, id, profile, carrier, valid_from) VALUES ($1,$2,$3,$4,$5)", &[&ctx.tenant, &id, &profile, &carrier, &txn])
             .await
@@ -884,10 +884,10 @@ impl Store {
         }
         let mut c = self.client().await?;
         let tx = c.transaction().await.map_err(db)?;
+        let (txn, seq) = crate::session::clock(&*tx, ctx.tenant).await?;
+        tx.execute("INSERT INTO txn (tenant_id, id, account, seq) VALUES ($1,$2,$3,$4)", &[&ctx.tenant, &txn, &ctx.me(), &seq]).await.map_err(db)?;
         crate::admin::lock_admins(&*tx, ctx.tenant).await?;
         let had = self.has_admin(&*tx, ctx.tenant).await?;
-        let txn: i64 = tx.query_one("SELECT nextval('txn_seq')", &[]).await.map_err(db)?.get(0);
-        tx.execute("INSERT INTO txn (tenant_id, id, account) VALUES ($1,$2,$3)", &[&ctx.tenant, &txn, &ctx.me()]).await.map_err(db)?;
         let n = tx
             .execute("UPDATE assignment SET valid_to=$3 WHERE tenant_id=$1 AND id=$2 AND valid_to IS NULL", &[&ctx.tenant, &id, &txn])
             .await

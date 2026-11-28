@@ -1498,3 +1498,86 @@ async fn upload_assignment_needs_rights_and_a_commit() {
     assert_eq!(env.admin.upload_complete(uid, Some(&sha_hex(b"b")), None).await.unwrap_err().error_id(), Some("upload.checksum_conflict"));
     assert_eq!(env.admin.upload_complete(uid, None, Some(1)).await.unwrap()["state"], "complete");
 }
+
+/// Versions stay consistent when orders overlap: an order that began earlier but writes later must
+/// not close a version that a later order already committed (no row with `valid_to < valid_from`,
+/// exactly one open row per part).
+#[tokio::test]
+async fn overlapping_orders_keep_versions_consistent() {
+    let env = env().await;
+    let (id, _) = env.person("olga", &[]).await;
+    let ctx = env.store.ctx(env.init.tenant, env.init.admin_account).await.unwrap();
+    let audit = i3cm_store::session::Audit::default();
+    let upd = |name: &str| -> i3cm_store::Op {
+        serde_json::from_value(json!({"op": "update", "id": id.to_string(), "types": {"base:Person": {"lastName": name}}})).unwrap()
+    };
+    let attach: i3cm_store::Op = serde_json::from_value(json!({"op": "detach", "id": id.to_string(), "type": "base:PersonAccount"})).unwrap();
+    // A begins first (smaller transaction number) ...
+    let mut a = env.store.begin(&ctx, &audit).await.unwrap();
+    // ... B begins later, writes and commits while A is still open
+    let (store, ctx_b, upd_b) = (env.store.clone(), ctx.clone(), upd("from-b"));
+    let b = tokio::spawn(async move {
+        let mut ctx_b = ctx_b;
+        let mut s = store.begin(&ctx_b, &i3cm_store::session::Audit::default()).await.unwrap();
+        s.apply(&store, &mut ctx_b, &upd_b).await.unwrap();
+        s.finish(&store, &mut ctx_b, true).await.unwrap();
+    });
+    tokio::time::sleep(std::time::Duration::from_millis(400)).await;
+    // ... then A writes the same object and commits
+    let mut ctx_a = ctx.clone();
+    a.apply(&env.store, &mut ctx_a, &upd("from-a")).await.unwrap();
+    a.apply(&env.store, &mut ctx_a, &attach).await.unwrap();
+    a.finish(&env.store, &mut ctx_a, true).await.unwrap();
+    b.await.unwrap();
+    let c = env.store.client().await.unwrap();
+    for t in ["t_base_person", "object_state", "object_type"] {
+        let broken: i64 = c
+            .query_one(&format!("SELECT count(*) FROM {t} WHERE object_id=$1 AND valid_to IS NOT NULL AND valid_to < valid_from"), &[&id])
+            .await
+            .unwrap()
+            .get(0);
+        assert_eq!(broken, 0, "{t}: a version closed before it began");
+    }
+    let open: i64 = c.query_one("SELECT count(*) FROM t_base_person WHERE object_id=$1 AND valid_to IS NULL", &[&id]).await.unwrap().get(0);
+    assert_eq!(open, 1, "exactly one open person row");
+    let dup: i64 = c
+        .query_one("SELECT count(*) FROM (SELECT type_name FROM object_type WHERE object_id=$1 AND valid_to IS NULL GROUP BY type_name HAVING count(*) > 1) d", &[&id])
+        .await
+        .unwrap()
+        .get(0);
+    assert_eq!(dup, 0, "at most one open entry per type");
+    // the version history is ordered: each closed row ends where a later one begins
+    let rows = c.query("SELECT valid_from, valid_to FROM t_base_person WHERE object_id=$1 ORDER BY valid_from", &[&id]).await.unwrap();
+    for w in rows.windows(2) {
+        assert_eq!(w[0].get::<_, Option<i64>>(1), Some(w[1].get::<_, i64>(0)), "person versions form a chain");
+    }
+}
+
+/// Each tenant counts its committed writing transactions without gaps, in commit order; refused
+/// orders and dry runs leave no number behind.
+#[tokio::test]
+async fn tenant_sequence_is_gap_free_in_commit_order() {
+    let env = env().await;
+    let (id, _) = env.person("sam", &[]).await;
+    let mut dry = Order::new();
+    dry.update(id, json!({"base:Person": {"lastName": "dry"}}));
+    dry.dry_run = true;
+    env.admin.order(&dry).await.unwrap();
+    let mut bad = Order::new();
+    bad.update(id, json!({"base:Person": {"noSuchAttribute": 1}}));
+    assert!(env.admin.order(&bad).await.is_err());
+    let mut o = Order::new();
+    o.update(id, json!({"base:Person": {"lastName": "sam-2"}}));
+    let (r1, r2) = tokio::join!(env.admin.order(&o), env.admin.order(&o));
+    r1.unwrap();
+    r2.unwrap();
+    let c = env.store.client().await.unwrap();
+    let rows = c.query("SELECT seq, id FROM txn WHERE tenant_id=$1 AND seq IS NOT NULL ORDER BY seq", &[&env.init.tenant]).await.unwrap();
+    assert!(rows.len() >= 3);
+    for (i, r) in rows.iter().enumerate() {
+        assert_eq!(r.get::<_, i64>(0), i as i64 + 1, "gap-free sequence");
+    }
+    for w in rows.windows(2) {
+        assert!(w[0].get::<_, i64>(1) < w[1].get::<_, i64>(1), "transaction numbers follow the sequence");
+    }
+}

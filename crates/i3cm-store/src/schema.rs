@@ -26,6 +26,9 @@ CREATE TABLE IF NOT EXISTS tenant (id uuid PRIMARY KEY, name text UNIQUE NOT NUL
 DO $$ BEGIN IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema = current_schema() AND table_name = 'tenant' AND column_name = 'development') THEN ALTER TABLE tenant ADD COLUMN development boolean NOT NULL DEFAULT false; END IF; END $$;
 CREATE SEQUENCE IF NOT EXISTS txn_seq;
 CREATE TABLE IF NOT EXISTS txn (tenant_id uuid NOT NULL, id bigint NOT NULL, at timestamptz NOT NULL DEFAULT now(), account uuid, PRIMARY KEY (tenant_id, id));
+DO $$ BEGIN IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema = current_schema() AND table_name = 'txn' AND column_name = 'seq') THEN ALTER TABLE txn ADD COLUMN seq bigint; END IF; END $$;
+CREATE UNIQUE INDEX IF NOT EXISTS txn_seq_per_tenant ON txn (tenant_id, seq) WHERE seq IS NOT NULL;
+CREATE TABLE IF NOT EXISTS tenant_clock (tenant_id uuid PRIMARY KEY, seq bigint NOT NULL);
 CREATE TABLE IF NOT EXISTS object (tenant_id uuid NOT NULL, id uuid NOT NULL, created_by uuid, created_at timestamptz NOT NULL DEFAULT now(), created_txn bigint NOT NULL, PRIMARY KEY (tenant_id, id));
 CREATE TABLE IF NOT EXISTS object_state (tenant_id uuid NOT NULL, object_id uuid NOT NULL, room_id uuid NOT NULL, deleted_at timestamptz, valid_from bigint NOT NULL, valid_to bigint, PRIMARY KEY (tenant_id, object_id, valid_from));
 CREATE UNIQUE INDEX IF NOT EXISTS object_state_cur ON object_state (tenant_id, object_id) WHERE valid_to IS NULL;

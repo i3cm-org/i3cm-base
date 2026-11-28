@@ -39,6 +39,12 @@ the ones marked "operator" ([configuration](../operator/configuration.md)).
 `POST /v1/orders` executes operations in one transaction; `"dry_run": true` checks everything
 and rolls back. Object ids are UUIDs or the `ref` of an object created earlier in the order.
 
+Writing transactions of one tenant run one after the other: an order waits until the previous
+writing order of its tenant has committed or rolled back (reads never wait). Versions therefore
+form a clean chain in commit order, and each committed writing transaction gets the next number of
+its tenant's sequence (gap-free; refused orders and dry runs take none). Keep orders short, in
+particular module operations, since they hold the tenant's write turn until they end.
+
 ```json
 {"ops": [
   {"op": "create", "ref": "e", "room": "<room id>", "types": {"fibu:JournalEntry": {"documentDate": "2026-03-01", "postingDate": "2026-03-01", "documentNumber": "R-1", "fiscalYear": 2026}}},

@@ -40,18 +40,40 @@ pub struct Session {
     inline_limit: Option<usize>,
 }
 
+/// Start the writing part of a transaction in a tenant: wait until no other writing transaction of
+/// the tenant is open, then allocate the transaction number and the tenant's commit sequence.
+///
+/// Writes of one tenant are serialised by the row lock on `tenant_clock`, held until commit or
+/// rollback. Transaction numbers are therefore increasing in commit order within a tenant, so a
+/// version is never closed by an older transaction than the one that opened it, and `seq` counts
+/// the committed writing transactions of the tenant without gaps (a rollback undoes the step).
+/// Call this before taking any other lock of the transaction (lock order: clock, then admins).
+pub(crate) async fn clock<C: tokio_postgres::GenericClient>(c: &C, tenant: Uuid) -> Result<(i64, i64)> {
+    let seq: i64 = c
+        .query_one(
+            "INSERT INTO tenant_clock (tenant_id, seq) VALUES ($1, 1) ON CONFLICT (tenant_id) DO UPDATE SET seq = tenant_clock.seq + 1 RETURNING seq",
+            &[&tenant],
+        )
+        .await
+        .map_err(db)?
+        .get(0);
+    let txn: i64 = c.query_one("SELECT nextval('txn_seq')", &[]).await.map_err(db)?.get(0);
+    Ok((txn, seq))
+}
+
 impl Store {
-    /// Open an order: BEGIN, allocate the transaction number, record who acts.
+    /// Open an order: BEGIN, wait for the tenant's write turn, allocate the transaction number,
+    /// record who acts.
     pub async fn begin(&self, ctx: &Ctx, audit: &Audit) -> Result<Session> {
         let client = self.client().await?;
         client.batch_execute("BEGIN").await.map_err(db)?;
         let inline_limit = if audit.module.is_none() { Some(crate::files::MAX_INLINE_CONTENT) } else { None };
         let mut s = Session { client: Some(client), txn: 0, state: State::default(), seq: 0, inline_limit };
         let c = s.client();
-        let txn: i64 = c.query_one("SELECT nextval('txn_seq')", &[]).await.map_err(db)?.get(0);
+        let (txn, seq) = clock(c, ctx.tenant).await?;
         c.execute(
-            "INSERT INTO txn (tenant_id, id, account, module, function, tool) VALUES ($1, $2, $3, $4, $5, $6)",
-            &[&ctx.tenant, &txn, &ctx.me(), &audit.module, &audit.function, &audit.tool],
+            "INSERT INTO txn (tenant_id, id, account, module, function, tool, seq) VALUES ($1, $2, $3, $4, $5, $6, $7)",
+            &[&ctx.tenant, &txn, &ctx.me(), &audit.module, &audit.function, &audit.tool, &seq],
         )
         .await
         .map_err(db)?;
