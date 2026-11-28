@@ -80,11 +80,15 @@ curl -X PUT  -H "Authorization: Bearer $TOKEN" --data-binary @part1 $SERVER/v1/u
 curl -X POST -H "Authorization: Bearer $TOKEN" -d '{"parts": 2}' $SERVER/v1/uploads/upl_…/complete
 ```
 
-* Parts are numbered from 1 without gaps; only the last part may be short, no part may exceed the
-  part limit. `complete` with `parts` names missing parts (`upload.incomplete`, `missing`); with a
+* Completing assembles the parts (the upload shows `completing` meanwhile); a second `complete`
+  while it runs is `upload.completing`, after it the same answer again.
+* Parts are numbered from 1 without gaps and may have any size up to the part limit (there is no
+  minimum; equal parts of e.g. 8 MiB with a shorter last one are usual). `complete` with `parts` names missing parts (`upload.incomplete`, `missing`); with a
   `sha256` (at open or complete) the assembled file is checked, and a mismatch keeps the upload open
   (`upload.checksum_mismatch`: send a missing last part and complete again). Other bytes under a part
   number already sent are `upload.part_conflict`.
+* Downloads (`GET /v1/objects/{id}/content` and files of aspects backed by content) answer one range per request; a `Range` header that is not a single `bytes=` range is
+  ignored and the whole content is sent (as HTTP allows), an unsatisfiable one gives 416.
 * `GET /v1/uploads/{id}` shows state (`open`, `complete`, `consumed`, `expired`) and the parts
   received, so an interrupted transfer can resume with the missing parts.
 * A handle belongs to the account that opened it; others get `upload.not_found`. It is used up by its

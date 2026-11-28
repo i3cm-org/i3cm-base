@@ -788,7 +788,7 @@ mod tests {
 }
 
 
-/// Run GNU sed in sandbox mode (no `e`, `r`, `w` commands, DEC-112) on `data`.
+/// Run GNU sed in sandbox mode (no `e`, `r`, `w` commands) on `data`.
 fn run_sed(scripts: &[String], quiet: bool, extended: bool, data: &[u8]) -> Result<Vec<u8>, String> {
     use std::io::Write;
     use std::process::{Command, Stdio};

@@ -1419,3 +1419,82 @@ async fn migrate_blobs_moves_database_content_to_files() {
     assert!(with.files().unwrap().has(&sha));
     assert_eq!(with.get_content(&ctx, d).await.unwrap().0, b"old bytes in the database");
 }
+
+#[tokio::test]
+async fn upload_limits_hold_under_concurrent_requests() {
+    let env = env().await;
+    let (_, lea) = env.person("lea-many", &[]).await;
+    // 120 opens at once: exactly the limit of open uploads succeeds
+    let tasks: Vec<_> = (0..120).map(|_| { let c = lea.clone(); tokio::spawn(async move { c.upload_open(None).await }) }).collect();
+    let mut ok = 0;
+    let mut refused = 0;
+    for t in tasks {
+        match t.await.unwrap() {
+            Ok(_) => ok += 1,
+            Err(e) => {
+                assert_eq!(e.error_id(), Some("upload.too_many_open"));
+                refused += 1;
+            }
+        }
+    }
+    assert_eq!((ok, refused), (100, 20));
+}
+
+#[tokio::test]
+async fn idempotent_upload_open_counts_the_query() {
+    let env = env().await;
+    let key = Uuid::new_v4().to_string();
+    let post = |q: &str| {
+        reqwest::Client::new()
+            .post(format!("{}/v1/uploads{q}", env.admin.base_url()))
+            .bearer_auth(&env.init.token)
+            .header("idempotency-key", &key)
+            .send()
+    };
+    let a = post("").await.unwrap();
+    assert_eq!(a.status(), 200);
+    let b = post("").await.unwrap();
+    assert_eq!(b.headers()["idempotent-replay"], "true");
+    let c = post(&format!("?sha256={}", sha_hex(b"x"))).await.unwrap();
+    assert_eq!(c.status(), 409);
+}
+
+#[tokio::test]
+async fn upload_assignment_needs_rights_and_a_commit() {
+    let env = env().await;
+    let mut o = Order::new();
+    o.create("d", None, json!({"sample:Document": {"title": "Theirs"}}));
+    let d = env.admin.order(&o).await.unwrap().created["d"];
+    let data = b"assigned only by a committed order that may write".to_vec();
+    let sha = sha_hex(&data);
+
+    // a dry run assigns nothing: no blob, the handle stays usable
+    let id = env.admin.upload(&data).await.unwrap();
+    let mut o = Order::new().dry_run();
+    o.content_upload(d, &id, "text/plain", None);
+    env.admin.order(&o).await.unwrap();
+    assert!(!env.store.files().unwrap().has(&sha), "no blob after a dry run");
+
+    // an account without write right on the object cannot use its upload there
+    let (_, lea) = env.person("lea-norights", &[]).await;
+    let theirs = lea.upload(b"lea's bytes").await.unwrap();
+    let mut o = Order::new();
+    o.content_upload(d, &theirs, "text/plain", None);
+    assert_eq!(lea.order(&o).await.unwrap_err().error_id(), Some("rights.denied"));
+    assert!(!env.store.files().unwrap().has(&sha_hex(b"lea's bytes")));
+
+    // the real order commits and stores the blob
+    let mut o = Order::new();
+    o.content_upload(d, &id, "text/plain", None);
+    env.admin.order(&o).await.unwrap();
+    assert!(env.store.files().unwrap().has(&sha));
+    assert_eq!(env.admin.get_content(d).await.unwrap(), data);
+
+    // bad completions
+    let up = env.admin.upload_open(Some(&sha_hex(b"a"))).await.unwrap();
+    let uid = up["id"].as_str().unwrap();
+    env.admin.upload_part(uid, 1, b"a".to_vec()).await.unwrap();
+    assert_eq!(env.admin.upload_complete(uid, None, Some(i32::MAX)).await.unwrap_err().error_id(), Some("upload.bad_part"));
+    assert_eq!(env.admin.upload_complete(uid, Some(&sha_hex(b"b")), None).await.unwrap_err().error_id(), Some("upload.checksum_conflict"));
+    assert_eq!(env.admin.upload_complete(uid, None, Some(1)).await.unwrap()["state"], "complete");
+}

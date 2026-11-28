@@ -120,6 +120,8 @@ pub(crate) struct Exec<'a> {
     /// uses handles).
     pub(crate) inline_limit: Option<usize>,
     pub(crate) warnings: Vec<Value>,
+    /// Uploads assigned in this order: (upload, sha256), linked into the file store on commit.
+    pub(crate) promote: Vec<(String, String)>,
 }
 
 /// One end of a reference in a rights check: object, its room path, its types.
@@ -165,7 +167,7 @@ impl Exec<'_> {
         self.ctx.tenant
     }
 
-    /// Types of modules not active in the tenant do not exist for it (DEC-035).
+    /// Types of modules not active in the tenant do not exist for it.
     fn active(&self, t: &str) -> Result<()> {
         if self.ctx.inactive.contains(Model::module_of(t)) {
             return Err(BaseError::not_found("module.inactive", "the module of this type is not active in the tenant").with("type", t));
@@ -393,8 +395,9 @@ impl Exec<'_> {
         Ok(out)
     }
 
-    /// New content version of an object from a stored blob.
-    async fn set_content(&mut self, id: &str, sha256: &String, media_type: &String, size: i64, filename: &Option<String>) -> Result<()> {
+    /// The object whose content an operation writes, after the checks (exists, has a type with
+    /// content, write right).
+    async fn content_target(&mut self, id: &str) -> Result<Uuid> {
         let tenant = self.ctx.tenant;
         let id = self.resolve(id)?;
         let (_, path) = self.live(id).await?;
@@ -405,6 +408,17 @@ impl Exec<'_> {
         if !self.new_objects.contains(&id) {
             self.check_on(Art::Write, &t, &path, id).await?;
         }
+        Ok(id)
+    }
+
+    /// New content version of an object from a stored blob.
+    async fn set_content(&mut self, id: &str, sha256: &String, media_type: &String, size: i64, filename: &Option<String>) -> Result<()> {
+        let id = self.content_target(id).await?;
+        self.insert_content(id, sha256, media_type, size, filename).await
+    }
+
+    async fn insert_content(&mut self, id: Uuid, sha256: &String, media_type: &String, size: i64, filename: &Option<String>) -> Result<()> {
+        let tenant = self.ctx.tenant;
         self.tx.execute("UPDATE content SET valid_to=$3 WHERE tenant_id=$1 AND object_id=$2 AND valid_to IS NULL", &[&tenant, &id, &self.txn]).await.map_err(db)?;
         self.tx
             .execute(
@@ -639,8 +653,12 @@ impl Exec<'_> {
             }
             Op::Content { id, media_type, filename, upload, base64 } => match (upload, base64) {
                 (Some(u), None) => {
+                    // rights first: an upload is used only by an order that may write the object
+                    let target = self.content_target(id).await?;
                     let (sha, size) = self.store.consume_upload(self.tx, self.ctx, u, self.txn).await?;
-                    self.set_content(id, &sha, media_type, size, filename).await?;
+                    self.insert_content(target, &sha, media_type, size, filename).await?;
+                    // the file becomes a blob only when the order commits
+                    self.promote.push((u.clone(), sha));
                 }
                 (None, Some(b64)) => {
                     use base64::Engine as _;

@@ -122,9 +122,15 @@ impl FileStore {
                 return Err(BaseError::invalid(too_large, "the body is larger than allowed").hint("split the file into parts of at most this size (PUT /v1/uploads/{id}/parts/{n})").with("limit", limit.to_string()));
             }
             h.update(&chunk);
-            f.write_all(&chunk).await.map_err(|e| io("write", e))?;
+            if let Err(e) = f.write_all(&chunk).await {
+                let _ = tokio::fs::remove_file(&tmp).await;
+                return Err(io("write", e));
+            }
         }
-        f.sync_all().await.map_err(|e| io("sync", e))?;
+        if let Err(e) = f.sync_all().await {
+            let _ = tokio::fs::remove_file(&tmp).await;
+            return Err(io("sync", e));
+        }
         Ok((tmp, hex::encode(h.finalize()), size))
     }
 
@@ -148,6 +154,11 @@ impl FileStore {
         std::fs::rename(tmp, dir.join(format!("part-{n}"))).map_err(|e| io("keep part", e))
     }
 
+    /// Remove a kept part (its row did not commit).
+    pub fn remove_part(&self, upload: &str, n: i32) {
+        let _ = std::fs::remove_file(self.staging(upload).join(format!("part-{n}")));
+    }
+
     pub fn drop_tmp(&self, tmp: &Path) {
         let _ = std::fs::remove_file(tmp);
     }
@@ -167,9 +178,17 @@ impl FileStore {
     /// Concatenate parts 1..=count into the assembled file; returns SHA-256 and size. The parts
     /// stay until `drop_parts` (a failed checksum keeps the upload open).
     pub async fn assemble(&self, upload: &str, count: i32) -> Result<(String, u64)> {
-        let dir = self.staging(upload);
         let tmp = self.tmp();
-        let mut out = tokio::fs::File::create(&tmp).await.map_err(|e| io("create", e))?;
+        let res = self.assemble_into(upload, count, &tmp).await;
+        if res.is_err() {
+            let _ = tokio::fs::remove_file(&tmp).await;
+        }
+        res
+    }
+
+    async fn assemble_into(&self, upload: &str, count: i32, tmp: &Path) -> Result<(String, u64)> {
+        let dir = self.staging(upload);
+        let mut out = tokio::fs::File::create(tmp).await.map_err(|e| io("create", e))?;
         let mut h = Sha256::new();
         let mut size: u64 = 0;
         let mut buf = vec![0u8; 1 << 20];
@@ -187,7 +206,7 @@ impl FileStore {
         }
         out.sync_all().await.map_err(|e| io("sync", e))?;
         drop(out);
-        std::fs::rename(&tmp, dir.join("data")).map_err(|e| io("assemble", e))?;
+        std::fs::rename(tmp, dir.join("data")).map_err(|e| io("assemble", e))?;
         Ok((hex::encode(h.finalize()), size))
     }
 
@@ -213,17 +232,35 @@ impl FileStore {
             return Ok(());
         }
         std::fs::create_dir_all(dst.parent().expect("blob dir")).map_err(|e| io("create blob dir", e))?;
-        if std::fs::hard_link(&src, &dst).is_err() {
-            let tmp = self.tmp();
-            std::fs::copy(&src, &tmp).map_err(|e| io("copy upload", e))?;
-            std::fs::rename(&tmp, &dst).map_err(|e| io("store blob", e))?;
+        match std::fs::hard_link(&src, &dst) {
+            Ok(()) => Ok(()),
+            // another order stored the same content at the same moment
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => Ok(()),
+            Err(_) => {
+                // other file system: copy, then rename into place
+                let tmp = self.tmp();
+                let res = std::fs::copy(&src, &tmp).and_then(|_| std::fs::File::open(&tmp)?.sync_all()).and_then(|_| std::fs::rename(&tmp, &dst));
+                if res.is_err() {
+                    let _ = std::fs::remove_file(&tmp);
+                }
+                res.map_err(|e| io("store blob", e))
+            }
         }
-        Ok(())
+    }
+
+    /// Whether the assembled file of an upload is in the staging area.
+    pub fn has_staged(&self, upload: &str) -> bool {
+        self.staging(upload).join("data").is_file()
     }
 
     /// Remove the staging directory of an upload.
     pub fn remove_staging(&self, upload: &str) {
         let _ = std::fs::remove_dir_all(self.staging(upload));
+    }
+
+    /// Age of the staging directory of an upload.
+    pub fn staging_age(&self, upload: &str) -> Option<std::time::Duration> {
+        std::fs::metadata(self.staging(upload)).and_then(|m| m.modified()).ok().and_then(|t| t.elapsed().ok())
     }
 
     /// Upload ids that have a staging directory.

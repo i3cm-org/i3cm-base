@@ -223,7 +223,7 @@
   <div id="page" hidden></div>
 </div>
 
-<!-- Templates of the modules are loaded here (modules/<namespace>.html, DEC-127). -->
+<!-- Templates of the modules are loaded here (modules/<namespace>.html). -->
 <div id="module-templates" hidden></div>
 
 <script type="module">
@@ -622,7 +622,7 @@ function contentsView(aspect, entry) {
   return lv;
 }
 
-/** A tab of the aspect: with columns a grid, without a list (DEC-127 frame components). */
+/** A tab of the aspect: with columns a grid, without a list (frame components). */
 function tabView(aspect, node, t) {
   const base = `/v1/aspects/${encodeURIComponent(aspect)}/tab?`;
   const page = (o) => api(base + q({ node, tab: t.key, ...o })).then((r) => r.json());

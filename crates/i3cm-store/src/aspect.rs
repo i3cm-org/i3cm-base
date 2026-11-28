@@ -569,7 +569,7 @@ impl Store {
                 })
                 .collect())
         } else {
-            // objects: one branch per part of the access, merged by UNION (no OR, REP-018)
+            // objects: one branch per part of the access, merged by UNION (no OR)
             let mut after_cond = String::new();
             if let Some(NodeRef::Object(id)) = &after {
                 params.push(Box::new(*id));

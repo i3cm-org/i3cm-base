@@ -43,9 +43,9 @@ pub struct Ctx {
     pub tenant: Uuid,
     pub subject: Subject,
     pub rooms: RoomTree,
-    /// Installed modules not active in this tenant: their types are invisible (DEC-035).
+    /// Installed modules not active in this tenant: their types are invisible.
     pub inactive: std::collections::BTreeSet<String>,
-    /// Development tenant (studio, DEC-136): set at creation, allowed by the operator.
+    /// Development tenant (studio): set at creation, allowed by the operator.
     pub development: bool,
 }
 

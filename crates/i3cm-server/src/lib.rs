@@ -109,7 +109,7 @@ pub fn runtime(store: &Store, dir: &Path) -> Result<i3cm_wasm::Runtime> {
     i3cm_wasm::Runtime::new(store.clone(), dir).map_err(|e| anyhow::anyhow!("{}: {} {:?}", e.error_id, e.description, e.params))
 }
 
-/// Run the scheduler every `every` (DEC-119; exactly once per due run across containers).
+/// Run the scheduler every `every` (exactly once per due run across containers).
 pub fn spawn_scheduler(rt: i3cm_wasm::Runtime, worker: String, every: std::time::Duration) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
         loop {

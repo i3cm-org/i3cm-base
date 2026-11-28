@@ -1,4 +1,4 @@
-//! Reference paths for rights conditions (rights paths, DEC-045) and view filters (SPEC-004).
+//! Reference paths for rights conditions (rights paths) and view filters.
 //!
 //! A step goes from an object over one named reference end to the object at the other end.
 //! Names are resolved statically against the catalog; the result is a chain of steps that
@@ -8,7 +8,7 @@ use crate::catalog::{Model, ANY};
 use crate::error::{BaseError, Result};
 use crate::fhirpath::{self, Expr};
 
-/// Most steps a rights path may take (DEC-045).
+/// Most steps a rights path may take.
 pub const MAX_RIGHTS_STEPS: usize = 3;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -120,7 +120,7 @@ pub enum Operand {
     Shifted(Box<Operand>, &'static str, f64, String),
 }
 
-/// A view filter (`entry.where`): only what translates into SQL (SPEC-004 section 4).
+/// A view filter (`entry.where`): only what translates into SQL.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Filter {
     Cmp(Operand, &'static str, Operand),

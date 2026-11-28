@@ -42,6 +42,33 @@ pub(crate) async fn idem_start(s: &Store, ctx: &Ctx, h: &HeaderMap, scope: &str,
     })
 }
 
+/// Run idempotent work to its end even when the client goes away: the work and the recording of
+/// its answer run in a task of their own.
+pub(crate) async fn idem_run<F>(s: Store, ctx: Ctx, idem: Idem, work: F) -> R<Response>
+where
+    F: std::future::Future<Output = R<Value>> + Send + 'static,
+{
+    if let Idem::Replay(r) = idem {
+        return Ok(r);
+    }
+    let task = tokio::spawn(async move {
+        let res = work.await;
+        match (idem, res) {
+            (Idem::Key(k), Ok(v)) => {
+                s.idem_finish(&ctx, &k, 200, &v).await.map_err(ApiError::from)?;
+                Ok(v)
+            }
+            (Idem::Key(k), Err(e)) => {
+                let _ = s.idem_abort(&ctx, &k).await;
+                Err(e)
+            }
+            (_, res) => res,
+        }
+    });
+    let v = task.await.map_err(|e| BaseError::internal(format!("request task: {e}")))??;
+    Ok(Json(v).into_response())
+}
+
 /// Finish an idempotent request: store a success, forget the key after an error.
 pub(crate) async fn idem_end(s: &Store, ctx: &Ctx, idem: Idem, res: R<Value>) -> R<Response> {
     match (idem, res) {
@@ -87,7 +114,14 @@ pub(crate) async fn open_upload(State(s): State<Store>, h: HeaderMap, Query(q): 
     if q.single.as_deref().is_some_and(|v| v != "0" && v != "false") {
         let fs = s.files()?;
         let (tmp, sha, size) = fs.write_single(chunks(body)).await?;
-        let idem = idem_start(&s, &r.ctx, &h, "upload:single", sha.as_bytes()).await?;
+        let fp = format!("{sha}\n{}", q.sha256.as_deref().unwrap_or(""));
+        let idem = match idem_start(&s, &r.ctx, &h, "upload:single", fp.as_bytes()).await {
+            Ok(i) => i,
+            Err(e) => {
+                fs.drop_tmp(&tmp);
+                return Err(e);
+            }
+        };
         if let Idem::Replay(resp) = idem {
             fs.drop_tmp(&tmp);
             return Ok(resp);
@@ -101,7 +135,9 @@ pub(crate) async fn open_upload(State(s): State<Store>, h: HeaderMap, Query(q): 
     } else {
         serde_json::from_slice(&bytes).map_err(|e| BaseError::invalid("upload.bad_request", "the body must be JSON like {\"sha256\": \"…\"}").with("detail", e.to_string()))?
     };
-    let idem = idem_start(&s, &r.ctx, &h, "upload:open", &bytes).await?;
+    // the query is part of the request: a checksum given there counts like one in the body
+    let fp = [bytes.as_ref(), b"\n", q.sha256.as_deref().unwrap_or("").as_bytes()].concat();
+    let idem = idem_start(&s, &r.ctx, &h, "upload:open", &fp).await?;
     let sha = b.sha256.or(q.sha256);
     let res = match &idem {
         Idem::Replay(_) => Ok(Value::Null),
@@ -125,11 +161,9 @@ pub(crate) async fn complete(State(s): State<Store>, h: HeaderMap, Path(id): Pat
         serde_json::from_slice(&body).map_err(|e| BaseError::invalid("upload.bad_request", "the body must be JSON like {\"sha256\": \"…\"}").with("detail", e.to_string()))?
     };
     let idem = idem_start(&s, &r.ctx, &h, &format!("upload:complete:{id}"), &body).await?;
-    let res = match &idem {
-        Idem::Replay(_) => Ok(Value::Null),
-        _ => s.complete_upload(&r.ctx, &id, b.sha256.as_deref(), b.parts).await.map_err(ApiError::from),
-    };
-    idem_end(&s, &r.ctx, idem, res).await
+    // assembling runs to its end even when the client goes away
+    let (st, ctx) = (s.clone(), r.ctx.clone());
+    idem_run(s, r.ctx, idem, async move { st.complete_upload(&ctx, &id, b.sha256.as_deref(), b.parts).await.map_err(ApiError::from) }).await
 }
 
 /// `GET /v1/uploads/{id}`: state and parts of an upload.
@@ -142,13 +176,21 @@ pub(crate) async fn upload_info(State(s): State<Store>, h: HeaderMap, Path(id): 
 /// cannot be satisfied.
 fn range(h: &HeaderMap, size: u64) -> Result<Option<(u64, u64)>, ()> {
     let Some(v) = h.get(header::RANGE).and_then(|v| v.to_str().ok()) else { return Ok(None) };
-    let Some(spec) = v.trim().strip_prefix("bytes=") else { return Ok(None) };
+    let v = v.trim();
+    let Some((unit, spec)) = v.split_once('=') else { return Ok(None) };
+    if !unit.trim().eq_ignore_ascii_case("bytes") {
+        return Ok(None);
+    }
+    let digits = |x: &str| !x.is_empty() && x.bytes().all(|b| b.is_ascii_digit());
     if spec.contains(',') {
         // several ranges: answer with the whole file
         return Ok(None);
     }
     let (a, b) = spec.split_once('-').ok_or(())?;
     let (a, b) = (a.trim(), b.trim());
+    if (!a.is_empty() && !digits(a)) || (!b.is_empty() && !digits(b)) || (a.is_empty() && b.is_empty()) {
+        return Ok(None);
+    }
     let (start, end) = if a.is_empty() {
         let n: u64 = b.parse().map_err(|_| ())?;
         if n == 0 {

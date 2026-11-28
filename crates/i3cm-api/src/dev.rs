@@ -1,4 +1,4 @@
-//! Development support for the studio (DEC-136): checking module sources with typecat and the
+//! Development support for the studio: checking module sources with typecat and the
 //! catalog checker, and reading the sources of installed modules.
 //!
 //! Configuration (environment, read per request): `I3CM_NODE` (default `node`), `I3CM_TYPECAT`

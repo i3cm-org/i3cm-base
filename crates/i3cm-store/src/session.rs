@@ -28,6 +28,7 @@ struct State {
     /// (set lazily; `None` while no such operation ran).
     admin_before: Option<bool>,
     warnings: Vec<serde_json::Value>,
+    promote: Vec<(String, String)>,
 }
 
 pub struct Session {
@@ -89,10 +90,11 @@ impl Session {
             links: st.links,
             inline_limit: self.inline_limit,
             warnings: st.warnings,
+            promote: st.promote,
         };
         let res = ex.apply(op).await;
         let created = ex.new_objects.difference(&before).next().copied();
-        self.state = State { local: ex.local, new_objects: ex.new_objects, touched: ex.touched, detached: ex.detached, links: ex.links, admin_before, warnings: ex.warnings };
+        self.state = State { local: ex.local, new_objects: ex.new_objects, touched: ex.touched, detached: ex.detached, links: ex.links, admin_before, warnings: ex.warnings, promote: ex.promote };
         res.map(|_| created)
     }
 
@@ -142,6 +144,7 @@ impl Session {
             _ => Ok(()),
         };
         let warnings = st.warnings;
+        let promote = st.promote;
         let (res, created, links) = {
             let mut ex = Exec {
                 store,
@@ -156,6 +159,7 @@ impl Session {
                 links: st.links,
                 inline_limit: self.inline_limit,
                 warnings: vec![],
+                promote: vec![],
             };
             let res = match admin {
                 Ok(()) => ex.check_end_state().await,
@@ -166,6 +170,7 @@ impl Session {
         match res {
             Ok(()) if commit => {
                 client.batch_execute("COMMIT").await.map_err(db)?;
+                store.promote_uploads(&promote);
                 Ok(OrderResult { txn: self.txn, dry_run: false, created, links, warnings })
             }
             Ok(()) => {

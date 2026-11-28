@@ -1,4 +1,4 @@
-//! Writing through views (writable FUSE, `sed -i`, SPEC-004 section 5).
+//! Writing through views (writable FUSE, `sed -i`).
 //!
 //! Every write becomes one order: rights, end state and (later) hooks apply as always. Several
 //! files written together (e.g. `sed -i` over many files) are one order, all or nothing.
@@ -101,7 +101,7 @@ impl Store {
     }
 
     /// Attribute changes from the front matter of an object index. References in the body
-    /// are not writable yet (agent decision, SPEC-004): a changed body is rejected.
+    /// are not writable yet: a changed body is rejected.
     async fn index_ops(&self, ctx: &Ctx, w: &WriteItem, lang: &str) -> Result<Vec<Op>> {
         let Some(id) = w.node.strip_prefix("o:").and_then(|s| Uuid::parse_str(s).ok()) else {
             return Err(BaseError::invalid("aspect.not_writable", "only indexes of objects are writable"));

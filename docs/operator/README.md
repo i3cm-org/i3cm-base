@@ -57,7 +57,9 @@ mandatory modules without touching modules you installed.
 Upgrading from a version that kept contents in the database (before the file store): add the `data`
 volume, start the new version (it reads old contents from the database), then move them once with
 `docker compose -f deploy/compose.yaml exec server i3cm-server migrate-blobs` (prints `{"moved": n}`;
-safe to repeat and to run while the server serves).
+safe to repeat and to run while the server serves). Run it only when every container serving the
+database runs this version or later: an older container reads contents only from the database. Several
+containers of one instance share one data volume.
 
 After an upgrade, compare `GET /v1/version` with the version and revision you meant to deploy; the start
 log ends with a line `ready` that names address, version and revision.

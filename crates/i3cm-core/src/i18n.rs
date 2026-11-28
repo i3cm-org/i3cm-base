@@ -35,7 +35,7 @@ impl I18n {
                 let b = bundles.entry(lang.clone()).or_insert_with(|| {
                     let mut b = FluentBundle::new_concurrent(vec![id]);
                     b.set_use_isolating(false);
-                    // TIME($dateTime): "HH:MM" (e.g. the fallback name of a mail, DEC-135)
+                    // TIME($dateTime): "HH:MM" (e.g. the fallback name of a mail)
                     let _ = b.add_function("TIME", |pos, _named| match pos.first() {
                         Some(fluent_bundle::FluentValue::String(s)) => fluent_bundle::FluentValue::String(time_of(s).into()),
                         Some(v) => v.clone(),

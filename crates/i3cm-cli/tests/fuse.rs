@@ -174,7 +174,7 @@ fn the_driver_reproduces_the_api() {
 }
 
 
-/// Writing (SPEC-004): texts, the front matter of an index, new files in a folder with
+/// Writing: texts, the front matter of an index, new files in a folder with
 /// `dropType`, `sed -i` on the server; a rejected write leaves a message in `/.i3cm-errors`.
 #[test]
 #[ignore]

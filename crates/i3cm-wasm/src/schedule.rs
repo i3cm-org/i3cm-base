@@ -9,7 +9,7 @@ use i3cm_store::session::Audit;
 use serde_json::json;
 
 /// The period start a run is due for: supported RRULEs are `FREQ=MINUTELY|HOURLY|DAILY|WEEKLY`
-/// with an optional `INTERVAL=n` (agent decision; the full RFC 5545 set follows when needed).
+/// with an optional `INTERVAL=n` (the full RFC 5545 set follows when needed).
 pub fn period_seconds(rrule: &str) -> Result<i64> {
     let mut freq = None;
     let mut interval = 1i64;

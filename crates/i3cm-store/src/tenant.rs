@@ -44,7 +44,7 @@ impl Store {
         self.init_tenant_with(name, admin_login, false).await
     }
 
-    /// Like `init_tenant`; `development` marks a development tenant (studio, DEC-136). Whether
+    /// Like `init_tenant`; `development` marks a development tenant (studio). Whether
     /// the instance allows development tenants is the operator's decision, checked by the caller.
     pub async fn init_tenant_with(&self, name: &str, admin_login: &str, development: bool) -> Result<TenantInit> {
         let tenant = Uuid::new_v4();
@@ -318,7 +318,7 @@ impl Store {
 }
 
 /// What an activation did; the rights it adds are listed so the tenant administrator sees them
-/// (DEC-080: new rights are shown, red where they reach existing data).
+/// (new rights are shown, red where they reach existing data).
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct Activation {
     pub module: String,
@@ -329,14 +329,14 @@ pub struct Activation {
     /// Per right of the module's profiles: `red` if it reaches types of other modules or the
     /// root room, else `green`.
     pub rights: Vec<serde_json::Value>,
-    /// Objects that received imprinted types (catch-up, DEC-062).
+    /// Objects that received imprinted types (catch-up).
     pub imprinted: i64,
 }
 
 impl Store {
     /// Activate an installed module in a tenant: dependencies must be active; rooms, profiles and
     /// carriers of the module are created; imprinting rules are applied to existing objects. All
-    /// or nothing (DEC-062).
+    /// or nothing.
     pub async fn activate_module(&self, ctx: &Ctx, name: &str) -> Result<Activation> {
         if !ctx.subject.may(i3cm_core::Art::Grant, i3cm_core::ANY, &[ctx.rooms.root]) {
             return Err(BaseError::not_found("rights.denied", "not allowed or not found").with("art", "grant"));
@@ -416,7 +416,7 @@ impl Store {
                 }
                 carriers.push(cr.name.clone());
             }
-            // catch-up of imprinting rules on existing objects (DEC-062)
+            // catch-up of imprinting rules on existing objects
             let mut imprinted = 0i64;
             for t in self.model.catalog.types.iter().filter(|t| Model::module_of(&t.name) == name && !t.imprints_on.is_empty()) {
                 if t.attributes.iter().any(|a| a.required) {
@@ -458,7 +458,7 @@ impl Store {
 
 impl Store {
     /// The account of a carrier owned by a module in a tenant (created on activation); only these
-    /// accounts can be impersonated (DEC-117).
+    /// accounts can be impersonated.
     pub async fn module_carrier(&self, tenant: Uuid, module: &str, carrier: &str) -> Result<Uuid> {
         let c = self.client().await?;
         c.query_opt("SELECT account FROM module_carrier WHERE tenant_id=$1 AND module=$2 AND name=$3", &[&tenant, &module, &carrier])

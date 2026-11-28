@@ -27,7 +27,7 @@ test("builds the catalog of the shipped types", () => {
   assert.equal(cat.format, 1);
   const names = cat.types.map((t) => t.name);
   for (const n of ["base:Person", "base:PersonAccount", "fibu:JournalEntry"]) assert.ok(names.includes(n), n);
-  assert.ok(!names.includes("base:Mail"), "business types live in modules (DEC-138)");
+  assert.ok(!names.includes("base:Mail"), "business types live in modules");
   const pa = cat.types.find((t) => t.name === "base:PersonAccount");
   assert.equal(pa.extends, "base:Account");
   assert.deepEqual(pa.requires, { mode: "any", types: ["base:Person"] });
@@ -122,7 +122,7 @@ test("text types are searched by grep unless named in @noGrep", () => {
   assert.throws(() => buildCatalog(unknown), (e) => e.id === "typecat.unknown_text");
 });
 
-// Module repos outside the kernel (DEC-136): i3cm/module.ts with types/, aspects/, i18n/, ui/ below it.
+// Module repos outside the kernel: i3cm/module.ts with types/, aspects/, i18n/, ui/ below it.
 const demoRepo = path.join(here, "fixtures/demo-module");
 
 test("reads a module repo given from outside, with @i3cm aliases", () => {

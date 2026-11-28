@@ -74,7 +74,7 @@ export interface ProfileDef { name: string; guardian?: boolean; includes?: strin
 
 /* ---------- module code (WebAssembly component) ---------- */
 /** An operation exported by the module's component. `impersonates`: carriers of this module the
- *  operation may swap to with `conn.impersonate` (DEC-117). */
+ *  operation may swap to with `conn.impersonate`. */
 export interface OperationDef { name: string; impersonates?: string[] }
 /** A hook: the module's operation `op` runs `before` or `after` `create`, `update` or `delete` of
  *  objects carrying `type`. A `before` hook may reject the order. */

@@ -175,7 +175,8 @@ pub fn router_with(store: Store, rt: Option<i3cm_wasm::Runtime>) -> Router {
         .route("/v1/modules/{m}/ops/{op}", post(module_op))
         .route("/v1/modules/{m}/sources", get(module_sources))
         .route("/v1/catalog/check", post(catalog_check))
-        .with_state(Mods { store: store.clone(), rt });
+        .with_state(Mods { store: store.clone(), rt })
+        .layer(axum::extract::DefaultBodyLimit::max(64 << 20));
     base_router(store).merge(mods)
 }
 
@@ -252,18 +253,18 @@ async fn run(s: &Store, h: &HeaderMap, order: Order) -> R<Json<Value>> {
 }
 
 async fn mod_order(State(m): State<Mods>, h: HeaderMap, Json(o): Json<Order>) -> R<Response> {
-    let mut r = auth(&m.store, &h).await?;
+    let r = auth(&m.store, &h).await?;
     let idem = files::idem_start(&m.store, &r.ctx, &h, "orders", &serde_json::to_vec(&o).unwrap_or_default()).await?;
-    let res = match &idem {
-        files::Idem::Replay(_) => Ok(Value::Null),
-        _ => match &m.rt {
-            Some(rt) => rt.execute(&mut r.ctx, &o).await,
-            None => m.store.execute(&mut r.ctx, &o).await,
+    let (store, rt, mut ctx) = (m.store.clone(), m.rt.clone(), r.ctx.clone());
+    files::idem_run(m.store.clone(), r.ctx, idem, async move {
+        match &rt {
+            Some(rt) => rt.execute(&mut ctx, &o).await,
+            None => store.execute(&mut ctx, &o).await,
         }
         .map(|res| serde_json::to_value(res).unwrap_or_default())
-        .map_err(ApiError::from),
-    };
-    files::idem_end(&m.store, &r.ctx, idem, res).await
+        .map_err(ApiError::from)
+    })
+    .await
 }
 
 async fn modules(State(m): State<Mods>, h: HeaderMap) -> R<Json<Value>> {
@@ -330,11 +331,8 @@ async fn module_op(State(m): State<Mods>, h: HeaderMap, Path((name, op)): Path<(
     }
     let params = body.map(|Json(v)| v).unwrap_or(Value::Null);
     let idem = files::idem_start(&m.store, &r.ctx, &h, &format!("op:{name}/{op}"), &serde_json::to_vec(&params).unwrap_or_default()).await?;
-    let res = match &idem {
-        files::Idem::Replay(_) => Ok(Value::Null),
-        _ => rt.run_op(&r.ctx, &name, &op, &params, Some("api")).await.map_err(ApiError::from),
-    };
-    files::idem_end(&m.store, &r.ctx, idem, res).await
+    let (rt, ctx) = (rt.clone(), r.ctx.clone());
+    files::idem_run(m.store.clone(), r.ctx, idem, async move { rt.run_op(&ctx, &name, &op, &params, Some("api")).await.map_err(ApiError::from) }).await
 }
 
 async fn create(State(s): State<Store>, h: HeaderMap, Query(d): Query<DryRun>, Json(b): Json<CreateBody>) -> R<Json<Value>> {

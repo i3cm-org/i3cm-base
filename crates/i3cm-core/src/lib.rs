@@ -100,7 +100,7 @@ mod tests {
             let m = Model::from_json(&s).unwrap();
             assert!(m.type_def("base:PersonAccount").is_some());
             assert!(m.is_a("base:PersonAccount", "base:Carrier"));
-            // the kernel carries no business types since 0.6 (DEC-138): they live in modules
+            // the kernel carries no business types since 0.6: they live in modules
             assert!(m.type_def("base:Mail").is_none() && m.type_def("base:Task").is_none());
         }
     }

@@ -4,7 +4,7 @@
 //! fetched completely (paged internally) and the files of a directory are read in one request,
 //! so a recursive reader costs requests per directory, not per file.
 //!
-//! Writing (SPEC-004 section 5): a written file is buffered and sent when it is closed (or
+//! Writing: a written file is buffered and sent when it is closed (or
 //! flushed); each send is one order on the server, so rights and checks apply as always. A
 //! rejected write returns `EIO`, and the server's message is kept in `/.i3cm-errors`. A new
 //! file in a folder whose view declares `dropType` creates an object.
@@ -653,7 +653,7 @@ fn chrono_now() -> String {
     format!("@{s}")
 }
 
-/// Mount at `mountpoint` and serve until unmounted (reading and writing, SPEC-004).
+/// Mount at `mountpoint` and serve until unmounted (reading and writing).
 pub fn mount(api: Api, mountpoint: &str, ttl: Duration) -> std::io::Result<()> {
     let mut cfg = fuser::Config::default();
     cfg.mount_options = vec![fuser::MountOption::FSName("i3cm".into()), fuser::MountOption::Subtype("i3cm".into()), fuser::MountOption::NoExec];

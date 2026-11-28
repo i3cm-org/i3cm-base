@@ -35,10 +35,10 @@ pub struct Module {
     pub schedules: Vec<ScheduleDef>,
     #[serde(default)]
     pub carriers: Vec<CarrierDef>,
-    /// Delivered with the kernel and activated in every tenant at creation (DEC-138).
+    /// Delivered with the kernel and activated in every tenant at creation.
     #[serde(default)]
     pub mandatory: bool,
-    /// Only for development tenants: activation elsewhere is refused (studio, DEC-136).
+    /// Only for development tenants: activation elsewhere is refused (studio).
     #[serde(rename = "developmentOnly", default)]
     pub development_only: bool,
 }
@@ -47,7 +47,7 @@ pub struct Module {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct OperationDef {
     pub name: String,
-    /// Carriers of the same module the operation may impersonate (DEC-117).
+    /// Carriers of the same module the operation may impersonate.
     #[serde(default)]
     pub impersonates: Vec<String>,
 }
@@ -171,7 +171,7 @@ pub struct RightDef {
     /// "root" or the name of a module room.
     pub room: String,
     /// Rights path: the right applies only to objects for which this condition holds, e.g.
-    /// `applicant.team.leader = %me` (plus rights only; DEC-045, SPEC-004).
+    /// `applicant.team.leader = %me` (plus rights only).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub when: Option<String>,
 }

@@ -1,4 +1,4 @@
-//! Kernel support for the studio (milestone 0.7, SPEC-006): development tenants, modules only for
+//! Kernel support for the studio (milestone 0.7): development tenants, modules only for
 //! development tenants, checking module sources (typecat + catalog checker) and the sources of
 //! installed modules.
 

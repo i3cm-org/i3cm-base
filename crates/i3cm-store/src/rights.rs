@@ -1,9 +1,9 @@
-//! Rights in SQL: rooms plus rights paths (DEC-045, SPEC-004 section 3).
+//! Rights in SQL: rooms plus rights paths.
 //!
 //! Unconditional rights become a room filter. A rights path becomes an uncorrelated
 //! subquery that starts at `me` (its carriers) and walks the references back to the objects
 //! (`x.object_id IN (…)`), which the planner drives from `me`. Paged lists combine the room
-//! part and each path as separate branches of a `UNION` (no `OR`, see REP-018); aggregates
+//! part and each path as separate branches of a `UNION` (no `OR`); aggregates
 //! use [`Store::rights_clause`], where the subqueries are evaluated once as hashed sets.
 
 use crate::context::{db, Ctx};
@@ -58,7 +58,7 @@ impl Store {
     /// Rooms and rights paths under which `me` may perform `art` on type `t`.
     pub fn access(&self, ctx: &Ctx, art: Art, t: &str) -> Result<Access> {
         let mut a = Access::default();
-        // types of modules not active in the tenant do not exist for it (DEC-035)
+        // types of modules not active in the tenant do not exist for it
         if ctx.inactive.contains(i3cm_core::Model::module_of(t)) {
             return Ok(a);
         }
