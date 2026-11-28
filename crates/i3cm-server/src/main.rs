@@ -120,9 +120,9 @@ async fn main() -> Result<()> {
             // settings that would otherwise switch something off silently are checked first
             flag("I3CM_ALLOW_DEVELOPMENT")?;
             let operator_token = match std::env::var("I3CM_OPERATOR_TOKEN") {
-                Ok(t) if t.len() < 32 => anyhow::bail!(
-                    "I3CM_OPERATOR_TOKEN has {} characters, at least 32 are required; set a longer secret or unset the variable to run without the operator surface",
-                    t.len()
+                Ok(t) if t.trim().chars().count() < 32 => anyhow::bail!(
+                    "I3CM_OPERATOR_TOKEN has {} characters (without surrounding spaces), at least 32 are required; set a longer secret or unset the variable to run without the operator surface",
+                    t.trim().chars().count()
                 ),
                 Ok(_) if cli.modules_dir.is_none() => anyhow::bail!(
                     "I3CM_OPERATOR_TOKEN is set but no modules directory: set I3CM_MODULES_DIR (the operator surface installs modules there) or unset I3CM_OPERATOR_TOKEN"
@@ -133,7 +133,7 @@ async fn main() -> Result<()> {
             if let Some(dir) = &cli.modules_dir {
                 i3cm_server::install::ensure_writable(dir)?;
                 // mandatory modules bundled with the image
-                if let Ok(b) = std::env::var("I3CM_BUNDLED_MODULES") {
+                if let Some(b) = std::env::var("I3CM_BUNDLED_MODULES").ok().filter(|b| !b.trim().is_empty()) {
                     for line in i3cm_server::install::sync_bundled(std::path::Path::new(&b), dir)? {
                         tracing::info!("bundled modules: {line}");
                     }
@@ -235,17 +235,17 @@ async fn main() -> Result<()> {
                 ip => ip,
             };
             let url = format!("http://{}/health", SocketAddr::new(host, listen.port()));
-            let ok = reqwest::Client::builder()
-                .timeout(std::time::Duration::from_secs(3))
-                .build()?
-                .get(&url)
-                .send()
-                .await
-                .map(|r| r.status().is_success())
-                .unwrap_or(false);
-            if !ok {
-                eprintln!("not healthy: {url}");
-                std::process::exit(1);
+            let res = reqwest::Client::builder().timeout(std::time::Duration::from_secs(3)).no_proxy().build()?.get(&url).send().await;
+            match res {
+                Ok(r) if r.status().is_success() => {}
+                Ok(r) => {
+                    eprintln!("not healthy: {url} answered {}", r.status());
+                    std::process::exit(1);
+                }
+                Err(e) => {
+                    eprintln!("not healthy: {url}: {e}");
+                    std::process::exit(1);
+                }
             }
         }
         Cmd::Dev { data, listen } => {

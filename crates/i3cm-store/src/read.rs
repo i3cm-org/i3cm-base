@@ -834,12 +834,18 @@ impl Store {
             return Err(BaseError::invalid("assignment.not_a_carrier", "profiles can only be assigned to groups and accounts"));
         }
         let tx = c.transaction().await.map_err(db)?;
+        // a profile with `-` or `block` rights can take the right to grant away as well
+        crate::admin::lock_admins(&*tx, ctx.tenant).await?;
+        let had = self.has_admin(&*tx, ctx.tenant).await?;
         let txn: i64 = tx.query_one("SELECT nextval('txn_seq')", &[]).await.map_err(db)?.get(0);
         tx.execute("INSERT INTO txn (tenant_id, id, account) VALUES ($1,$2,$3)", &[&ctx.tenant, &txn, &ctx.me()]).await.map_err(db)?;
         let id = Uuid::new_v4();
         tx.execute("INSERT INTO assignment (tenant_id, id, profile, carrier, valid_from) VALUES ($1,$2,$3,$4,$5)", &[&ctx.tenant, &id, &profile, &carrier, &txn])
             .await
             .map_err(db)?;
+        if had && !self.has_admin(&*tx, ctx.tenant).await? {
+            return Err(crate::admin::last_admin_error());
+        }
         tx.commit().await.map_err(db)?;
         Ok(id)
     }

@@ -93,13 +93,15 @@ impl Session {
         Ok(())
     }
 
-    /// Whether `op` could take the administrator right away from the tenant's last admin: changes
-    /// to existing accounts, groups and group memberships (update, detach, delete) and unlinking a
-    /// membership.
+    /// Whether `op` could take the administrator right away from the tenant's last admin: deleting
+    /// an existing object (parts go with their whole), changing an existing account, group or
+    /// group membership (update, attach, detach), and linking or unlinking a membership (a group
+    /// can carry `-` or `block` rights).
     async fn may_remove_admin(&self, store: &Store, ctx: &Ctx, op: &Op) -> Result<bool> {
         let id = match op {
-            Op::Unlink { reference, .. } => return Ok(reference.starts_with("base:GroupMembership.")),
-            Op::Update { id, .. } | Op::Detach { id, .. } | Op::Delete { id } => id,
+            Op::Link { reference, .. } | Op::Unlink { reference, .. } => return Ok(reference.starts_with("base:GroupMembership.")),
+            Op::Delete { id } => return Ok(Uuid::parse_str(id).is_ok()),
+            Op::Update { id, .. } | Op::Attach { id, .. } | Op::Detach { id, .. } => id,
             _ => return Ok(false),
         };
         // objects created in this order (local names) held no rights before it

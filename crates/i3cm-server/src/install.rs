@@ -373,13 +373,15 @@ pub fn ensure_writable(dir: &Path) -> Result<()> {
     let hint = || {
         format!(
             "the modules directory {} is not writable by this process; mount a volume there that this user can write \
-             (the image runs as uid {}), or point I3CM_MODULES_DIR to a writable directory",
+             (the image runs as uid {}; for an existing volume created by root: \
+             `docker run --rm -v <volume>:/d debian chown -R 10001:10001 /d`), or point I3CM_MODULES_DIR to a writable directory",
             dir.display(),
             current_uid()
         )
     };
     std::fs::create_dir_all(dir).with_context(hint)?;
-    let probe = dir.join(format!(".write-probe-{}", std::process::id()));
+    let nanos = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_nanos()).unwrap_or(0);
+    let probe = dir.join(format!(".write-probe-{}-{nanos}", std::process::id()));
     std::fs::write(&probe, b"").with_context(hint)?;
     std::fs::remove_file(&probe).with_context(hint)?;
     Ok(())
@@ -411,10 +413,9 @@ pub fn sync_bundled(bundled: &Path, dir: &Path) -> Result<Vec<String>> {
     let markers = dir.join(".bundled");
     std::fs::create_dir_all(&markers)?;
     for name in names {
-        let bpart = std::fs::read(bundled.join(format!("{name}.json")))?;
-        let bsha = hex_sha(&bpart);
+        let bsha = module_hash(bundled, &name)?.context("bundled module without catalog part")?;
         let marker = markers.join(format!("{name}.sha256"));
-        let current = std::fs::read(dir.join(format!("{name}.json"))).ok().map(|b| hex_sha(&b));
+        let current = module_hash(dir, &name)?;
         let last = std::fs::read_to_string(&marker).ok().map(|s| s.trim().to_string());
         let copy = match (&current, &last) {
             (None, _) => true,
@@ -435,6 +436,46 @@ pub fn sync_bundled(bundled: &Path, dir: &Path) -> Result<Vec<String>> {
         std::fs::write(&marker, &bsha)?;
     }
     Ok(out)
+}
+
+/// Hash over all files of a module in `dir` (`<name>.json`, `<name>.wasm`, `ui/<name>.html`,
+/// `src/<name>/…` with their paths), or `None` without its catalog part.
+fn module_hash(dir: &Path, name: &str) -> Result<Option<String>> {
+    let json = dir.join(format!("{name}.json"));
+    if !json.exists() {
+        return Ok(None);
+    }
+    let mut files: Vec<(String, PathBuf)> = vec![(format!("{name}.json"), json)];
+    for f in [format!("{name}.wasm"), format!("ui/{name}.html")] {
+        if dir.join(&f).exists() {
+            files.push((f.clone(), dir.join(&f)));
+        }
+    }
+    fn walk(base: &Path, rel: &str, out: &mut Vec<(String, PathBuf)>) -> Result<()> {
+        let p = base.join(rel);
+        if !p.exists() {
+            return Ok(());
+        }
+        for e in std::fs::read_dir(&p)? {
+            let e = e?;
+            let r = format!("{rel}/{}", e.file_name().to_string_lossy());
+            if e.file_type()?.is_dir() {
+                walk(base, &r, out)?;
+            } else {
+                out.push((r, e.path()));
+            }
+        }
+        Ok(())
+    }
+    walk(dir, &format!("src/{name}"), &mut files)?;
+    files.sort();
+    let mut h = Sha256::new();
+    for (rel, p) in files {
+        h.update(rel.as_bytes());
+        h.update([0]);
+        h.update(Sha256::digest(std::fs::read(&p)?));
+    }
+    Ok(Some(hex::encode(h.finalize())))
 }
 
 /// Copy one module's files (`<name>.json`, `<name>.wasm`, `ui/<name>.html`, `src/<name>/`): all

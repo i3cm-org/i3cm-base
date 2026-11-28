@@ -11,6 +11,7 @@ services:
       test: ["CMD-SHELL", "pg_isready -U postgres"]
       interval: 2s
       retries: 30
+    restart: unless-stopped
   server:
     build: { context: .., dockerfile: deploy/Dockerfile }
     environment:

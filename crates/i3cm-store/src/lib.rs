@@ -120,7 +120,18 @@ impl Store {
         c.batch_execute("SELECT pg_advisory_unlock(4711)").await.map_err(db)?;
         res
     }
+}
 
+/// The error for a deactivated or deleted account.
+fn inactive() -> BaseError {
+    BaseError::new(
+        i3cm_core::ErrorKind::Unauthenticated,
+        "auth.account_inactive",
+        "the account of this token is deactivated or deleted; ask a tenant administrator to reactivate it (set `deactivated` to false) or to issue a token for another account",
+    )
+}
+
+impl Store {
     /// Resolve a bearer token; expired, revoked and long unused tokens are rejected.
     pub async fn authenticate(&self, token: &str) -> Result<Auth> {
         let hash = tenant::hash_token(token);
@@ -149,24 +160,8 @@ impl Store {
         let id: uuid::Uuid = row.get(2);
         let (tenant_id, account): (uuid::Uuid, uuid::Uuid) = (row.get(0), row.get(1));
         // a deleted or deactivated account cannot act, whatever its tokens say
-        let acc = schema::type_table(self.model.require_type("base:Account")?);
-        let active: bool = c
-            .query_opt(
-                &format!(
-                    "SELECT coalesce(a.\"deactivated\", false) = false FROM {acc} a JOIN object_state s ON s.tenant_id=a.tenant_id AND s.object_id=a.object_id \
-                     AND s.valid_to IS NULL AND s.deleted_at IS NULL WHERE a.tenant_id=$1 AND a.object_id=$2 AND a.valid_to IS NULL AND a.deleted_at IS NULL"
-                ),
-                &[&tenant_id, &account],
-            )
-            .await
-            .map_err(db)?
-            .map(|r| r.get(0))
-            .unwrap_or(false);
-        if !active {
-            return Err(unauth(
-                "auth.account_inactive",
-                "the account of this token is deactivated or deleted; ask a tenant administrator to reactivate it (set `deactivated` to false) or to issue a token for another account",
-            ));
+        if !self.account_active(&**c, tenant_id, account).await? {
+            return Err(inactive());
         }
         if row.get::<_, bool>(6) {
             c.execute("UPDATE token SET last_used=now() WHERE id=$1", &[&id]).await.map_err(db)?;
@@ -174,9 +169,29 @@ impl Store {
         Ok(Auth { tenant: tenant_id, account, token: id, expires_at: row.get(3) })
     }
 
-    /// Load the request context for an authenticated account.
+    /// Load the request context for an account; a deactivated or deleted account cannot act
+    /// (also not through module code: impersonation, schedules).
     pub async fn ctx(&self, tenant: uuid::Uuid, account: uuid::Uuid) -> Result<Ctx> {
         let c = self.client().await?;
+        if !self.account_active(&**c, tenant, account).await? {
+            return Err(inactive());
+        }
         self.load_ctx(&**c, tenant, account).await
+    }
+
+    /// Whether the account exists, is not deleted and not deactivated.
+    pub(crate) async fn account_active<C: tokio_postgres::GenericClient>(&self, c: &C, tenant: uuid::Uuid, account: uuid::Uuid) -> Result<bool> {
+        let acc = schema::type_table(self.model.require_type("base:Account")?);
+        Ok(c.query_opt(
+            &format!(
+                "SELECT coalesce(a.\"deactivated\", false) = false FROM {acc} a JOIN object_state s ON s.tenant_id=a.tenant_id AND s.object_id=a.object_id \
+                 AND s.valid_to IS NULL AND s.deleted_at IS NULL WHERE a.tenant_id=$1 AND a.object_id=$2 AND a.valid_to IS NULL AND a.deleted_at IS NULL"
+            ),
+            &[&tenant, &account],
+        )
+        .await
+        .map_err(db)?
+        .map(|r| r.get(0))
+        .unwrap_or(false))
     }
 }

@@ -23,7 +23,8 @@ docker compose -f deploy/compose.yaml exec server i3cm-server init-tenant acme
 The server runs as user `i3cm` (uid 10001). Installed modules are state: the compose files keep the
 modules directory on the volume `modules` (`/var/lib/i3cm/modules`), so modules installed later survive
 a new container. When you run the image yourself, mount a volume there that uid 10001 can write; the
-server refuses to start otherwise. The image has a health check (`i3cm-server health`, which asks the
+server refuses to start otherwise. A volume created earlier by root (or restored from a backup) gets the
+right owner with `docker run --rm -v <volume>:/d debian chown -R 10001:10001 /d`. The image has a health check (`i3cm-server health`, which asks the
 local `GET /health`); compose restarts the server unless it was stopped.
 
 `init-tenant` prints a start token for the login `admin` that is valid for one day; use it to issue
@@ -48,8 +49,9 @@ database within one major version). The schema migrates itself on start; migrati
 schema version changes. Installed modules are in force after the next start.
 
 The mandatory modules come with the image. At start the server copies them into the modules directory
-when they are missing there, or when the copy there came from an older image; a version the operator
-installed over them is kept (the log says so: `bundled modules: …`). A new image therefore updates the
+when they are missing there, or when the copy there came from an older image (all files of the module
+are compared); a version the operator installed over them, or a copy that did not come from an image,
+is kept (the log says so: `bundled modules: …`). A new image therefore updates the
 mandatory modules without touching modules you installed.
 
 After an upgrade, compare `GET /v1/version` with the version and revision you meant to deploy; the start

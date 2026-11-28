@@ -169,8 +169,9 @@ reactivation they work again.
 
 **The last administrator is protected.** An order, or the end of an assignment, that would leave the
 tenant without an active account able to grant rights at the root room is refused with 409
-`tenant.last_admin` (deleting or deactivating that account, deleting its group or membership, ending
-the profile assignment). Add another administrator first.
+`tenant.last_admin` (deleting, deactivating or detaching that account, deleting or unlinking its group
+or membership, ending the profile assignment or adding one with `-` or `block` rights). A deactivated
+account cannot act through module code either (impersonation, schedules). Add another administrator first.
 
 ## Limits
 

@@ -1200,3 +1200,13 @@ async fn concurrent_orders_cannot_remove_both_last_admins() {
     let err = if a.is_err() { a.unwrap_err() } else { b.unwrap_err() };
     assert!(matches!(err.error_id(), Some("tenant.last_admin") | Some("auth.account_inactive")), "{err:?}");
 }
+
+#[tokio::test]
+async fn attaching_an_account_type_cannot_deactivate_the_last_admin() {
+    let env = env().await;
+    let mut o = Order::new();
+    o.attach(env.init.admin_account, "base:AgentAccount", json!({"deactivated": true}));
+    let e = env.admin.order(&o).await.unwrap_err();
+    assert_eq!(e.error_id(), Some("tenant.last_admin"), "{e:?}");
+    env.admin.me().await.unwrap();
+}

@@ -45,8 +45,8 @@ because it changes rights.
 
 ## Profile assignments
 
-`POST /v1/assignments` gives a profile to a group or an account; `GET /v1/assignments?carrier=<id>`
-lists the current assignments, `DELETE /v1/assignments/{id}` ends one. All three need the right to grant
+`POST /v1/assignments` gives a profile to a group or an account; `GET /v1/assignments` lists the
+current assignments (optionally `?carrier=<id>`), `DELETE /v1/assignments/{id}` ends one. All three need the right to grant
 rights.
 
 ## Deactivating accounts and the last administrator
@@ -60,8 +60,9 @@ and memberships, but its tokens are refused (`auth.account_inactive`) until `dea
 ```
 
 A tenant always keeps at least one active account that can grant rights at the root room. An order that
-would remove the last one (deleting or deactivating the account, deleting its group or membership,
-ending its profile assignment) is refused with `tenant.last_admin`; make another account an
+would remove the last one (deleting or deactivating the account, detaching its account type, deleting its
+group or membership, unlinking the membership, ending or overriding its profile assignment with `-` or
+`block` rights) is refused with `tenant.last_admin`; make another account an
 administrator first, for example by adding it to the group `admins`.
 
 ## Tokens for agents

@@ -10,7 +10,7 @@ the default. The image sets the variables marked "image".
 |---|---|---|---|
 | `--db` | `I3CM_DATABASE_URL` | — (required) | PostgreSQL URL |
 | `--catalog` | `I3CM_CATALOG` | `catalog.json` at the root of the source tree the server was built from; image: `/etc/i3cm/catalog.json` | catalog of the kernel, built by `typecat` |
-| `--modules-dir` | `I3CM_MODULES_DIR` | none (module code, hooks and schedules off); image: `/var/lib/i3cm/modules` (a volume) | installed modules: `<module>.json`, `<module>.wasm`, `src/`; must be writable, else the server does not start |
+| `--modules-dir` | `I3CM_MODULES_DIR` | none (module code, hooks and schedules off); image: `/var/lib/i3cm/modules` (a volume) | installed modules: `<module>.json`, `<module>.wasm`, `ui/`, `src/`; must be writable, else the server does not start |
 | — | `I3CM_BUNDLED_MODULES` | image: `/opt/i3cm/bundled-modules` | modules shipped with the image; copied into the modules directory at start (see [README.md](README.md#upgrades)) |
 | `serve --listen` | `I3CM_LISTEN` | `0.0.0.0:8480` | address of the API |
 | `serve --pool` | — | `32` | database connections |
@@ -19,7 +19,7 @@ the default. The image sets the variables marked "image".
 | — | `I3CM_TRUSTED_KEYS_FILE` | — | file with further trusted keys, one hex key per line, `#` comments |
 | — | `I3CM_REGISTRY_TOKEN` | — | bearer token for private release assets when fetching packages |
 | — | `I3CM_OPERATOR_TOKEN` | — (surface off) | secret of the operator surface over HTTP, at least 32 characters; a shorter one, or one without a modules directory, stops the start with a message |
-| — | `I3CM_ALLOW_DEVELOPMENT` | off | `true`, `1` or `yes` (any case): development tenants may be created, and module packages without a trusted signature are installed (with a warning); `false`, `0`, `no` or unset: off; any other value stops the start |
+| — | `I3CM_ALLOW_DEVELOPMENT` | off | `true`, `1` or `yes` (any case): development tenants may be created, and module packages without a trusted signature are installed (with a warning); `false`, `0`, `no`, empty or unset: off; any other value stops every command |
 | — | `I3CM_NODE` | `node` | Node for source checks |
 | — | `I3CM_TYPECAT` | image: `/opt/i3cm/typecat/typecat.mjs` | `typecat` for source checks |
 | — | `I3CM_TYPES_DIR` | image: `/opt/i3cm/types` | type sources of the kernel for source checks |
