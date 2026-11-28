@@ -80,7 +80,8 @@ fn test_model() -> Model {
         serde_json::from_value(json!({
             "name": "t", "requires": ["base"], "rooms": ["tsub"], "i18n": {"de": "t-mail-nomd--label-attachments = Anhänge\n"},
             "filters": [{"name": "t:big", "type": "t:LeaveRequest", "where": "days > 5"},
-                        {"name": "t:open", "type": "t:LeaveRequest", "where": "status in ('submitted', 'checked')"}],
+                        {"name": "t:open", "type": "t:LeaveRequest", "where": "status in ('submitted', 'checked')"},
+                        {"name": "t:team-a", "type": "t:LeaveRequest", "where": "applicant.team.name = 'a'"}],
             "aspects": [{"name": "t:mail-drop", "entry": {"type": "sample:Mail", "groupBy": []},
                 "nodes": {"sample:Mail": {"attributes": [], "subNodes": [{"label": "attachments", "path": "attachments", "folder": true, "dropType": "sample:MailAttachment"}],
                     "files": [{"name": "mail.md", "path": "_texts.`mail.md`"}, {"name": "mail.eml", "path": "_content"}], "tabs": [], "functions": [], "filesFirst": false}}},
@@ -1689,7 +1690,9 @@ fn filter_language_limits() {
     assert_eq!(view_filter(&m, "t:Team", "@big").unwrap_err().error_id, "filter.wrong_type");
     assert!(view_filter(&m, "t:LeaveRequest", "status in ('a', 'b', 'c')").unwrap().terms() == 1, "`in` is one term");
     assert_eq!(filter(&m, "t:LeaveRequest", "applicant.team.name = 'a'", Origin::Query).unwrap_err().error_id, "query.path_not_allowed");
-    assert!(filter(&m, "t:LeaveRequest", "@big", Origin::Query).is_ok(), "named filters may use paths in queries");
+    assert!(filter(&m, "t:LeaveRequest", "@big", Origin::Query).is_ok(), "a named filter without paths in a query");
+    assert_eq!(filter(&m, "t:LeaveRequest", "@team-a", Origin::Query).unwrap_err().error_id, "query.path_not_allowed", "a named filter with a path in a query");
+    assert!(view_filter(&m, "t:LeaveRequest", "@team-a").is_ok());
     // a subtype inherits the named filters of its supertype
     assert!(view_filter(&m, "t:SpecialLeave", "@big and reason.exists()").is_ok());
 }

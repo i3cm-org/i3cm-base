@@ -219,8 +219,8 @@ and queries. It translates into SQL; what does not translate is refused when the
 which it holds; conditions are plus rights on named types and grant read, write and delete on existing
 objects (create, place and remove need unconditional rights). A right on a type also covers its
 subtypes. A **query** over the API or from module code (`where` of `query`) may follow one reference to
-`%me` but no longer paths (`query.path_not_allowed`): paths in queries could reveal objects the caller
-cannot read; named filters, which come from the signed catalog, may use paths there too. Module code can
+`%me` but no longer paths (`query.path_not_allowed`), also not inside a named filter it refers to:
+paths in queries could reveal objects the caller cannot read. Module code can
 ask `query` for the references of each result with `"references": true`.
 
 Lists combine the rooms with unconditional rights and each condition as separate branches of one

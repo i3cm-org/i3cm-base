@@ -106,15 +106,22 @@ impl Store {
     /// One boolean SQL condition on `s.room_id` (object state) and `x.object_id` for aggregate
     /// queries. Pushes its parameters; `$1` must be the tenant.
     pub fn rights_clause(&self, a: &Access, ctx: &Ctx, params: &mut Vec<Param>) -> Result<String> {
-        params.push(Box::new(a.rooms.clone()));
-        let mut parts = vec![format!("s.room_id = ANY(${})", params.len())];
+        let mut parts = vec![];
+        if !a.rooms.is_empty() {
+            params.push(Box::new(a.rooms.clone()));
+            parts.push(format!("s.room_id = ANY(${})", params.len()));
+        }
         let mut me = None;
         for (rc, rooms) in &a.paths {
             params.push(Box::new(rooms.clone()));
             let r = params.len();
             parts.push(format!("(s.room_id = ANY(${r}) AND {})", self.cond_sql(rc, &a.t, &mut me, ctx, params)?));
         }
-        Ok(if parts.len() == 1 { parts.pop().unwrap() } else { format!("({})", parts.join(" OR ")) })
+        Ok(match parts.len() {
+            0 => "false".to_string(),
+            1 => parts.pop().unwrap(),
+            _ => format!("({})", parts.join(" OR ")),
+        })
     }
 
     /// Branch conditions for a paged `UNION`: one per part of the access, each a condition on
@@ -174,6 +181,10 @@ impl Store {
     /// Joins over the reference tables of `steps`, starting at the entry object `x`. Returns
     /// the `FROM … WHERE …` part and the column of the object reached.
     fn path_sql(&self, steps: &[Step]) -> (String, String) {
+        // the parser never yields an empty path; an empty one would match nothing
+        if steps.is_empty() {
+            return ("FROM (SELECT 1) r0 WHERE false".to_string(), "NULL".to_string());
+        }
         let ends = |s: &Step| -> (&'static str, &'static str) { if s.from_holder { ("a_id", "b_id") } else { ("b_id", "a_id") } };
         let tab = |s: &Step| ref_table(self.model.ref_def(&s.reference).expect("checked reference"));
         let mut from = format!("FROM {} r0", tab(&steps[0]));

@@ -355,8 +355,9 @@ impl Lower<'_> {
             return Err(self.bad("filter.too_deep", "named filters refer to each other too deeply"));
         }
         let e = fhirpath::parse(&def.filter)?;
-        // a named filter is part of the signed catalog: paths are allowed even inside queries
-        Lower { m: self.m, src: &def.filter, origin: Origin::Catalog, ns: Model::module_of(&def.name).to_string(), depth: self.depth + 1 }.lower(t, &e)
+        // inside a free query the same restriction holds for the named filter: no paths over
+        // objects the caller might not read (the result could reveal them)
+        Lower { m: self.m, src: &def.filter, origin: self.origin, ns: Model::module_of(&def.name).to_string(), depth: self.depth + 1 }.lower(t, &e)
     }
 
     fn lower(&self, t: &str, e: &Expr) -> Result<Filter> {
