@@ -68,7 +68,8 @@ export const unique: FieldDeco = noopF;
 /* ---------- rooms and profiles ---------- */
 export type Sign = "+" | "-" | "block";
 export type Art = "read" | "write" | "create" | "place" | "remove" | "delete" | "grant";
-/** `when`: rights path, e.g. `"applicant.team.leader = %me"` (plus rights on named types only). */
+/** `when`: condition in the filter language, e.g. `"status = 'submitted' and applicant.team.leader = %me"`
+ *  or a named filter `"@submitted"` (plus rights on named types only). */
 export interface RightDef { sign: Sign; art: Art[]; types: string[]; room: string; when?: string }
 export interface ProfileDef { name: string; guardian?: boolean; includes?: string[]; rights: RightDef[] }
 
@@ -83,6 +84,9 @@ export interface HookDef { type: string; on: "create" | "update" | "delete"; pha
 export interface ScheduleDef { op: string; rrule: string }
 /** A rights carrier owned by the module (an agent account created on activation). */
 export interface CarrierDef { name: string; profiles: string[] }
+/** A named filter on objects of `type` (and its subtypes), referenced as `@name` (own module) or
+ *  `@ns:name` in `when` and `where`. */
+export interface FilterDef { type: string; where: string }
 
 /* ---------- aspects (views) ---------- */
 /** Paths are FHIRPath expressions relative to the node object. */
@@ -90,14 +94,15 @@ export interface NodeDef {
   attributes?: Record<string, string>;
   /** `dropType`: files copied into the folder become new objects of this type (writable views). */
   subNodes?: Record<string, { path: string; folder?: boolean; dropType?: string }>;
-  /** File name -> `_content` or `_texts.<text type>`; `{attr}` in the name is replaced. */
-  files?: Record<string, string>;
+  /** File name -> `_content` or `_texts.<text type>`, or a list of them: the first present is
+   *  read, writing always goes to the first. `{attr}` in the name is replaced. */
+  files?: Record<string, string | string[]>;
   /** Objects reached by `path`; with `columns` shown as a grid, without as a list. */
   tabs?: Record<string, { path: string; columns?: Record<string, string> }>;
   functions?: Record<string, { url: string }>;
 }
 export interface AspectDef {
-  /** `where`: view filter on own attributes, reference ends, now(), today(), %me (runs in SQL). */
+  /** `where`: condition in the filter language or a named filter `@name` (runs in SQL). */
   entry: { type: string; groupBy?: string[]; where?: string };
   nodes: Record<string, NodeDef>;
 }

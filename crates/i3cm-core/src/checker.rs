@@ -148,7 +148,7 @@ pub fn check(m: &Model) -> Result<()> {
                         if t == crate::catalog::ANY {
                             return Err(err("profile.conditional_any", "a rights path needs named types, not *").with("profile", r.name.clone()));
                         }
-                        crate::paths::rights_path(m, t, w).map_err(|e| e.with("profile", r.name.clone()))?;
+                        crate::paths::rights_cond(m, t, w).map_err(|e| e.with("profile", r.name.clone()))?;
                     }
                 }
             }
@@ -162,6 +162,26 @@ pub fn check(m: &Model) -> Result<()> {
             if !profile_names.contains(inc) {
                 return Err(err("profile.unknown_include", "included profile is unknown").with("profile", r.name.clone()).with("include", inc.clone()));
             }
+        }
+    }
+    // named filters: unique, on a known type, valid for it
+    let mut filter_names = BTreeSet::new();
+    for module in &c.modules {
+        for f in &module.filters {
+            if !f.name.starts_with(&format!("{}:", module.name)) {
+                return Err(err("filter.foreign_name", "a named filter is named in its own module's namespace").with("filter", f.name.clone()));
+            }
+            if !filter_names.insert(f.name.clone()) {
+                return Err(err("filter.duplicate", "named filter defined twice").with("filter", f.name.clone()));
+            }
+            if m.type_def(&f.type_name).is_none() {
+                return Err(err("filter.unknown_type", "named filter names an unknown type").with("filter", f.name.clone()).with("type", f.type_name.clone()));
+            }
+        }
+    }
+    for module in &c.modules {
+        for f in &module.filters {
+            crate::paths::view_filter(m, &f.type_name, &f.filter).map_err(|e| e.with("filter", f.name.clone()))?;
         }
     }
     for a in m.aspects() {
@@ -245,8 +265,11 @@ fn check_aspect(m: &Model, a: &crate::catalog::AspectDef) -> Result<()> {
             }
         }
         for f in &n.files {
-            let ok = f.path == "_content" && m.ancestors(t).iter().any(|x| x.content.is_some())
-                || f.path.strip_prefix("_texts.").map(|tt| m.text_type_for(&[t.clone()].into(), tt.trim_matches('`')).is_some()).unwrap_or(false);
+            let src_ok = |p: &str| {
+                p == "_content" && m.ancestors(t).iter().any(|x| x.content.is_some())
+                    || p.strip_prefix("_texts.").map(|tt| m.text_type_for(&[t.clone()].into(), tt.trim_matches('`')).is_some()).unwrap_or(false)
+            };
+            let ok = src_ok(&f.path) && f.fallback.iter().all(|p| src_ok(p));
             if !ok {
                 return Err(err("aspect.bad_file", "a file must be _content or _texts.<text type> of the node type")
                     .with("aspect", a.name.clone()).with("type", t.clone()).with("file", f.name.clone()));

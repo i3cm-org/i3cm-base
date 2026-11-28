@@ -833,6 +833,7 @@
    "hooks": [],
    "schedules": [],
    "carriers": [],
+   "filters": [],
    "mandatory": true,
    "developmentOnly": false
   }
@@ -1058,8 +1059,7 @@
     "max": null
    },
    "partOf": false,
-   "ordered": false,
-   "rightsRelevant": true
+   "ordered": false
   },
   {
    "name": "tasks:Task.concerns",
@@ -1076,8 +1076,7 @@
     "max": null
    },
    "partOf": false,
-   "ordered": false,
-   "rightsRelevant": false
+   "ordered": false
   },
   {
    "name": "tasks:Task.editor",
@@ -1094,8 +1093,7 @@
     "max": null
    },
    "partOf": false,
-   "ordered": false,
-   "rightsRelevant": false
+   "ordered": false
   },
   {
    "name": "tasks:Task.parent",
@@ -1112,8 +1110,7 @@
     "max": null
    },
    "partOf": true,
-   "ordered": true,
-   "rightsRelevant": false
+   "ordered": true
   },
   {
    "name": "tasks:Task.series",
@@ -1130,8 +1127,7 @@
     "max": null
    },
    "partOf": false,
-   "ordered": false,
-   "rightsRelevant": false
+   "ordered": false
   }
  ],
  "textTypes": []

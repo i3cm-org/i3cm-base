@@ -1,1 +1,1 @@
-export { Document, Binder } from "./types/documents";
+export { Document, Image, ScanSource, Binder } from "./types/documents";

@@ -188,7 +188,7 @@ export function buildCatalog(typesDir, opts = {}) {
   const uiDirs = new Map(); // module name -> ui directory
   for (const dir of moduleDirs) {
     const files = program.getSourceFiles().filter((sf) => !sf.isDeclarationFile && ownerOf(path.dirname(sf.fileName)) === dir);
-    const mod = { name: null, requires: [], rooms: [], profiles: [], i18n: {}, aspects: [], operations: [], hooks: [], schedules: [], carriers: [], mandatory: false, developmentOnly: false };
+    const mod = { name: null, requires: [], rooms: [], profiles: [], i18n: {}, aspects: [], operations: [], hooks: [], schedules: [], carriers: [], filters: [], mandatory: false, developmentOnly: false };
     const ownTypes = [], ownRefs = [];
     for (const sf of files) {
       if (path.basename(sf.fileName) === "module.ts") {
@@ -203,6 +203,7 @@ export function buildCatalog(typesDir, opts = {}) {
             if (d.name.getText() === "hooks") mod.hooks = v;
             if (d.name.getText() === "schedules") mod.schedules = v;
             if (d.name.getText() === "carriers") mod.carriers = v;
+            if (d.name.getText() === "filters") mod.filters = v;
           }
         }
         continue;
@@ -326,6 +327,12 @@ export function buildCatalog(typesDir, opts = {}) {
     mod.aspects = mod.aspects.map((a) => ({ ...a, name: `${mod.name}:${a.name}` }));
     const q = (n) => (n.includes(":") ? n : `${mod.name}:${n}`);
     mod.carriers = mod.carriers.map((c) => ({ name: q(c.name), profiles: (c.profiles ?? []).map(q) }));
+    // named filters: `{ name: { type, where } }` (or a list with `name`), qualified with the module
+    const flist = Array.isArray(mod.filters) ? mod.filters : Object.entries(mod.filters ?? {}).map(([name, f]) => ({ name, ...f }));
+    mod.filters = flist.map((f) => ({ name: q(f.name), type: f.type, where: f.where }));
+    for (const f of mod.filters)
+      if (f.name.split(":")[0] !== mod.name)
+        throw new CatError("typecat.foreign_filter_name", "a named filter belongs to the namespace of its module", { module: mod.name, filter: f.name });
     for (const c of mod.carriers)
       if (c.name.split(":")[0] !== mod.name)
         throw new CatError("typecat.foreign_carrier_name", "a carrier belongs to the namespace of its module", { module: mod.name, carrier: c.name });
@@ -449,7 +456,8 @@ function aspectOf(name, def) {
     nodes[t] = {
       attributes: pairs(n.attributes).map(([label, path]) => ({ label, path })),
       subNodes: pairs(n.subNodes).map(([label, v]) => ({ label, path: v.path, folder: !!v.folder, ...(v.dropType ? { dropType: v.dropType } : {}) })),
-      files: pairs(n.files).map(([name, path]) => ({ name, path })),
+      // a list of sources: the first present is read, writing goes to the first
+      files: pairs(n.files).map(([name, path]) => (Array.isArray(path) ? { name, path: path[0], ...(path.length > 1 ? { fallback: path.slice(1) } : {}) } : { name, path })),
       tabs: pairs(n.tabs).map(([label, v]) => ({ label, path: v.path, columns: pairs(v.columns).map(([l, p]) => ({ label: l, path: p })) })),
       functions: pairs(n.functions).map(([name, v]) => ({ name, url: v.url })),
       filesFirst: !("subNodes" in n) || !("files" in n) || Object.keys(n).indexOf("files") < Object.keys(n).indexOf("subNodes"),

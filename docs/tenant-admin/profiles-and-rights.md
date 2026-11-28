@@ -20,20 +20,24 @@ curl -X POST -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/jso
 
 assigns a profile to a group or an account. Assigning needs the right to grant rights.
 
-## Rights paths
+## Conditions
 
-A right can carry a condition `when`: it applies only to objects from which a path reaches the caller.
-This is how business roles become rights without a separate mechanism:
+A right can carry a condition `when`: it applies only to objects for which the condition holds. The
+condition uses the same filter language as views (states, dates, paths to the caller, named filters
+of the module), so a step of a workflow can be a state that both a view and a right ask for. Paths to
+the caller turn business roles into rights without a separate mechanism:
 
 | Case | Right | Condition |
 |---|---|---|
 | team leader | `write` on `hr:LeaveRequest` | `applicant.team.leader = %me` |
 | project lead | `write` on `pm:Milestone` | `project.lead = %me` |
 | assignee | `read`, `write` on `tasks:Task` | `assignees = %me` |
+| approval step | `write` on `hr:LeaveRequest` | `status = 'submitted' and applicant.team.leader = %me` |
 
 `%me` is the calling account and every group it belongs to. A path has at most three steps and may run
-over any reference; rights paths give `read`, `write` and `delete` on existing objects, never `create`,
-`place` or `remove`.
+over any reference; conditions give `read`, `write` and `delete` on existing objects, never `create`,
+`place` or `remove`. A right on a type also covers its subtypes (a right on documents covers mails,
+which are documents). Moving an object needs `remove` and `place` on its types (or on `*`).
 
 Writing data never grants rights: setting a reference a path runs over (making someone a team
 leader, assigning a task) needs only write on one object and read on the other, like any reference.

@@ -113,7 +113,7 @@ impl<'a> FsTree<'a> {
                 Slot::File(i) => {
                     let c = &children[i];
                     let (grep, key) = match &c.src {
-                        Some(Item::Text(id, tt)) => (self.store.model.text_type(tt).map(|t| t.grep).unwrap_or(true), Some(format!("t:{id}:{tt}"))),
+                        Some(Item::Text(id, tt)) => (self.store.model.text_type(tt).map(|t| t.grep).unwrap_or(false), Some(format!("t:{id}:{tt}"))),
                         _ => (false, None),
                     };
                     out.push(Node {

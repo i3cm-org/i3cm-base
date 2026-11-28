@@ -49,7 +49,9 @@ while read -r name repo ref pkg; do
       cp "$work/pkg-$name/module.wasm" "$out/$name.wasm"
     fi
   elif [ -f "$work/$name/ops/Cargo.toml" ]; then
-    cargo build --quiet --release --target wasm32-wasip2 --manifest-path "$work/$name/ops/Cargo.toml" --target-dir "$work/target-$name"
+    # no local paths in the artifact: the registry and the build directory are mapped away
+    RUSTFLAGS="--remap-path-prefix=${CARGO_HOME:-$HOME/.cargo}=/cargo --remap-path-prefix=$work=/src" \
+      cargo build --quiet --release --target wasm32-wasip2 --manifest-path "$work/$name/ops/Cargo.toml" --target-dir "$work/target-$name"
     wasm=$(find "$work/target-$name/wasm32-wasip2/release" -maxdepth 1 -name '*.wasm' | head -n 1)
     [ -n "$wasm" ] || { echo "bundle-modules: $name: building ops/ produced no component" >&2; exit 1; }
     cp "$wasm" "$out/$name.wasm"

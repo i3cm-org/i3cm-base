@@ -75,7 +75,10 @@ impl Store {
             }
             match &w.name {
                 None => ops.extend(self.index_ops(ctx, w, lang).await?),
-                Some(name) => match self.file_item(ctx, &w.aspect, &w.node, name).await? {
+                Some(name) => match match self.file_write_item(ctx, &w.aspect, &w.node, name).await? {
+                    Some(it) => it,
+                    None => self.file_item(ctx, &w.aspect, &w.node, name).await?,
+                } {
                     Item::Content(id) => {
                         let (_, media, filename) = self.get_content(ctx, id).await?;
                         let sha = self.put_blob(&w.data).await?;

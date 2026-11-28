@@ -20,6 +20,8 @@
        ],
        "types": [
         "dms:Document",
+        "dms:Image",
+        "dms:ScanSource",
         "dms:Binder"
        ],
        "room": "root"
@@ -43,6 +45,7 @@
        ],
        "types": [
         "dms:Document",
+        "dms:Image",
         "dms:Binder"
        ],
        "room": "root"
@@ -55,17 +58,105 @@
        ],
        "types": [
         "dms:Document",
+        "dms:Image",
         "dms:Binder"
        ],
        "room": "root"
       }
      ],
      "guardian": false
+    },
+    {
+     "name": "dms:sourceReader",
+     "rights": [
+      {
+       "sign": "+",
+       "art": [
+        "read"
+       ],
+       "types": [
+        "dms:Document"
+       ],
+       "room": "dms",
+       "when": "source.readers = %me"
+      },
+      {
+       "sign": "+",
+       "art": [
+        "read"
+       ],
+       "types": [
+        "dms:Image"
+       ],
+       "room": "dms",
+       "when": "document.source.readers = %me"
+      },
+      {
+       "sign": "+",
+       "art": [
+        "read"
+       ],
+       "types": [
+        "dms:ScanSource"
+       ],
+       "room": "dms",
+       "when": "readers = %me"
+      }
+     ],
+     "includes": [],
+     "guardian": false
+    },
+    {
+     "name": "dms:importer",
+     "rights": [
+      {
+       "sign": "+",
+       "art": [
+        "create"
+       ],
+       "types": [
+        "dms:Document"
+       ],
+       "room": "dms"
+      }
+     ],
+     "includes": [],
+     "guardian": false
+    },
+    {
+     "name": "dms:sourceAdmin",
+     "rights": [
+      {
+       "sign": "+",
+       "art": [
+        "read",
+        "write",
+        "create",
+        "delete"
+       ],
+       "types": [
+        "dms:ScanSource"
+       ],
+       "room": "dms"
+      },
+      {
+       "sign": "+",
+       "art": [
+        "read"
+       ],
+       "types": [
+        "base:Carrier"
+       ],
+       "room": "root"
+      }
+     ],
+     "includes": [],
+     "guardian": false
     }
    ],
    "i18n": {
-    "de": "dms-Document-name = { $title }\ndms-Document-description = Dokument\ndms-Binder-name = { $name }\ndms-Binder-description = Akte\ndms-filing--label-_name = Dokumente nach Datum\ndms-filing--label-title = Titel\ndms-filing--label-date = Dokumentdatum\ndms-filing--label-sender = Absender\ndms-filing--label-concerns = Bezüge\ndms-senders--label-_name = Dokumente nach Absender\ndms-senders--label-title = Titel\ndms-senders--label-date = Dokumentdatum\ndms-senders--label-sender = Absender\ndms-senders--label-concerns = Bezüge\ndms-inbox--label-_name = Dokumenteneingang\ndms-inbox--label-title = Titel\ndms-inbox--label-date = Dokumentdatum\ndms-inbox--label-sender = Absender\ndms-inbox--label-concerns = Bezüge\ndms-binders--label-_name = Akten\ndms-binders--label-name = Name\ndms-binders--label-documentCount = Dokumente\ndms-binders--label-documents = Dokumente\ndms-binders--label-title = Titel\ndms-binders--label-date = Dokumentdatum\ndms-binders--label-sender = Absender\ndms-binders--label-concerns = Bezüge\ndms-filing--label-file = Datei\ndms-senders--label-file = Datei\ndms-inbox--label-file = Datei\ndms-binders--label-file = Datei\ndms-filing--label-_none = Ohne Datum\ndms-senders--label-_none = Ohne Absender\n",
-    "en": "dms-Document-name = { $title }\ndms-Document-description = Document\ndms-Binder-name = { $name }\ndms-Binder-description = Binder\ndms-filing--label-_name = Documents by date\ndms-filing--label-title = Title\ndms-filing--label-date = Document date\ndms-filing--label-sender = Sender\ndms-filing--label-concerns = Concerns\ndms-senders--label-_name = Documents by sender\ndms-senders--label-title = Title\ndms-senders--label-date = Document date\ndms-senders--label-sender = Sender\ndms-senders--label-concerns = Concerns\ndms-inbox--label-_name = Document inbox\ndms-inbox--label-title = Title\ndms-inbox--label-date = Document date\ndms-inbox--label-sender = Sender\ndms-inbox--label-concerns = Concerns\ndms-binders--label-_name = Binders\ndms-binders--label-name = Name\ndms-binders--label-documentCount = Documents\ndms-binders--label-documents = Documents\ndms-binders--label-title = Title\ndms-binders--label-date = Document date\ndms-binders--label-sender = Sender\ndms-binders--label-concerns = Concerns\ndms-filing--label-file = File\ndms-senders--label-file = File\ndms-inbox--label-file = File\ndms-binders--label-file = File\ndms-filing--label-_none = No date\ndms-senders--label-_none = No sender\n"
+    "de": "dms-Document-name = { $title }\ndms-Document-description = Dokument\ndms-Binder-name = { $name }\ndms-Binder-description = Akte\ndms-filing--label-_name = Dokumente nach Datum\ndms-filing--label-title = Titel\ndms-filing--label-date = Dokumentdatum\ndms-filing--label-sender = Absender\ndms-filing--label-concerns = Bezüge\ndms-senders--label-_name = Dokumente nach Absender\ndms-senders--label-title = Titel\ndms-senders--label-date = Dokumentdatum\ndms-senders--label-sender = Absender\ndms-senders--label-concerns = Bezüge\ndms-inbox--label-_name = Dokumenteneingang\ndms-inbox--label-title = Titel\ndms-inbox--label-date = Dokumentdatum\ndms-inbox--label-sender = Absender\ndms-inbox--label-concerns = Bezüge\ndms-binders--label-_name = Akten\ndms-binders--label-name = Name\ndms-binders--label-documentCount = Dokumente\ndms-binders--label-documents = Dokumente\ndms-binders--label-title = Titel\ndms-binders--label-date = Dokumentdatum\ndms-binders--label-sender = Absender\ndms-binders--label-concerns = Bezüge\ndms-filing--label-file = Datei\ndms-senders--label-file = Datei\ndms-inbox--label-file = Datei\ndms-binders--label-file = Datei\ndms-filing--label-_none = Ohne Datum\ndms-senders--label-_none = Ohne Absender\ndms-Image-name = { $name }\ndms-Image-description = Bild aus einem Dokument\ndms-ScanSource-name = { $name }\ndms-ScanSource-description = Scan-Quelle\ndms-filing--label-images = Bilder\ndms-filing--label-name = Name\ndms-filing--label-page = Seite\ndms-filing--label-caption = Bildunterschrift\ndms-senders--label-images = Bilder\ndms-senders--label-name = Name\ndms-senders--label-page = Seite\ndms-senders--label-caption = Bildunterschrift\ndms-inbox--label-images = Bilder\ndms-inbox--label-name = Name\ndms-inbox--label-page = Seite\ndms-inbox--label-caption = Bildunterschrift\ndms-binders--label-images = Bilder\ndms-binders--label-page = Seite\ndms-binders--label-caption = Bildunterschrift\ndms-sources--label-_name = Scan-Quellen\ndms-sources--label-location = Ort\ndms-sources--label-lastImport = Letzter Import\ndms-sources--label-documentCount = Dokumente\ndms-sources--label-imports = Importierte Dokumente\ndms-sources--label-title = Titel\ndms-sources--label-date = Dokumentdatum\ndms-sources--label-sender = Absender\ndms-sources--label-concerns = Bezüge\ndms-sources--label-file = Datei\ndms-sources--label-images = Bilder\ndms-sources--label-name = Name\ndms-sources--label-page = Seite\ndms-sources--label-caption = Bildunterschrift\n",
+    "en": "dms-Document-name = { $title }\ndms-Document-description = Document\ndms-Binder-name = { $name }\ndms-Binder-description = Binder\ndms-filing--label-_name = Documents by date\ndms-filing--label-title = Title\ndms-filing--label-date = Document date\ndms-filing--label-sender = Sender\ndms-filing--label-concerns = Concerns\ndms-senders--label-_name = Documents by sender\ndms-senders--label-title = Title\ndms-senders--label-date = Document date\ndms-senders--label-sender = Sender\ndms-senders--label-concerns = Concerns\ndms-inbox--label-_name = Document inbox\ndms-inbox--label-title = Title\ndms-inbox--label-date = Document date\ndms-inbox--label-sender = Sender\ndms-inbox--label-concerns = Concerns\ndms-binders--label-_name = Binders\ndms-binders--label-name = Name\ndms-binders--label-documentCount = Documents\ndms-binders--label-documents = Documents\ndms-binders--label-title = Title\ndms-binders--label-date = Document date\ndms-binders--label-sender = Sender\ndms-binders--label-concerns = Concerns\ndms-filing--label-file = File\ndms-senders--label-file = File\ndms-inbox--label-file = File\ndms-binders--label-file = File\ndms-filing--label-_none = No date\ndms-senders--label-_none = No sender\ndms-Image-name = { $name }\ndms-Image-description = Image of a document\ndms-ScanSource-name = { $name }\ndms-ScanSource-description = Scan source\ndms-filing--label-images = Images\ndms-filing--label-name = Name\ndms-filing--label-page = Page\ndms-filing--label-caption = Caption\ndms-senders--label-images = Images\ndms-senders--label-name = Name\ndms-senders--label-page = Page\ndms-senders--label-caption = Caption\ndms-inbox--label-images = Images\ndms-inbox--label-name = Name\ndms-inbox--label-page = Page\ndms-inbox--label-caption = Caption\ndms-binders--label-images = Images\ndms-binders--label-page = Page\ndms-binders--label-caption = Caption\ndms-sources--label-_name = Scan sources\ndms-sources--label-location = Location\ndms-sources--label-lastImport = Last import\ndms-sources--label-documentCount = Documents\ndms-sources--label-imports = Imported documents\ndms-sources--label-title = Title\ndms-sources--label-date = Document date\ndms-sources--label-sender = Sender\ndms-sources--label-concerns = Concerns\ndms-sources--label-file = File\ndms-sources--label-images = Images\ndms-sources--label-name = Name\ndms-sources--label-page = Page\ndms-sources--label-caption = Caption\n"
    },
    "aspects": [
     {
@@ -101,19 +192,25 @@
          "path": "concerns.count()"
         }
        ],
-       "subNodes": [],
+       "subNodes": [
+        {
+         "label": "images",
+         "path": "images",
+         "folder": true
+        }
+       ],
        "files": [
         {
          "name": "{_content.filename}",
          "path": "_content"
         },
         {
-         "name": "text.txt",
-         "path": "_texts.plain"
+         "name": "text.md",
+         "path": "_texts.md"
         },
         {
-         "name": "ocr.txt",
-         "path": "_texts.ocr"
+         "name": "text.plain.md",
+         "path": "_texts.mdplain"
         }
        ],
        "tabs": [
@@ -123,6 +220,32 @@
          "columns": []
         }
        ],
+       "functions": [],
+       "filesFirst": true
+      },
+      "dms:Image": {
+       "attributes": [
+        {
+         "label": "name",
+         "path": "name"
+        },
+        {
+         "label": "page",
+         "path": "page"
+        },
+        {
+         "label": "caption",
+         "path": "caption"
+        }
+       ],
+       "subNodes": [],
+       "files": [
+        {
+         "name": "{name}",
+         "path": "_content"
+        }
+       ],
+       "tabs": [],
        "functions": [],
        "filesFirst": true
       }
@@ -160,19 +283,25 @@
          "path": "concerns.count()"
         }
        ],
-       "subNodes": [],
+       "subNodes": [
+        {
+         "label": "images",
+         "path": "images",
+         "folder": true
+        }
+       ],
        "files": [
         {
          "name": "{_content.filename}",
          "path": "_content"
         },
         {
-         "name": "text.txt",
-         "path": "_texts.plain"
+         "name": "text.md",
+         "path": "_texts.md"
         },
         {
-         "name": "ocr.txt",
-         "path": "_texts.ocr"
+         "name": "text.plain.md",
+         "path": "_texts.mdplain"
         }
        ],
        "tabs": [
@@ -182,6 +311,32 @@
          "columns": []
         }
        ],
+       "functions": [],
+       "filesFirst": true
+      },
+      "dms:Image": {
+       "attributes": [
+        {
+         "label": "name",
+         "path": "name"
+        },
+        {
+         "label": "page",
+         "path": "page"
+        },
+        {
+         "label": "caption",
+         "path": "caption"
+        }
+       ],
+       "subNodes": [],
+       "files": [
+        {
+         "name": "{name}",
+         "path": "_content"
+        }
+       ],
+       "tabs": [],
        "functions": [],
        "filesFirst": true
       }
@@ -218,19 +373,25 @@
          "path": "concerns.count()"
         }
        ],
-       "subNodes": [],
+       "subNodes": [
+        {
+         "label": "images",
+         "path": "images",
+         "folder": true
+        }
+       ],
        "files": [
         {
          "name": "{_content.filename}",
          "path": "_content"
         },
         {
-         "name": "text.txt",
-         "path": "_texts.plain"
+         "name": "text.md",
+         "path": "_texts.md"
         },
         {
-         "name": "ocr.txt",
-         "path": "_texts.ocr"
+         "name": "text.plain.md",
+         "path": "_texts.mdplain"
         }
        ],
        "tabs": [
@@ -240,6 +401,32 @@
          "columns": []
         }
        ],
+       "functions": [],
+       "filesFirst": true
+      },
+      "dms:Image": {
+       "attributes": [
+        {
+         "label": "name",
+         "path": "name"
+        },
+        {
+         "label": "page",
+         "path": "page"
+        },
+        {
+         "label": "caption",
+         "path": "caption"
+        }
+       ],
+       "subNodes": [],
+       "files": [
+        {
+         "name": "{name}",
+         "path": "_content"
+        }
+       ],
+       "tabs": [],
        "functions": [],
        "filesFirst": true
       }
@@ -324,19 +511,25 @@
          "path": "concerns.count()"
         }
        ],
-       "subNodes": [],
+       "subNodes": [
+        {
+         "label": "images",
+         "path": "images",
+         "folder": true
+        }
+       ],
        "files": [
         {
          "name": "{_content.filename}",
          "path": "_content"
         },
         {
-         "name": "text.txt",
-         "path": "_texts.plain"
+         "name": "text.md",
+         "path": "_texts.md"
         },
         {
-         "name": "ocr.txt",
-         "path": "_texts.ocr"
+         "name": "text.plain.md",
+         "path": "_texts.mdplain"
         }
        ],
        "tabs": [
@@ -348,6 +541,177 @@
        ],
        "functions": [],
        "filesFirst": true
+      },
+      "dms:Image": {
+       "attributes": [
+        {
+         "label": "name",
+         "path": "name"
+        },
+        {
+         "label": "page",
+         "path": "page"
+        },
+        {
+         "label": "caption",
+         "path": "caption"
+        }
+       ],
+       "subNodes": [],
+       "files": [
+        {
+         "name": "{name}",
+         "path": "_content"
+        }
+       ],
+       "tabs": [],
+       "functions": [],
+       "filesFirst": true
+      }
+     }
+    },
+    {
+     "name": "dms:sources",
+     "entry": {
+      "type": "dms:ScanSource",
+      "groupBy": [
+       "name.substring(0, 1).upper()"
+      ]
+     },
+     "nodes": {
+      "dms:ScanSource": {
+       "attributes": [
+        {
+         "label": "name",
+         "path": "name"
+        },
+        {
+         "label": "location",
+         "path": "location"
+        },
+        {
+         "label": "lastImport",
+         "path": "lastImportAt"
+        },
+        {
+         "label": "documentCount",
+         "path": "imports.count()"
+        }
+       ],
+       "subNodes": [
+        {
+         "label": "imports",
+         "path": "imports",
+         "folder": false
+        }
+       ],
+       "files": [],
+       "tabs": [
+        {
+         "label": "imports",
+         "path": "imports",
+         "columns": [
+          {
+           "label": "title",
+           "path": "title"
+          },
+          {
+           "label": "date",
+           "path": "documentDate"
+          },
+          {
+           "label": "sender",
+           "path": "sender"
+          },
+          {
+           "label": "file",
+           "path": "_content.filename"
+          }
+         ]
+        }
+       ],
+       "functions": [],
+       "filesFirst": true
+      },
+      "dms:Document": {
+       "attributes": [
+        {
+         "label": "title",
+         "path": "title"
+        },
+        {
+         "label": "date",
+         "path": "documentDate"
+        },
+        {
+         "label": "sender",
+         "path": "sender"
+        },
+        {
+         "label": "file",
+         "path": "_content.filename"
+        },
+        {
+         "label": "concerns",
+         "path": "concerns.count()"
+        }
+       ],
+       "subNodes": [
+        {
+         "label": "images",
+         "path": "images",
+         "folder": true
+        }
+       ],
+       "files": [
+        {
+         "name": "{_content.filename}",
+         "path": "_content"
+        },
+        {
+         "name": "text.md",
+         "path": "_texts.md"
+        },
+        {
+         "name": "text.plain.md",
+         "path": "_texts.mdplain"
+        }
+       ],
+       "tabs": [
+        {
+         "label": "concerns",
+         "path": "concerns",
+         "columns": []
+        }
+       ],
+       "functions": [],
+       "filesFirst": true
+      },
+      "dms:Image": {
+       "attributes": [
+        {
+         "label": "name",
+         "path": "name"
+        },
+        {
+         "label": "page",
+         "path": "page"
+        },
+        {
+         "label": "caption",
+         "path": "caption"
+        }
+       ],
+       "subNodes": [],
+       "files": [
+        {
+         "name": "{name}",
+         "path": "_content"
+        }
+       ],
+       "tabs": [],
+       "functions": [],
+       "filesFirst": true
       }
      }
     }
@@ -356,6 +720,7 @@
    "hooks": [],
    "schedules": [],
    "carriers": [],
+   "filters": [],
    "mandatory": true,
    "developmentOnly": false
   }
@@ -434,6 +799,16 @@
      "list": false,
      "indexed": true,
      "unique": false
+    },
+    {
+     "name": "contentHash",
+     "vt": {
+      "kind": "string"
+     },
+     "required": false,
+     "list": false,
+     "indexed": true,
+     "unique": false
     }
    ],
    "requires": {
@@ -446,9 +821,117 @@
     "mediaType": null
    },
    "textTypes": [
-    "dms:plain",
-    "dms:ocr"
+    "dms:txt",
+    "dms:html",
+    "dms:md",
+    "dms:mdplain"
    ]
+  },
+  {
+   "name": "dms:Image",
+   "ns": "dms",
+   "local": "Image",
+   "abstract": false,
+   "extends": null,
+   "attributes": [
+    {
+     "name": "name",
+     "vt": {
+      "kind": "string"
+     },
+     "required": true,
+     "list": false,
+     "indexed": true,
+     "unique": false
+    },
+    {
+     "name": "page",
+     "vt": {
+      "kind": "int"
+     },
+     "required": false,
+     "list": false,
+     "indexed": false,
+     "unique": false
+    },
+    {
+     "name": "caption",
+     "vt": {
+      "kind": "string"
+     },
+     "required": false,
+     "list": false,
+     "indexed": false,
+     "unique": false
+    }
+   ],
+   "requires": {
+    "mode": "any",
+    "types": []
+   },
+   "imprintsOn": [],
+   "brings": [],
+   "content": {
+    "mediaType": null
+   },
+   "textTypes": []
+  },
+  {
+   "name": "dms:ScanSource",
+   "ns": "dms",
+   "local": "ScanSource",
+   "abstract": false,
+   "extends": null,
+   "attributes": [
+    {
+     "name": "name",
+     "vt": {
+      "kind": "string"
+     },
+     "required": true,
+     "list": false,
+     "indexed": true,
+     "unique": false
+    },
+    {
+     "name": "location",
+     "vt": {
+      "kind": "string"
+     },
+     "required": false,
+     "list": false,
+     "indexed": false,
+     "unique": false
+    },
+    {
+     "name": "description",
+     "vt": {
+      "kind": "string"
+     },
+     "required": false,
+     "list": false,
+     "indexed": false,
+     "unique": false
+    },
+    {
+     "name": "lastImportAt",
+     "vt": {
+      "kind": "datetime"
+     },
+     "required": false,
+     "list": false,
+     "indexed": false,
+     "unique": false
+    }
+   ],
+   "requires": {
+    "mode": "any",
+    "types": []
+   },
+   "imprintsOn": [],
+   "brings": [],
+   "content": null,
+   "textTypes": []
   }
  ],
  "references": [
@@ -467,22 +950,118 @@
     "max": null
    },
    "partOf": false,
-   "ordered": false,
-   "rightsRelevant": false
+   "ordered": false
+  },
+  {
+   "name": "dms:Document.duplicateOf",
+   "holder": {
+    "type": "dms:Document",
+    "end": "duplicateOf",
+    "min": 0,
+    "max": 1
+   },
+   "target": {
+    "type": "dms:Document",
+    "end": "duplicates",
+    "min": 0,
+    "max": null
+   },
+   "partOf": false,
+   "ordered": false
+  },
+  {
+   "name": "dms:Document.source",
+   "holder": {
+    "type": "dms:Document",
+    "end": "source",
+    "min": 0,
+    "max": 1
+   },
+   "target": {
+    "type": "dms:ScanSource",
+    "end": "imports",
+    "min": 0,
+    "max": null
+   },
+   "partOf": false,
+   "ordered": false
+  },
+  {
+   "name": "dms:Image.document",
+   "holder": {
+    "type": "dms:Image",
+    "end": "document",
+    "min": 1,
+    "max": 1
+   },
+   "target": {
+    "type": "dms:Document",
+    "end": "images",
+    "min": 0,
+    "max": null
+   },
+   "partOf": true,
+   "ordered": false
+  },
+  {
+   "name": "dms:ScanSource.readers",
+   "holder": {
+    "type": "dms:ScanSource",
+    "end": "readers",
+    "min": 0,
+    "max": null
+   },
+   "target": {
+    "type": "base:Carrier",
+    "end": "readableScanSources",
+    "min": 0,
+    "max": null
+   },
+   "partOf": false,
+   "ordered": false
+  },
+  {
+   "name": "dms:ScanSource.room",
+   "holder": {
+    "type": "dms:ScanSource",
+    "end": "room",
+    "min": 1,
+    "max": 1
+   },
+   "target": {
+    "type": "base:Room",
+    "end": "scanSource",
+    "min": 0,
+    "max": 1
+   },
+   "partOf": false,
+   "ordered": false
   }
  ],
  "textTypes": [
   {
-   "name": "dms:plain",
-   "mediaType": "text/plain",
-   "owner": "dms:Document",
-   "grep": true
-  },
-  {
-   "name": "dms:ocr",
+   "name": "dms:txt",
    "mediaType": "text/plain",
    "owner": "dms:Document",
    "grep": false
+  },
+  {
+   "name": "dms:html",
+   "mediaType": "text/html",
+   "owner": "dms:Document",
+   "grep": false
+  },
+  {
+   "name": "dms:md",
+   "mediaType": "text/markdown",
+   "owner": "dms:Document",
+   "grep": false
+  },
+  {
+   "name": "dms:mdplain",
+   "mediaType": "text/markdown",
+   "owner": "dms:Document",
+   "grep": true
   }
  ]
 }

@@ -25,7 +25,7 @@ fn init_stores_the_token_privately_and_tools_use_it() {
     let out = env.run("i3cm", &["cat", "/sample:mailbox/2026-11-20/s1@example.org - Betreff 0-1/mail.eml"], &[], None);
     assert_eq!(text(&out), "From: s1\r\n\r\nHallo 0-1");
     // a binary file comes back byte for byte
-    let pdf = env.run("i3cm-cat", &["/sample:mailbox/2026-11-20/s1@example.org - Betreff 0-1/Anhänge/file1.pdf/file1.pdf"], &[], None);
+    let pdf = env.run("i3cm-cat", &["/sample:mailbox/2026-11-20/s1@example.org - Betreff 0-1/attachments/file1.pdf/file1.pdf"], &[], None);
     assert_eq!(pdf.stdout, b"%PDF 0-1-1");
 
     // the environment ranks above the token file and says that it covers it

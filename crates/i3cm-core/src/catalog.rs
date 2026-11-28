@@ -35,6 +35,9 @@ pub struct Module {
     pub schedules: Vec<ScheduleDef>,
     #[serde(default)]
     pub carriers: Vec<CarrierDef>,
+    /// Named filters (qualified names), referenced as `@name` from profiles and aspects.
+    #[serde(default)]
+    pub filters: Vec<FilterDef>,
     /// Delivered with the kernel and activated in every tenant at creation.
     #[serde(default)]
     pub mandatory: bool,
@@ -50,6 +53,17 @@ pub struct OperationDef {
     /// Carriers of the same module the operation may impersonate.
     #[serde(default)]
     pub impersonates: Vec<String>,
+}
+
+/// A named filter: a condition in the filter language on objects of a type (and its subtypes).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FilterDef {
+    /// Qualified name, e.g. `dms:needsMd`.
+    pub name: String,
+    #[serde(rename = "type")]
+    pub type_name: String,
+    #[serde(rename = "where")]
+    pub filter: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -138,6 +152,9 @@ pub struct FileDef {
     /// File name; `{attr}` is replaced by an attribute of the object.
     pub name: String,
     pub path: String,
+    /// Further sources read when `path` is absent, in order; writing always goes to `path`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub fallback: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -370,8 +387,8 @@ impl Model {
                 let Some(w) = &r.when else { continue };
                 for t in &r.types {
                     // the checker accepted every condition; an error here must not be swallowed
-                    let rp = crate::paths::rights_path(&m, t, w).map_err(|e| e.with("profile", p.name.clone()))?;
-                    relevant.extend(rp.steps.iter().map(|st| st.reference.clone()));
+                    let rc = crate::paths::rights_cond(&m, t, w).map_err(|e| e.with("profile", p.name.clone()))?;
+                    relevant.extend(rc.steps().iter().map(|st| st.reference.clone()));
                 }
             }
         }
@@ -581,6 +598,23 @@ impl Model {
 
     pub fn subtypes(&self, name: &str) -> &[String] {
         self.children.get(name).map(|v| v.as_slice()).unwrap_or(&[])
+    }
+
+    /// Named filter by qualified name (`ns:name`), or by local name within module `ns`.
+    pub fn named_filter(&self, name: &str, ns: &str) -> Option<&FilterDef> {
+        let all = || self.catalog.modules.iter().flat_map(|m| m.filters.iter());
+        if name.contains(':') {
+            return all().find(|f| f.name == name);
+        }
+        let q = format!("{ns}:{name}");
+        all().find(|f| f.name == q)
+    }
+
+    /// Types that can be attached to an object of type `t` (their `@requires` names `t` or a
+    /// supertype of it); a filter on `t` may read their attributes, absent when not attached.
+    pub fn attachable_types(&self, t: &str) -> Vec<&TypeDef> {
+        let anc: Vec<String> = self.ancestors(t).iter().map(|d| d.name.clone()).collect();
+        self.catalog.types.iter().filter(|d| d.requires.types.iter().any(|r| anc.contains(r))).collect()
     }
 
     pub fn profiles(&self) -> impl Iterator<Item = &ProfileDef> {

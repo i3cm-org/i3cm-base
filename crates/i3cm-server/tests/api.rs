@@ -61,7 +61,12 @@ fn test_model() -> Model {
     let at = |n: &str, kind: &str| json!({"name": n, "vt": {"kind": kind}, "required": false, "list": false, "indexed": false, "unique": false});
     c.types.push(ty("t:Team", json!([at("name", "string")]), &[]));
     c.types.push(ty("t:Staff", json!([]), &["base:Person"]));
-    c.types.push(ty("t:LeaveRequest", json!([at("days", "int")]), &[]));
+    c.types.push(ty("t:LeaveRequest", json!([at("days", "int"), at("status", "string")]), &[]));
+    // a subtype (rights on the supertype cover it) and an attachable type (filters on the host read it)
+    let mut special: serde_json::Value = serde_json::to_value(ty("t:SpecialLeave", json!([at("reason", "string")]), &[]) as i3cm_core::catalog::TypeDef).unwrap();
+    special["extends"] = json!("t:LeaveRequest");
+    c.types.push(serde_json::from_value(special).unwrap());
+    c.types.push(ty("t:LeaveNote", json!([at("mark", "string")]), &["t:LeaveRequest"]));
     let rf = |name: &str, h: &str, he: &str, t: &str, te: &str| {
         serde_json::from_value(json!({"name": name, "holder": {"type": h, "end": he, "min": 0, "max": 1}, "target": {"type": t, "end": te, "min": 0, "max": null},
             "partOf": false, "ordered": false, "rightsRelevant": true})).unwrap()
@@ -73,16 +78,31 @@ fn test_model() -> Model {
     c.references.push(rf("t:Team.mascot", "t:Team", "mascot", "base:Person", "mascotOf"));
     c.modules.push(
         serde_json::from_value(json!({
-            "name": "t", "requires": ["base"], "rooms": ["tsub"], "i18n": {},
+            "name": "t", "requires": ["base"], "rooms": ["tsub"], "i18n": {"de": "t-mail-nomd--label-attachments = Anhänge\n"},
+            "filters": [{"name": "t:big", "type": "t:LeaveRequest", "where": "days > 5"},
+                        {"name": "t:open", "type": "t:LeaveRequest", "where": "status in ('submitted', 'checked')"}],
             "aspects": [{"name": "t:mail-drop", "entry": {"type": "sample:Mail", "groupBy": []},
                 "nodes": {"sample:Mail": {"attributes": [], "subNodes": [{"label": "attachments", "path": "attachments", "folder": true, "dropType": "sample:MailAttachment"}],
                     "files": [{"name": "mail.md", "path": "_texts.`mail.md`"}, {"name": "mail.eml", "path": "_content"}], "tabs": [], "functions": [], "filesFirst": false}}},
+                {"name": "t:big-leaves", "entry": {"type": "t:LeaveRequest", "groupBy": [], "where": "@big and @t:open"},
+                "nodes": {"t:LeaveRequest": {"attributes": [], "subNodes": [], "files": [], "tabs": [], "functions": [], "filesFirst": true}}},
+                {"name": "t:unmarked", "entry": {"type": "t:LeaveRequest", "groupBy": [], "where": "mark.empty()"},
+                "nodes": {"t:LeaveRequest": {"attributes": [], "subNodes": [], "files": [], "tabs": [], "functions": [], "filesFirst": true}}},
+                {"name": "t:team-leaves", "entry": {"type": "t:LeaveRequest", "groupBy": [], "where": "applicant.team.name = 'a'"},
+                "nodes": {"t:LeaveRequest": {"attributes": [], "subNodes": [], "files": [], "tabs": [], "functions": [], "filesFirst": true}}},
+                {"name": "t:mail-nomd", "entry": {"type": "sample:Mail", "groupBy": [], "where": "_texts.`mail.md`.empty() and _content.mediaType in ('message/rfc822') and _content.size > 3"},
+                "nodes": {"sample:Mail": {"attributes": [], "subNodes": [{"label": "attachments", "path": "attachments", "folder": true}],
+                    "files": [{"name": "mail.md", "path": "_texts.`mail.md`", "fallback": ["_texts.`body.html`"]}], "tabs": [], "functions": [], "filesFirst": true}}},
                 {"name": "t:due-mine", "entry": {"type": "sample:Task", "groupBy": [], "where": "due <= now() and status != 'done' and assignees = %me"},
                 "nodes": {"sample:Task": {"attributes": [{"label": "subject", "path": "subject"}], "subNodes": [], "files": [], "tabs": [], "functions": [], "filesFirst": true}}}],
             "profiles": [
                 {"name": "t:no-person-sub", "rights": [{"sign": "-", "art": ["read"], "types": ["base:Person"], "room": "tsub"}]},
                 {"name": "t:block-person", "rights": [{"sign": "block", "art": ["read"], "types": ["base:Person"], "room": "root"}]},
                 {"name": "t:lead-leave", "rights": [{"sign": "+", "art": ["write"], "types": ["t:LeaveRequest"], "room": "root", "when": "applicant.team.leader = %me"}]},
+                {"name": "t:big-lead", "rights": [{"sign": "+", "art": ["read", "write"], "types": ["t:LeaveRequest"], "room": "root", "when": "@big and applicant.team.leader = %me"}]},
+                {"name": "t:perf-lead", "rights": [{"sign": "+", "art": ["read"], "types": ["t:LeaveRequest"], "room": "root", "when": "(days > 5 or not(status = 'done')) and applicant.team.leader = %me"}]},
+                {"name": "t:read-leave", "rights": [{"sign": "+", "art": ["read"], "types": ["t:LeaveRequest"], "room": "root"}]},
+                {"name": "t:team-mover", "rights": [{"sign": "+", "art": ["read", "remove", "place"], "types": ["t:Team"], "room": "root"}]},
                 {"name": "t:read-persons", "rights": [{"sign": "+", "art": ["read"], "types": ["base:Person"], "room": "root"}]},
                 {"name": "t:team-writer", "rights": [{"sign": "+", "art": ["create", "write"], "types": ["t:Team"], "room": "root"}]},
                 {"name": "t:team-granter", "rights": [{"sign": "+", "art": ["write", "grant"], "types": ["t:Team"], "room": "root"}]},
@@ -655,7 +675,7 @@ async fn index_and_file_metadata() {
     assert!(idx.starts_with(&format!("---\n_id: \"{m}\"\n_type: [\"sample:Mail\"]\n")), "{idx}");
     assert!(idx.contains("sender: \"anna@example.org\"\n"), "{idx}");
     assert!(idx.contains("---\n# anna@example.org - Angebot\n"), "{idx}");
-    assert!(idx.contains("## Anhänge\n\n- [[anna@example.org - Angebot/Anhänge/file0.pdf|file0.pdf]]\n"), "{idx}");
+    assert!(idx.contains("## Anhänge\n\n- [[anna@example.org - Angebot/attachments/file0.pdf|file0.pdf]]\n"), "{idx}");
     assert_eq!(mail.size, Some(idx.len() as u64), "a node's size is the size of its index");
     let entry = de.aspect_entry("sample:mailbox", &mail.node, None).await.unwrap();
     assert_eq!((entry.size, entry.ino, entry.name.as_str()), (mail.size, mail.ino, "anna@example.org - Angebot"));
@@ -697,7 +717,7 @@ async fn tools_over_the_api() {
     assert_eq!(sh("/", vec!["grep", "-rlF", "Angebot]]", "/sample:mailbox"]).await.0.lines().count(), 2);
     assert_eq!(sh("/", vec!["grep", "-c", "Hallo", &*Box::leak(format!("{mail}/mail.eml").into_boxed_str())]).await.0, "1\n", "named files are searched");
     let pdfs = sh("/sample:mailbox", vec!["find", ".", "-name", "*.pdf", "-type", "f"]).await.0;
-    assert_eq!(pdfs, "./2026-11-24/anna@example.org - Angebot/Anhänge/file0.pdf/file0.pdf\n");
+    assert_eq!(pdfs, "./2026-11-24/anna@example.org - Angebot/attachments/file0.pdf/file0.pdf\n");
     assert_eq!(sh("/sample:mailbox", vec!["find", ".", "-name", "mail.md", "-exec", "grep", "-l", "Hallo", "{}", "+"]).await.0, "./2026-11-24/anna@example.org - Angebot/mail.md\n");
     assert_eq!(sh(mail_static(), vec!["wc", "-c", "mail.md"]).await.0, "7 mail.md\n");
     assert_eq!(sh(mail_static(), vec!["head", "-n", "1", "../anna@example.org - Angebot.md"]).await.0, "---\n");
@@ -769,7 +789,7 @@ async fn equal_names_use_the_fallback_then_the_id() {
     let mail_name = if d == first { &plain } else { &numbered };
     assert!(!idx.is_empty());
     let mail_idx = de.aspect_index("sample:mailbox", &format!("o:{d}"), Some(mail_name)).await.unwrap();
-    assert!(mail_idx.contains(&format!("[[{mail_name}/Anhänge/file.pdf|")), "{mail_idx}");
+    assert!(mail_idx.contains(&format!("[[{mail_name}/attachments/file.pdf|")), "{mail_idx}");
     // without a collision the plain name stays
     assert!(ls("/sample:mailbox").await.contains("2026-11-24\n"));
 }
@@ -975,7 +995,7 @@ fn rights_path_checker_limits() {
         Model::new(m).err().map(|e| e.error_id)
     };
     assert_eq!(with("applicant.team.leader = %me", "+", "t:LeaveRequest"), None);
-    assert_eq!(with("applicant.team.leader", "+", "t:LeaveRequest").as_deref(), Some("path.rights_form"));
+    assert_eq!(with("applicant.team.leader", "+", "t:LeaveRequest").as_deref(), Some("path.bad_filter"));
     assert_eq!(with("applicant.team.leader.leads.team = %me", "+", "t:LeaveRequest").as_deref(), Some("path.too_long"));
     assert_eq!(with("applicant.team.leader = %me", "-", "t:LeaveRequest").as_deref(), Some("profile.conditional_sign"));
     assert_eq!(with("applicant.team.leader = %me", "+", "*").as_deref(), Some("profile.conditional_any"));
@@ -1604,3 +1624,199 @@ async fn write_turns_are_per_tenant() {
     assert!(matches!(done, Ok(Ok(_))), "another tenant writes while the first tenant's turn is held");
     held.abort().await;
 }
+
+/// One filter language: a named filter combined with a path to %me in a rights condition, named
+/// filters in a view, `in` lists, attributes over paths and of attachable types.
+#[tokio::test]
+async fn filter_language_in_rights_and_views() {
+    let env = env().await;
+    let mut o = Order::new();
+    o.create("team", None, json!({"t:Team": {"name": "a"}}));
+    o.create("m", None, json!({"base:Person": {"firstName": "M", "lastName": "a"}, "t:Staff": {}}));
+    o.link("t:Staff.team", "m", "team");
+    for (n, days, status) in [("small", 3, "submitted"), ("big", 8, "submitted"), ("done", 9, "done")] {
+        o.create(n, None, json!({"t:LeaveRequest": {"days": days, "status": status}}));
+        o.link("t:LeaveRequest.applicant", n, "m");
+    }
+    let r = env.admin.order(&o).await.unwrap();
+    let (lead, cl) = env.person("lead", &[]).await;
+    let mut o = Order::new();
+    o.link("t:Team.leader", r.created["team"], lead);
+    env.admin.order(&o).await.unwrap();
+    env.admin.assign("t:big-lead", lead).await.unwrap();
+    // rights: only the big requests of the own team (named filter and path together)
+    let q = i3cm_client::ListQuery::default();
+    let mut seen: Vec<Uuid> = cl.list("t:LeaveRequest", &q).await.unwrap().iter().map(|s| s.id).collect();
+    seen.sort();
+    let mut want = vec![r.created["big"], r.created["done"]];
+    want.sort();
+    assert_eq!(seen, want);
+    assert!(cl.get_object(r.created["small"], None).await.is_err());
+    let mut o = Order::new();
+    o.update(r.created["big"], json!({"t:LeaveRequest": {"days": 10}}));
+    assert!(cl.order(&o).await.is_ok(), "write through the filter condition");
+    let mut o = Order::new();
+    o.update(r.created["small"], json!({"t:LeaveRequest": {"days": 4}}));
+    assert!(cl.order(&o).await.is_err());
+    // views: two named filters (one with `in`), an attribute over two steps, an attachable type
+    let kids = |a: &'static str| {
+        let c = env.admin.clone();
+        async move { c.aspect_children(a, "").await.unwrap().iter().filter_map(|n| n.id).collect::<Vec<Uuid>>() }
+    };
+    assert_eq!(kids("t:big-leaves").await, vec![r.created["big"]]);
+    assert_eq!(kids("t:team-leaves").await.len(), 3);
+    let mut o = Order::new();
+    o.attach(r.created["small"], "t:LeaveNote", json!({"mark": "x"}));
+    env.admin.order(&o).await.unwrap();
+    let mut un = kids("t:unmarked").await;
+    un.sort();
+    let mut want = vec![r.created["big"], r.created["done"]];
+    want.sort();
+    assert_eq!(un, want, "absent attachment counts as empty");
+}
+
+/// Filters that do not translate or are too complex are rejected when the catalog is loaded; a
+/// free query may not follow references beyond one step to %me.
+#[test]
+fn filter_language_limits() {
+    let m = test_model();
+    use i3cm_core::paths::{filter, view_filter, Origin};
+    assert!(view_filter(&m, "t:LeaveRequest", "applicant.team.leader.lastName = 'x'").is_ok(), "three steps to an attribute");
+    assert_eq!(view_filter(&m, "t:LeaveRequest", "applicant.team.leader.leads.name = 'x'").unwrap_err().error_id, "path.too_long");
+    let many = (0..33).map(|i| format!("days != {i}")).collect::<Vec<_>>().join(" and ");
+    assert_eq!(view_filter(&m, "t:LeaveRequest", &many).unwrap_err().error_id, "filter.too_complex");
+    assert_eq!(view_filter(&m, "t:LeaveRequest", "@nope").unwrap_err().error_id, "filter.unknown");
+    assert_eq!(view_filter(&m, "t:Team", "@big").unwrap_err().error_id, "filter.wrong_type");
+    assert!(view_filter(&m, "t:LeaveRequest", "status in ('a', 'b', 'c')").unwrap().terms() == 1, "`in` is one term");
+    assert_eq!(filter(&m, "t:LeaveRequest", "applicant.team.name = 'a'", Origin::Query).unwrap_err().error_id, "query.path_not_allowed");
+    assert!(filter(&m, "t:LeaveRequest", "@big", Origin::Query).is_ok(), "named filters may use paths in queries");
+    // a subtype inherits the named filters of its supertype
+    assert!(view_filter(&m, "t:SpecialLeave", "@big and reason.exists()").is_ok());
+}
+
+/// Texts and content in filters, and a file with a fallback: read from the first source present,
+/// written always to the first.
+#[tokio::test]
+async fn texts_content_filters_and_file_fallback() {
+    let env = env().await;
+    let mut o = Order::new();
+    o.create("a", None, json!({"sample:Mail": {"receivedAt": "2026-11-28T10:00:00Z", "sender": "x@example.org", "subject": "a"}}));
+    o.create("b", None, json!({"sample:Mail": {"receivedAt": "2026-11-28T10:00:00Z", "sender": "x@example.org", "subject": "b"}}));
+    o.content("a", b"From: x\r\n\r\nhi", "message/rfc822", Some("a.eml")).content("b", b"From: x\r\n\r\nhi", "message/rfc822", Some("b.eml"));
+    o.text("a", "sample:body.html", "<p>hi</p>").text("b", "sample:mail.md", "# hi");
+    let r = env.admin.order(&o).await.unwrap();
+    let ids: Vec<Uuid> = env.admin.aspect_children("t:mail-nomd", "").await.unwrap().iter().filter_map(|n| n.id).collect();
+    assert_eq!(ids, vec![r.created["a"]], "only the mail without mail.md");
+    let node = format!("o:{}", r.created["a"]);
+    assert_eq!(env.admin.aspect_file("t:mail-nomd", &node, "mail.md").await.unwrap(), b"<p>hi</p>", "fallback read");
+    env.admin.put_aspect_file("t:mail-nomd", &node, "mail.md", b"# written".to_vec()).await.unwrap();
+    assert_eq!(env.admin.get_text(r.created["a"], "sample:mail.md").await.unwrap(), "# written", "written to the first source");
+    assert_eq!(env.admin.get_text(r.created["a"], "sample:body.html").await.unwrap(), "<p>hi</p>", "fallback unchanged");
+    // folders keep their technical name in paths, whatever the language
+    let de = env.admin.clone().with_lang("de");
+    let kids = de.aspect_children("t:mail-nomd", &format!("o:{}", r.created["a"])).await.unwrap();
+    let folder = kids.iter().find(|n| !n.file).expect("attachments folder");
+    assert_eq!((folder.name.as_str(), folder.display_name.as_str()), ("attachments", "Anhänge"));
+}
+
+/// A right on a type covers its subtypes; moving checks remove and place per type of the object.
+#[tokio::test]
+async fn subtype_rights_and_move_per_type() {
+    let env = env().await;
+    let mut o = Order::new();
+    o.create("s", None, json!({"t:SpecialLeave": {"days": 2, "reason": "x"}}));
+    o.create("team", None, json!({"t:Team": {"name": "a"}}));
+    o.create("p", None, json!({"base:Person": {"firstName": "P", "lastName": "p"}}));
+    let r = env.admin.order(&o).await.unwrap();
+    let (u, cu) = env.person("reader", &[]).await;
+    assert!(cu.get_object(r.created["s"], None).await.is_err());
+    env.admin.assign("t:read-leave", u).await.unwrap();
+    let v = cu.get_object(r.created["s"], None).await.unwrap();
+    assert!(v.attr("reason").is_some(), "a right on the supertype covers the subtype's part");
+    // move: remove and place on the team's type suffice; another type is refused
+    env.admin.assign("t:team-mover", u).await.unwrap();
+    let sub = env.rooms["tsub"];
+    let mut o = Order::new();
+    o.move_to(r.created["team"], sub);
+    cu.order(&o).await.unwrap();
+    assert_eq!(cu.get_object(r.created["team"], None).await.unwrap().room, sub);
+    let mut o = Order::new();
+    o.move_to(r.created["p"], sub);
+    assert!(cu.order(&o).await.is_err(), "no remove/place on base:Person");
+}
+
+/// Performance of a rights condition with `or`, `not()` and a path of three steps over 100,000
+/// requests (1,000 teams of 10 staff): list pages of 50, p95. Run with `--ignored`.
+#[tokio::test]
+#[ignore]
+async fn perf_filter_rights_list() {
+    let env = env().await;
+    let n_req: i64 = std::env::var("PERF_N").ok().and_then(|v| v.parse().ok()).unwrap_or(100_000);
+    let (lead, cl) = env.person("perf-lead", &[]).await;
+    env.admin.assign("t:perf-lead", lead).await.unwrap();
+    let m = &env.store.model;
+    let tt = |n: &str| i3cm_store::schema::type_table(m.require_type(n).unwrap());
+    let rt = |n: &str| i3cm_store::schema::ref_table(m.ref_def(n).unwrap());
+    let c = env.store.client().await.unwrap();
+    let tenant = env.init.tenant;
+    let root: Uuid = c.query_one("SELECT root_room FROM tenant WHERE id=$1", &[&tenant]).await.unwrap().get(0);
+    let txn: i64 = c.query_one("SELECT max(id) FROM txn WHERE tenant_id=$1", &[&tenant]).await.unwrap().get(0);
+    // 1,000 teams (team 0 led by the lead), 10,000 staff, 100,000 requests, all in one statement each
+    let sql = format!(
+        "WITH teams AS (SELECT gen_random_uuid() id, g FROM generate_series(0, 999) g),
+              staff AS (SELECT gen_random_uuid() id, g, g % 1000 team FROM generate_series(0, 9999) g),
+              reqs AS (SELECT gen_random_uuid() id, g, g % 10000 st FROM generate_series(0, $3::bigint - 1) g),
+              objs AS (SELECT id, 'team' k FROM teams UNION ALL SELECT id, 'staff' FROM staff UNION ALL SELECT id, 'req' FROM reqs),
+              o AS (INSERT INTO object (tenant_id, id, created_txn) SELECT $1, id, $4 FROM objs RETURNING id),
+              s AS (INSERT INTO object_state (tenant_id, object_id, room_id, valid_from) SELECT $1, id, $2, $4 FROM objs RETURNING object_id),
+              ty AS (INSERT INTO object_type (tenant_id, object_id, type_name, implied, valid_from)
+                     SELECT $1, id, CASE k WHEN 'team' THEN 't:Team' WHEN 'staff' THEN 't:Staff' ELSE 't:LeaveRequest' END, false, $4 FROM objs
+                     UNION ALL SELECT $1, id, 'base:Person', false, $4 FROM staff RETURNING object_id),
+              tm AS (INSERT INTO {team} (tenant_id, object_id, valid_from, \"name\") SELECT $1, id, $4, 't' || g FROM teams RETURNING object_id),
+              ps AS (INSERT INTO {person} (tenant_id, object_id, valid_from, \"firstName\", \"lastName\") SELECT $1, id, $4, 'S', 's' || g FROM staff RETURNING object_id),
+              sf AS (INSERT INTO {staff_t} (tenant_id, object_id, valid_from) SELECT $1, id, $4 FROM staff RETURNING object_id),
+              lr AS (INSERT INTO {leave} (tenant_id, object_id, valid_from, days, status) SELECT $1, id, $4, g % 12, CASE WHEN g % 3 = 0 THEN 'done' ELSE 'open' END FROM reqs RETURNING object_id),
+              r1 AS (INSERT INTO {r_team} (tenant_id, id, a_id, b_id, valid_from) SELECT $1, gen_random_uuid(), s.id, t.id, $4 FROM staff s JOIN teams t ON t.g = s.team RETURNING id),
+              r2 AS (INSERT INTO {r_app} (tenant_id, id, a_id, b_id, valid_from) SELECT $1, gen_random_uuid(), r.id, s.id, $4 FROM reqs r JOIN staff s ON s.g = r.st RETURNING id),
+              r3 AS (INSERT INTO {r_lead} (tenant_id, id, a_id, b_id, valid_from) SELECT $1, gen_random_uuid(), t.id, $5, $4 FROM teams t WHERE t.g = 0 RETURNING id)
+         SELECT (SELECT count(*) FROM o), (SELECT count(*) FROM r2)",
+        team = tt("t:Team"), person = tt("base:Person"), staff_t = tt("t:Staff"), leave = tt("t:LeaveRequest"),
+        r_team = rt("t:Staff.team"), r_app = rt("t:LeaveRequest.applicant"), r_lead = rt("t:Team.leader")
+    );
+    let t0 = std::time::Instant::now();
+    c.query_one(&sql, &[&tenant, &root, &n_req, &txn, &lead]).await.unwrap();
+    c.batch_execute("ANALYZE").await.unwrap();
+    eprintln!("seeded {n_req} requests in {:.1} s", t0.elapsed().as_secs_f64());
+    let q = i3cm_client::ListQuery { limit: Some(50), ..Default::default() };
+    let mut lat = vec![];
+    let mut n = 0;
+    for i in 0..60 {
+        let t = std::time::Instant::now();
+        let page = cl.list("t:LeaveRequest", &q).await.unwrap();
+        if i >= 10 {
+            lat.push(t.elapsed());
+        }
+        n = page.len();
+    }
+    lat.sort();
+    let p95 = lat[(lat.len() as f64 * 0.95) as usize - 1];
+    eprintln!("list p95 {:.1} ms (page of {n}, p50 {:.1} ms)", p95.as_secs_f64() * 1000.0, lat[lat.len() / 2].as_secs_f64() * 1000.0);
+    assert!(n > 0);
+    assert!(p95.as_millis() <= 30, "DEC-141 target: list p95 <= 30 ms, got {p95:?}");
+    // worst case: the profile without any team led, nothing matches (the whole set is examined)
+    let (other, co) = env.person("perf-none", &[]).await;
+    env.admin.assign("t:perf-lead", other).await.unwrap();
+    let mut lat = vec![];
+    for i in 0..30 {
+        let t = std::time::Instant::now();
+        assert!(co.list("t:LeaveRequest", &q).await.unwrap().is_empty());
+        if i >= 5 {
+            lat.push(t.elapsed());
+        }
+    }
+    lat.sort();
+    let p95 = lat[(lat.len() as f64 * 0.95) as usize - 1];
+    eprintln!("empty result p95 {:.1} ms", p95.as_secs_f64() * 1000.0);
+    assert!(p95.as_millis() <= 30, "DEC-141 target for an empty result: got {p95:?}");
+}
+

@@ -95,8 +95,13 @@ export const mailbox = aspect("mailbox", {
 });
 ```
 
+A file may name a list of sources, `"mail.md": ["_texts.md", "_texts.txt"]`: the first one present
+is read; writing the file always writes the first source, never a fallback.
+
 Display texts within an aspect: `<ns>-<aspect>--<ns>-<Type>-name`/`-description` override the
 global texts; `<ns>-<aspect>--label-<key>` names attributes, folders, tabs, columns and functions.
+Folders keep their key as their name in paths (FUSE, tools, links in Markdown), whatever the
+language; the translated label is only their display name.
 A name rule may carry a fallback as the Fluent attribute `.fallback`; it applies when names in one
 directory collide (otherwise ` ~2`, ` ~3` in id order):
 

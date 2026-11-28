@@ -395,10 +395,29 @@ impl HostConnection for HostState {
                 Some(_) => return Ok(Err(err(BaseError::invalid("query.bad_after", "after must be an object id")))),
             };
             let limit = f.get("limit").and_then(|l| l.as_i64()).unwrap_or(100);
-            return Ok(match self.order.store.query_in(sess.client(), &ctx, &t, w, after, limit, "en").await {
-                Ok((items, next)) => Ok(json!({ "items": items, "next": next }).to_string()),
-                Err(e) => Err(err(e)),
-            });
+            let (items, next) = match self.order.store.query_in(sess.client(), &ctx, &t, w, after, limit, "en").await {
+                Ok(r) => r,
+                Err(e) => return Ok(Err(err(e))),
+            };
+            let mut out = vec![];
+            for v in items {
+                let mut o = serde_json::to_value(&v).unwrap_or(Value::Null);
+                if f.get("references").and_then(|r| r.as_bool()).unwrap_or(false) {
+                    match self.order.store.references_in(sess.client(), &ctx, v.id, REFS_PER_END).await {
+                        Ok((refs, truncated)) => {
+                            if let Some(m) = o.as_object_mut() {
+                                m.insert("references".into(), json!(refs));
+                                if !truncated.is_empty() {
+                                    m.insert("referencesTruncated".into(), json!(truncated));
+                                }
+                            }
+                        }
+                        Err(e) => return Ok(Err(err(e))),
+                    }
+                }
+                out.push(o);
+            }
+            return Ok(Ok(json!({ "items": out, "next": next }).to_string()));
         }
         Ok(match self.order.store.find_in(sess.client(), &ctx, &t, &f, 200, "en").await {
             Ok(v) => Ok(serde_json::to_string(&v).unwrap_or_default()),
@@ -435,6 +454,8 @@ impl HostConnection for HostState {
                 let _ = sess.audit(&ctx, depth as i32, Some(&module), Some(&op_name), "order", target.as_deref()).await;
             }
         }
+        // rooms created or moved by this call stay known to later calls of the same operation
+        self.table.get_mut(&s)?.ctx.rooms = ctx.rooms.clone();
         Ok(Ok(Value::Object(created).to_string()))
     }
 

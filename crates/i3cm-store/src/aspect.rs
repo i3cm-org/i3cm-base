@@ -544,7 +544,7 @@ impl Store {
         let c = self.client().await?;
         if level < cols.len() {
             // group keys: an aggregate over all readable objects, rights as one clause
-            let rights = self.rights_clause(&access, ctx, &mut params);
+            let rights = self.rights_clause(&access, ctx, &mut params)?;
             let wh = format!("WHERE x.tenant_id=$1 AND x.valid_to IS NULL AND x.deleted_at IS NULL{conds} AND {rights}");
             let mut outer = String::from("k IS NOT NULL");
             if let Some(NodeRef::Group(keys)) = &after {
@@ -575,7 +575,7 @@ impl Store {
                 params.push(Box::new(*id));
                 after_cond = format!(" AND x.object_id > ${}", params.len());
             }
-            let branches = self.rights_branches(&access, ctx, &mut params);
+            let branches = self.rights_branches(&access, ctx, &mut params)?;
             let wh = format!("WHERE x.tenant_id=$1 AND x.valid_to IS NULL AND x.deleted_at IS NULL{conds}{after_cond}");
             let parts: Vec<String> = branches.iter().map(|b| format!("(SELECT x.object_id {from} {wh} AND {b} ORDER BY x.object_id LIMIT {})", limit + offset)).collect();
             let sql = format!("SELECT object_id FROM ({}) u ORDER BY object_id LIMIT {limit} OFFSET {offset}", parts.join(" UNION "));
@@ -614,12 +614,44 @@ impl Store {
     async fn files_of(&self, nav: &StoreNav<'_>, id: Uuid, n: &NodeDef, attrs: &Map<String, Value>) -> Result<Vec<(String, Item)>> {
         let mut out = vec![];
         for f in &n.files {
-            let e = expr(&f.path)?;
-            if let Some(it) = eval(nav, &e, &[Item::Obj(id)]).await?.into_iter().next() {
-                out.push((Self::file_name(&f.name, attrs), it));
+            // the first source present is read: the path, else its fallbacks in order
+            for p in std::iter::once(&f.path).chain(f.fallback.iter()) {
+                let e = expr(p)?;
+                if let Some(it) = eval(nav, &e, &[Item::Obj(id)]).await?.into_iter().next() {
+                    out.push((Self::file_name(&f.name, attrs), it));
+                    break;
+                }
             }
         }
         Ok(out)
+    }
+
+    /// Where writing a file of an object node goes: always its first source, never a fallback
+    /// (so a verbatim fallback such as a plain text is never overwritten).
+    pub async fn file_write_item(&self, ctx: &Ctx, aspect: &str, node: &str, name: &str) -> Result<Option<Item>> {
+        if is_builtin(aspect) {
+            return Ok(None);
+        }
+        let nav = StoreNav::new(self, ctx);
+        let NodeRef::Object(id) = parse_node(node)? else { return Ok(None) };
+        let a = self.aspect_def(aspect)?;
+        let (v, _, n) = self.node_def(&nav, a, id).await?;
+        let Some(n) = n else { return Ok(None) };
+        let attrs = StoreNav::attrs(&v);
+        let Some(f) = n.files.iter().find(|f| Self::file_name(&f.name, &attrs) == name) else { return Ok(None) };
+        let e = expr(&f.path)?;
+        if let Some(it) = eval(&nav, &e, &[Item::Obj(id)]).await?.into_iter().next() {
+            return Ok(Some(it));
+        }
+        Ok(if f.path == "_content" {
+            Some(Item::Content(id))
+        } else {
+            let set: std::collections::BTreeSet<String> = v.types.iter().map(|t| t.type_name.clone()).collect();
+            f.path
+                .strip_prefix("_texts.")
+                .and_then(|tt| self.model.text_type_for(&set, tt.trim_matches('`')))
+                .map(|tt| Item::Text(id, tt.name.clone()))
+        })
     }
 
     pub async fn aspect_children(&self, ctx: &Ctx, aspect: &str, node: &str, lang: &str) -> Result<Vec<NodeOut>> {
@@ -641,7 +673,7 @@ impl Store {
             out = out.into_iter().skip(skip).take(limit.unwrap_or(MAX_LIST).clamp(1, MAX_LIST) as usize).collect();
         }
         for n in out.iter_mut() {
-            n.name = fs_name(&n.display_name);
+            n.name = fixed_name(&n.node).unwrap_or_else(|| fs_name(&n.display_name));
             n.fallback_name = n.fallback_display.as_deref().map(fs_name);
         }
         self.decorate(ctx, &nav, aspect, lang, &mut out).await?;
@@ -917,7 +949,7 @@ impl Store {
             return Ok(0);
         }
         let mut params: Vec<Param> = vec![Box::new(ctx.tenant)];
-        let rights = self.rights_clause(&access, ctx, &mut params);
+        let rights = self.rights_clause(&access, ctx, &mut params)?;
         let sql = format!(
             "SELECT count(*) FROM {} x JOIN object_state s ON s.tenant_id=x.tenant_id AND s.object_id=x.object_id AND s.valid_to IS NULL AND s.deleted_at IS NULL \
              WHERE x.tenant_id=$1 AND x.valid_to IS NULL AND x.deleted_at IS NULL AND {rights}",
@@ -1073,7 +1105,7 @@ impl Store {
             offset += n;
         }
         for c in all.iter_mut() {
-            c.name = fs_name(&c.display_name);
+            c.name = fixed_name(&c.node).unwrap_or_else(|| fs_name(&c.display_name));
             c.fallback_name = c.fallback_display.as_deref().map(fs_name);
         }
         let named: Vec<Named> = all.iter().map(|c| Named { name: &c.name, file: c.file, fallback: c.fallback_name.as_deref(), key: &c.node }).collect();
@@ -1141,7 +1173,7 @@ impl Store {
                 for x in ids {
                     if let Some(c) = self.object_out(nav, a, x, lang).await? {
                         let target = if sn.folder {
-                            format!("{dir}/{}/{}", name_in(&here, &folder, &label), name_in(&below, &c.node, &c.display_name))
+                            format!("{dir}/{}/{}", name_in(&here, &folder, &sn.label), name_in(&below, &c.node, &c.display_name))
                         } else {
                             format!("{dir}/{}", name_in(&here, &c.node, &c.display_name))
                         };
@@ -1188,7 +1220,7 @@ impl Store {
     pub async fn aspect_entry(&self, ctx: &Ctx, aspect: &str, node: &str, name: Option<&str>, lang: &str) -> Result<NodeOut> {
         let nav = StoreNav::new(self, ctx);
         let mut n = self.node_out_for(&nav, aspect, node, lang).await?;
-        n.name = name.map(String::from).unwrap_or_else(|| fs_name(&n.display_name));
+        n.name = name.map(String::from).or_else(|| fixed_name(&n.node)).unwrap_or_else(|| fs_name(&n.display_name));
         self.decorate(ctx, &nav, aspect, lang, std::slice::from_mut(&mut n)).await?;
         Ok(n)
     }
@@ -1197,7 +1229,7 @@ impl Store {
     pub async fn aspect_index(&self, ctx: &Ctx, aspect: &str, node: &str, name: Option<&str>, lang: &str) -> Result<String> {
         let nav = StoreNav::new(self, ctx);
         let n = self.node_out_for(&nav, aspect, node, lang).await?;
-        let dir = name.map(String::from).unwrap_or_else(|| fs_name(&n.display_name));
+        let dir = name.map(String::from).or_else(|| fixed_name(&n.node)).unwrap_or_else(|| fs_name(&n.display_name));
         self.index_for(ctx, &nav, aspect, &n, &dir, lang).await
     }
 
@@ -1214,4 +1246,10 @@ impl Store {
             .map_err(db)?;
         Ok(rows.iter().map(|r| format!("t:{}:{}", r.get::<_, Uuid>(0), r.get::<_, String>(1))).collect())
     }
+}
+
+/// Folders have a fixed technical name in paths (the label key of their definition); the
+/// translated label is only their display name, so links stay valid in every language.
+fn fixed_name(node: &str) -> Option<String> {
+    node.strip_prefix("f:").and_then(|r| r.split_once(':')).map(|(_, label)| fs_name(label))
 }

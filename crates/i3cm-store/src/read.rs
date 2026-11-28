@@ -279,13 +279,15 @@ impl Store {
         let mut cond = vec![];
         let mut params: Vec<Param> = vec![];
         for (k, v) in filter {
-            let a = def.attributes.iter().find(|a| &a.name == k).ok_or_else(|| BaseError::invalid("query.unknown_attribute", "unknown attribute").with("attribute", k.clone()))?;
+            // own, inherited or guaranteed host attributes
+            let owner = self.model.path_defining_type(t, k).ok_or_else(|| BaseError::invalid("query.unknown_attribute", "unknown attribute").with("attribute", k.clone()))?;
+            let a = owner.attributes.iter().find(|a| &a.name == k).expect("defining type has the attribute");
             let val = to_val(a, v).map_err(|e| e.with("attribute", k.clone()))?;
             params.push(param(&val, Col::of(&a.vt), a.list));
-            cond.push(format!("{} = ${}", col(k), params.len() + 1));
+            cond.push(format!("{} = ${}", self.attr_col(t, &owner.name, k), params.len() + 1));
         }
         let wh = if cond.is_empty() { String::new() } else { format!(" AND {}", cond.join(" AND ")) };
-        let sql = format!("SELECT object_id FROM {tb} WHERE tenant_id=$1 AND valid_to IS NULL AND deleted_at IS NULL{wh} ORDER BY object_id LIMIT {limit}");
+        let sql = format!("SELECT x.object_id FROM {tb} x WHERE x.tenant_id=$1 AND x.valid_to IS NULL AND x.deleted_at IS NULL{wh} ORDER BY x.object_id LIMIT {limit}");
         let mut args: Vec<&(dyn tokio_postgres::types::ToSql + Sync)> = vec![&ctx.tenant];
         let pr = refs(&params);
         args.extend(pr.iter().copied());
@@ -313,7 +315,7 @@ impl Store {
         let mut params: Vec<Param> = vec![Box::new(ctx.tenant)];
         let mut conds = String::new();
         if !expr.trim().is_empty() {
-            let f = i3cm_core::paths::view_filter(&self.model, t, expr)?;
+            let f = i3cm_core::paths::filter(&self.model, t, expr, i3cm_core::paths::Origin::Query)?;
             conds.push_str(&format!(" AND {}", self.filter_sql(&f, t, ctx, &mut params)?));
         }
         if let Some(a) = after {
@@ -326,7 +328,7 @@ impl Store {
         );
         let wh = format!("WHERE x.tenant_id=$1 AND x.valid_to IS NULL AND x.deleted_at IS NULL{conds}");
         // one branch per part of the access, merged by UNION (no OR)
-        let branches = self.rights_branches(&access, ctx, &mut params);
+        let branches = self.rights_branches(&access, ctx, &mut params)?;
         let parts: Vec<String> = branches.iter().map(|b| format!("(SELECT x.object_id {from} {wh} AND {b} ORDER BY x.object_id LIMIT {limit})")).collect();
         let sql = format!("SELECT object_id FROM ({}) u ORDER BY object_id LIMIT {limit}", parts.join(" UNION "));
         let ids: Vec<Uuid> = c.query(&sql, &refs(&params)).await.map_err(db)?.iter().map(|r| r.get(0)).collect();
@@ -556,7 +558,7 @@ impl Store {
         };
         // one branch per part of the access (rooms; each rights path), merged by UNION: no OR
         // in a single query, so every branch is driven by its own index
-        let branches = self.rights_branches(&access, ctx, &mut params);
+        let branches = self.rights_branches(&access, ctx, &mut params)?;
         let branch = |cond: &str, lim: i64| {
             format!(
                 "SELECT x.object_id, {value_sel} AS v, x.{order_col} AS k FROM {tb} x JOIN object_state s ON s.tenant_id=x.tenant_id AND s.object_id=x.object_id AND s.valid_to IS NULL AND s.deleted_at IS NULL \
@@ -603,7 +605,7 @@ impl Store {
         };
         let access = self.access(ctx, Art::Read, t)?;
         let mut params: Vec<Param> = vec![Box::new(ctx.tenant)];
-        let rights = self.rights_clause(&access, ctx, &mut params);
+        let rights = self.rights_clause(&access, ctx, &mut params)?;
         let mut conds = vec![rights];
         if let Some(f) = &q.from {
             params.push(self.filter_param(t, attr, f)?);

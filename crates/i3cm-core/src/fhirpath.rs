@@ -150,8 +150,19 @@ fn lex(src: &str) -> Result<Vec<Tok>> {
                 match s.as_str() {
                     "and" => out.push(Tok::Op("and")),
                     "or" => out.push(Tok::Op("or")),
+                    "in" => out.push(Tok::Op("in")),
                     _ => out.push(Tok::Ident(s)),
                 }
+            }
+            // reference to a named filter of a module catalog: `@name` or `@ns:name`
+            '@' if cs.get(i + 1).is_some_and(|c| c.is_ascii_alphabetic()) => {
+                let mut s = String::from("@");
+                i += 1;
+                while i < cs.len() && (cs[i].is_ascii_alphanumeric() || cs[i] == '_' || cs[i] == '-' || cs[i] == ':') {
+                    s.push(cs[i]);
+                    i += 1;
+                }
+                out.push(Tok::Ident(s));
             }
             // environment variable (FHIRPath `%name`), e.g. `%me`
             '%' if cs.get(i + 1).is_some_and(|c| c.is_ascii_alphabetic()) => {
@@ -231,6 +242,13 @@ impl P<'_> {
             if ["=", "!=", "<", "<=", ">", ">="].contains(&op) {
                 self.next();
                 return Ok(Expr::Bin(op, Box::new(l), Box::new(self.additive()?)));
+            }
+            // `x in ('a', 'b')`: membership in a list of literals
+            if op == "in" {
+                self.next();
+                self.expect(Tok::LParen)?;
+                let items = self.args()?;
+                return Ok(Expr::Bin("in", Box::new(l), Box::new(Expr::Call(None, "list".into(), items))));
             }
         }
         Ok(l)

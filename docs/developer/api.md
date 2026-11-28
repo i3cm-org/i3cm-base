@@ -29,7 +29,10 @@ the ones marked "operator" ([configuration](../operator/configuration.md)).
 | wait for the write turn of a tenant held in another server process (`WRITE_WAIT_SECS`) | 20 s | writing orders of a tenant run one after the other | 409 `tenant.busy` (retry) |
 | wait for a database connection (`POOL_WAIT_SECS`) | 30 s | a request fails instead of waiting forever | 500 `pool` error |
 | chain of hooks and calls | depth 16 | stops loops between hooks | `module.depth` |
-| rights path (`MAX_RIGHTS_STEPS`) | 3 steps | cost in SQL | `path.too_long` (catalog) |
+| path in a filter or rights condition (`MAX_RIGHTS_STEPS`) | 3 steps | cost in SQL | `path.too_long` (catalog) |
+| terms of a filter, named filters expanded (`MAX_FILTER_TERMS`) | 32 | SQL plans | `filter.too_complex` (catalog) |
+| reference joins of a filter (`MAX_FILTER_JOINS`) | 6 | SQL plans | `filter.too_complex` (catalog) |
+| named filters referring to named filters (`MAX_FILTER_DEPTH`) | 4 levels | stops cycles | `filter.too_deep` (catalog) |
 | token lifetime (`TOKEN_TTL_DAYS`, `TOKEN_TTL_MAX_DAYS`) | default 90 days, at most 365 | | `token.bad_ttl` |
 | start token of `init-tenant` (`INIT_TOKEN_TTL_DAYS`) | 1 day | only for issuing lasting tokens | `auth.expired_token` |
 | unused token | lapses after 90 days | | `auth.unused_token` |
@@ -58,7 +61,7 @@ particular module operations, since they hold the tenant's write turn until they
   {"op": "move", "id": "<id>", "room": "<room id>"},
   {"op": "unlink", "reference": "fibu:JournalLine.account", "id": "<link id>"},
   {"op": "content", "id": "e", "mediaType": "application/pdf", "filename": "r-1.pdf", "upload": "upl_…"},
-  {"op": "text", "id": "e", "textType": "dms:plain", "content": "..."},
+  {"op": "text", "id": "e", "textType": "dms:mdplain", "content": "..."},
   {"op": "delete", "id": "<id>"}
 ]}
 ```
@@ -195,16 +198,35 @@ Built-in views need no definition and are listed before the module aspects:
   `_changedAt` and all attributes.
 
 
-## Rights paths
+## Filters and rights conditions
 
-A right of a profile may carry a condition, a **rights path** (`when`): the right applies only
-to objects from which the path reaches the caller, e.g. `applicant.team.leader = %me`.
-`%me` is the account or any of its groups. Limits (checked when the catalog is loaded): plus
-rights on named types, at most 3 steps, over any references.
-Rights paths grant read, write and delete on existing objects (create, place and remove need
-unconditional rights). Lists combine the rooms with unconditional rights and each rights path
-as separate branches of one `UNION` (no `OR` in a query) and page by key, so every page costs
-the same (measured: 100,000 objects, page of 50, room plus rights path).
+One filter language serves the condition `when` of a right, the `where` of an aspect, named filters
+and queries. It translates into SQL; what does not translate is refused when the catalog is loaded.
+
+* comparisons of attributes with literals, `now()`, `today()` and date arithmetic (`today() + 7 days`),
+  `=`, `!=`, `<`, `<=`, `>`, `>=`; `x in ('a', 'b')` (one term);
+* `exists()`, `empty()` on attributes and reference ends; `and`, `or`, `not()` (also `not(x)`);
+* paths over reference ends with at most 3 steps, to `%me` (`applicant.team.leader = %me`) or to an
+  attribute of the object reached (`applicant.team.name = 'a'`, true when some object reached matches);
+* texts and content: `_texts.<text type>.exists()` / `.empty()`, `_content.exists()`,
+  `_content.mediaType in (…)`, `_content.size > n`, `_content.sha256 = '…'`;
+* attributes of attachable types (`@requires` on the entry type) by their name; when the type is not
+  attached the attribute is absent (`empty()` is true, comparisons are false);
+* named filters: `@name` (own module) or `@ns:name`, defined in the module's catalog (see
+  [modules](modules.md)); a named filter on a type applies to its subtypes as well.
+
+`%me` is the account or any of its groups. A **right with a condition** applies only to objects for
+which it holds; conditions are plus rights on named types and grant read, write and delete on existing
+objects (create, place and remove need unconditional rights). A right on a type also covers its
+subtypes. A **query** over the API or from module code (`where` of `query`) may follow one reference to
+`%me` but no longer paths (`query.path_not_allowed`): paths in queries could reveal objects the caller
+cannot read; named filters, which come from the signed catalog, may use paths there too. Module code can
+ask `query` for the references of each result with `"references": true`.
+
+Lists combine the rooms with unconditional rights and each condition as separate branches of one
+`UNION` (no `OR` in a query) and page by key, so every page costs the same. Measured with 100,000
+objects, pages of 50, a condition with `or`, `not()` and a path of three steps: p95 3.4 ms (2.4 ms
+when nothing matches).
 
 ## References, rights and deletion
 
@@ -212,7 +234,7 @@ References have no direction; the end that declares a reference in TypeScript on
 
 * **Linking or unlinking** a reference needs write on one of the two objects (create for an object of
   the same order; rights paths count) and read on the other, from either side.
-* A reference is **rights-relevant** when a rights path of some profile runs over it. Linking or
+* A reference is **rights-relevant** when a condition of some profile runs over it. Linking or
   unlinking it needs nothing more than any other reference: writing data never grants rights. The
   profiles decide who may write which object (who may set `Team.leader` is whoever may write the
   team), and the tenant administrator decides who gets a profile. A module should therefore not give

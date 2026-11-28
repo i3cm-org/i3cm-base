@@ -188,18 +188,7 @@ impl Exec<'_> {
 
     /// Like `check`, for an existing object: rights paths count too (read, write, delete).
     async fn allowed_on(&self, art: Art, t: &str, path: &[Uuid], id: Uuid) -> Result<bool> {
-        if self.ctx.subject.may(art, t, path) {
-            return Ok(true);
-        }
-        for cond in self.ctx.subject.conds(art, t, path) {
-            let rp = i3cm_core::paths::rights_path(self.m, t, &cond)?;
-            let sql = format!("SELECT EXISTS (SELECT 1 WHERE $2::uuid IN ({}))", crate::rights::path_ids_sql(&rp, self.m, 3));
-            let hit: bool = self.tx.query_one(&sql, &[&self.ctx.tenant, &id, &self.ctx.subject.carriers]).await.map_err(db)?.get(0);
-            if hit {
-                return Ok(true);
-            }
-        }
-        Ok(false)
+        self.store.may_obj(self.tx, self.ctx, art, t, path, id).await
     }
 
     async fn check_on(&self, art: Art, t: &str, path: &[Uuid], id: Uuid) -> Result<()> {
@@ -602,8 +591,18 @@ impl Exec<'_> {
                 let target = self.resolve(room)?;
                 let (_, from) = self.live(id).await?;
                 let to = self.ctx.rooms.path(target)?;
-                self.check(Art::Remove, ANY, &from)?;
-                self.check(Art::Place, ANY, &to)?;
+                // remove and place per type of the object (a right on `*` covers every type,
+                // a right on a type covers its subtypes)
+                let types = types_of(self.tx, tenant, id, None).await?;
+                let explicit: Vec<&String> = types.iter().filter(|(_, implied)| !**implied).map(|(t, _)| t).collect();
+                if explicit.is_empty() {
+                    self.check(Art::Remove, ANY, &from)?;
+                    self.check(Art::Place, ANY, &to)?;
+                }
+                for t in explicit {
+                    self.check(Art::Remove, t, &from)?;
+                    self.check(Art::Place, t, &to)?;
+                }
                 let mut todo = vec![id];
                 while let Some(x) = todo.pop() {
                     self.version_state(x, Some(target), false).await?;

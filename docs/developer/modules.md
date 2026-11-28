@@ -138,7 +138,15 @@ export const hooks: HookDef[] = [
   { type: "example:Note", on: "update", phase: "after", op: "onUpdate" },
 ];
 export const schedules: ScheduleDef[] = [ { op: "tick", rrule: "FREQ=MINUTELY" } ];
+export const filters: Record<string, FilterDef> = {
+  open: { type: "example:Note", where: "status in ('new', 'checked')" },  // @open, or @example:open elsewhere
+};
 ```
+
+* A named filter is a condition in the filter language ([api](api.md#filters-and-rights-conditions))
+  on a type and its subtypes; profiles (`when: "@open and owner = %me"`) and aspects
+  (`where: "@open"`) refer to it, so a view and a right use the same rule. Named filters are part of
+  the catalog, not objects of a tenant.
 
 * A carrier is an agent account of the module, created on activation with the given profiles.
   `impersonate` is allowed only for operations listing the carrier.
