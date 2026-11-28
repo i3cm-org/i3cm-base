@@ -98,8 +98,11 @@ impl Store {
         let res = self.execute(&mut ctx, &Order { dry_run: false, ops }).await?;
         let created: BTreeMap<String, Uuid> = res.created;
 
+        let turn = self.write_turn(tenant).await;
         let mut c = self.client().await?;
         let tx = c.transaction().await.map_err(db)?;
+        // the write turn first (a module sync of another container may already work on the tenant)
+        let (txn, seq) = crate::session::clock(&*tx, tenant).await?;
         let room_of = |name: &str| -> Uuid { if name == "root" { root } else { created[&format!("room:{name}")] } };
         for m in self.model.catalog.modules.iter().filter(|m| self.model.is_default_module(&m.name)) {
             for r in &m.rooms {
@@ -126,7 +129,6 @@ impl Store {
                 tx.execute("INSERT INTO profile_include (tenant_id, profile, includes) VALUES ($1,$2,$3)", &[&tenant, &profile.name, inc]).await.map_err(db)?;
             }
         }
-        let (txn, seq) = crate::session::clock(&*tx, tenant).await?;
         tx.execute("INSERT INTO txn (tenant_id, id, seq) VALUES ($1,$2,$3)", &[&tenant, &txn, &seq]).await.map_err(db)?;
         let admins = created["admins"];
         tx.execute(
@@ -136,6 +138,9 @@ impl Store {
         .await
         .map_err(db)?;
         tx.commit().await.map_err(db)?;
+        drop(c);
+        // the sync below takes the write turn itself
+        drop(turn);
         let admin = created["admin"];
         // the first token is a start key: valid for one day
         // carriers (agent accounts) of the mandatory modules, and anything else their definition needs;
@@ -360,6 +365,12 @@ impl Store {
         gctx.subject.guardian = true;
         gctx.inactive.remove(name);
         let mut sess = self.begin(&gctx, &crate::session::Audit { module: Some(name.into()), function: Some("activate".into()), tool: None }).await?;
+        // checked again with the write turn held: a concurrent activation may have won
+        let already = sess.client().query_opt("SELECT 1 FROM module_active WHERE tenant_id=$1 AND name=$2", &[&tenant, &name]).await.map_err(db)?.is_some();
+        if already {
+            sess.abort().await;
+            return Err(BaseError::conflict("module.active", "module is already active").with("module", name));
+        }
         let res = async {
             let mut created: BTreeMap<String, Uuid> = BTreeMap::new();
             for r in &m.rooms {
@@ -461,6 +472,11 @@ impl Store {
     /// accounts can be impersonated.
     pub async fn module_carrier(&self, tenant: Uuid, module: &str, carrier: &str) -> Result<Uuid> {
         let c = self.client().await?;
+        self.module_carrier_on(&**c, tenant, module, carrier).await
+    }
+
+    /// Like `module_carrier`, on a given connection (inside an open order: no second connection).
+    pub async fn module_carrier_on<C: tokio_postgres::GenericClient>(&self, c: &C, tenant: Uuid, module: &str, carrier: &str) -> Result<Uuid> {
         c.query_opt("SELECT account FROM module_carrier WHERE tenant_id=$1 AND module=$2 AND name=$3", &[&tenant, &module, &carrier])
             .await
             .map_err(db)?
@@ -504,9 +520,17 @@ impl Store {
         let mods: Vec<_> = self.model.catalog.modules.iter().filter(|m| !inactive.contains(&m.name)).cloned().collect();
         for m in mods {
             let name = m.name.clone();
-            // what exists
+            let mut gctx = Ctx {
+                tenant,
+                subject: Subject { account: Uuid::nil(), carriers: vec![], rights: HashMap::new(), guardian: true },
+                rooms: rooms.clone(),
+                inactive: inactive.clone(),
+                development,
+            };
+            let mut sess = self.begin(&gctx, &crate::session::Audit { module: Some(name.clone()), function: Some("sync".into()), tool: None }).await?;
+            // what exists, read with the write turn held
             let (have_rooms, have_profiles, have_carriers) = {
-                let c = self.client().await?;
+                let c = sess.client();
                 let have_rooms: HashMap<String, Uuid> =
                     c.query("SELECT name, room_id FROM module_room WHERE tenant_id=$1", &[&tenant]).await.map_err(db)?.iter().map(|r| (r.get(0), r.get(1))).collect();
                 let have_profiles: Vec<String> = c
@@ -530,14 +554,6 @@ impl Store {
                     out.warnings.push(format!("{name}: profile {p} is no longer defined by the module (kept)"));
                 }
             }
-            let mut gctx = Ctx {
-                tenant,
-                subject: Subject { account: Uuid::nil(), carriers: vec![], rights: HashMap::new(), guardian: true },
-                rooms: rooms.clone(),
-                inactive: inactive.clone(),
-                development,
-            };
-            let mut sess = self.begin(&gctx, &crate::session::Audit { module: Some(name.clone()), function: Some("sync".into()), tool: None }).await?;
             let mut warnings: Vec<String> = vec![];
             let res = async {
                 let mut changes = vec![];

@@ -1527,8 +1527,12 @@ async fn overlapping_orders_keep_versions_consistent() {
     let mut ctx_a = ctx.clone();
     a.apply(&env.store, &mut ctx_a, &upd("from-a")).await.unwrap();
     a.apply(&env.store, &mut ctx_a, &attach).await.unwrap();
+    assert!(!b.is_finished(), "B waits for A's write turn");
     a.finish(&env.store, &mut ctx_a, true).await.unwrap();
     b.await.unwrap();
+    // B wrote after A: its value is the current one
+    let cur = env.admin.get_object(id, None).await.unwrap();
+    assert_eq!(cur.attr("lastName"), Some(&json!("from-b")));
     let c = env.store.client().await.unwrap();
     for t in ["t_base_person", "object_state", "object_type"] {
         let broken: i64 = c
@@ -1572,7 +1576,9 @@ async fn tenant_sequence_is_gap_free_in_commit_order() {
     r1.unwrap();
     r2.unwrap();
     let c = env.store.client().await.unwrap();
-    let rows = c.query("SELECT seq, id FROM txn WHERE tenant_id=$1 AND seq IS NOT NULL ORDER BY seq", &[&env.init.tenant]).await.unwrap();
+    let missing: i64 = c.query_one("SELECT count(*) FROM txn WHERE tenant_id=$1 AND seq IS NULL", &[&env.init.tenant]).await.unwrap().get(0);
+    assert_eq!(missing, 0, "every writing transaction of a new tenant has a sequence number");
+    let rows = c.query("SELECT seq, id FROM txn WHERE tenant_id=$1 ORDER BY seq", &[&env.init.tenant]).await.unwrap();
     assert!(rows.len() >= 3);
     for (i, r) in rows.iter().enumerate() {
         assert_eq!(r.get::<_, i64>(0), i as i64 + 1, "gap-free sequence");
@@ -1580,4 +1586,21 @@ async fn tenant_sequence_is_gap_free_in_commit_order() {
     for w in rows.windows(2) {
         assert!(w[0].get::<_, i64>(1) < w[1].get::<_, i64>(1), "transaction numbers follow the sequence");
     }
+}
+
+/// An open writing order of one tenant does not hold up writers of another tenant.
+#[tokio::test]
+async fn write_turns_are_per_tenant() {
+    let env = env().await;
+    let ctx = env.store.ctx(env.init.tenant, env.init.admin_account).await.unwrap();
+    let held = env.store.begin(&ctx, &i3cm_store::session::Audit::default()).await.unwrap();
+    let other = env.store.init_tenant(&format!("t-{}", Uuid::new_v4()), "admin").await.unwrap();
+    let octx = env.store.ctx(other.tenant, other.admin_account).await.unwrap();
+    let mut o = Order::new();
+    o.create("g", None, json!({"base:Group": {"name": "elsewhere"}}));
+    let mut octx2 = octx.clone();
+    let order: i3cm_store::Order = serde_json::from_value(serde_json::to_value(&o).unwrap()).unwrap();
+    let done = tokio::time::timeout(std::time::Duration::from_secs(5), env.store.execute(&mut octx2, &order)).await;
+    assert!(matches!(done, Ok(Ok(_))), "another tenant writes while the first tenant's turn is held");
+    held.abort().await;
 }

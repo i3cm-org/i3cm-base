@@ -38,6 +38,8 @@ pub struct Session {
     seq: i32,
     /// Largest base64 content in this order (orders of clients; `None` for module code).
     inline_limit: Option<usize>,
+    /// The tenant's write turn in this process, released when the session ends.
+    _turn: tokio::sync::OwnedMutexGuard<()>,
 }
 
 /// Start the writing part of a transaction in a tenant: wait until no other writing transaction of
@@ -48,15 +50,29 @@ pub struct Session {
 /// version is never closed by an older transaction than the one that opened it, and `seq` counts
 /// the committed writing transactions of the tenant without gaps (a rollback undoes the step).
 /// Call this before taking any other lock of the transaction (lock order: clock, then admins).
+/// Seconds a writing transaction waits for the write turn of its tenant held in another container.
+pub const WRITE_WAIT_SECS: u64 = 20;
+
 pub(crate) async fn clock<C: tokio_postgres::GenericClient>(c: &C, tenant: Uuid) -> Result<(i64, i64)> {
+    // writers of other containers queue here; give up instead of waiting forever
+    c.batch_execute(&format!("SET LOCAL lock_timeout = '{}s'", WRITE_WAIT_SECS)).await.map_err(db)?;
     let seq: i64 = c
         .query_one(
             "INSERT INTO tenant_clock (tenant_id, seq) VALUES ($1, 1) ON CONFLICT (tenant_id) DO UPDATE SET seq = tenant_clock.seq + 1 RETURNING seq",
             &[&tenant],
         )
         .await
-        .map_err(db)?
+        .map_err(|e| {
+            if e.as_db_error().map(|d| d.code().code() == "55P03").unwrap_or(false) {
+                i3cm_core::BaseError::conflict("tenant.busy", "another writing order of this tenant is still running")
+                    .with("waitedSeconds", WRITE_WAIT_SECS.to_string())
+                    .hint("retry the request (with the same Idempotency-Key)")
+            } else {
+                db(e)
+            }
+        })?
         .get(0);
+    c.batch_execute("SET LOCAL lock_timeout = 0").await.map_err(db)?;
     let txn: i64 = c.query_one("SELECT nextval('txn_seq')", &[]).await.map_err(db)?.get(0);
     Ok((txn, seq))
 }
@@ -65,10 +81,11 @@ impl Store {
     /// Open an order: BEGIN, wait for the tenant's write turn, allocate the transaction number,
     /// record who acts.
     pub async fn begin(&self, ctx: &Ctx, audit: &Audit) -> Result<Session> {
+        let turn = self.write_turn(ctx.tenant).await;
         let client = self.client().await?;
         client.batch_execute("BEGIN").await.map_err(db)?;
         let inline_limit = if audit.module.is_none() { Some(crate::files::MAX_INLINE_CONTENT) } else { None };
-        let mut s = Session { client: Some(client), txn: 0, state: State::default(), seq: 0, inline_limit };
+        let mut s = Session { client: Some(client), txn: 0, state: State::default(), seq: 0, inline_limit, _turn: turn };
         let c = s.client();
         let (txn, seq) = clock(c, ctx.tenant).await?;
         c.execute(

@@ -26,6 +26,8 @@ the ones marked "operator" ([configuration](../operator/configuration.md)).
 | content as base64 in an order of a client (`MAX_INLINE_CONTENT`) | 1 MiB (transition; module code is not limited yet) | files go through uploads | `content.inline_too_large` |
 | stored answer of an idempotent request (`IDEMPOTENCY_TTL`) | 24 hours | covers retries after network errors | — (a later repeat runs again) |
 | order of module code (operation, hook, schedule) (`ORDER_TIMEOUT`) | 10 s | one module must not block the instance | `module.timeout` |
+| wait for the write turn of a tenant held in another server process (`WRITE_WAIT_SECS`) | 20 s | writing orders of a tenant run one after the other | 409 `tenant.busy` (retry) |
+| wait for a database connection (`POOL_WAIT_SECS`) | 30 s | a request fails instead of waiting forever | 500 `pool` error |
 | chain of hooks and calls | depth 16 | stops loops between hooks | `module.depth` |
 | rights path (`MAX_RIGHTS_STEPS`) | 3 steps | cost in SQL | `path.too_long` (catalog) |
 | token lifetime (`TOKEN_TTL_DAYS`, `TOKEN_TTL_MAX_DAYS`) | default 90 days, at most 365 | | `token.bad_ttl` |

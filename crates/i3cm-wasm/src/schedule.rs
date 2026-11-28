@@ -62,6 +62,20 @@ impl Runtime {
                         .map_err(dberr)?;
                     }
                     loop {
+                        // a cheap look first: taking the tenant's write turn only when a run is due
+                        let due_now: bool = store
+                            .client()
+                            .await?
+                            .query_one(
+                                "SELECT EXISTS (SELECT 1 FROM schedule_run WHERE tenant_id=$1 AND module=$2 AND op=$3 AND done_at IS NULL AND due <= now())",
+                                &[&tenant, &m.name, &sc.op],
+                            )
+                            .await
+                            .map_err(dberr)?
+                            .get(0);
+                        if !due_now {
+                            break;
+                        }
                         let audit = Audit { module: Some(m.name.clone()), function: Some(sc.op.clone()), tool: Some("scheduler".into()) };
                         let session = store.begin(&ctx, &audit).await?;
                         let row = session

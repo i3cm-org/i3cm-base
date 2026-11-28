@@ -37,6 +37,9 @@ pub trait OrderRunner: Send + Sync {
     fn run<'a>(&'a self, store: &'a Store, ctx: &'a mut Ctx, order: &'a Order) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<OrderResult>> + Send + 'a>>;
 }
 
+/// Seconds a request waits for a database connection before it fails.
+pub const POOL_WAIT_SECS: u64 = 30;
+
 #[derive(Clone)]
 pub struct Store {
     pub pool: Pool,
@@ -49,6 +52,9 @@ pub struct Store {
     /// File store for content and uploads (`I3CM_DATA_DIR`); without one, content stays in the
     /// database and uploads are unavailable.
     pub files: Option<Arc<files::FileStore>>,
+    /// One write turn per tenant inside this process: a writing transaction waits here before it
+    /// takes a database connection, so writers of one tenant queue without holding connections.
+    turns: Arc<std::sync::Mutex<std::collections::HashMap<uuid::Uuid, Arc<tokio::sync::Mutex<()>>>>>,
 }
 
 /// An authenticated request: tenant, account and the token used.
@@ -74,12 +80,21 @@ impl Store {
     pub async fn connect(url: &str, model: Model, pool_size: usize) -> Result<Store> {
         let mut cfg = Config::new();
         cfg.url = Some(url.to_string());
-        cfg.pool = Some(deadpool_postgres::PoolConfig::new(pool_size));
+        let mut pc = deadpool_postgres::PoolConfig::new(pool_size);
+        // a request that cannot get a connection in time fails instead of waiting forever
+        pc.timeouts.wait = Some(std::time::Duration::from_secs(POOL_WAIT_SECS));
+        cfg.pool = Some(pc);
         let pool = cfg.create_pool(Some(Runtime::Tokio1), NoTls).map_err(|e| BaseError::internal(format!("pool: {e}")))?;
         let i18n = I18n::new(&model)?;
-        let mut store = Store { pool, model: Arc::new(model), i18n: Arc::new(i18n), trigram: false, runner: Default::default(), files: None };
+        let mut store = Store { pool, model: Arc::new(model), i18n: Arc::new(i18n), trigram: false, runner: Default::default(), files: None, turns: Default::default() };
         store.trigram = store.migrate().await?;
         Ok(store)
+    }
+
+    /// Wait for the write turn of a tenant in this process (see `turns`); held until dropped.
+    pub(crate) async fn write_turn(&self, tenant: uuid::Uuid) -> tokio::sync::OwnedMutexGuard<()> {
+        let m = self.turns.lock().unwrap_or_else(|e| e.into_inner()).entry(tenant).or_default().clone();
+        m.lock_owned().await
     }
 
     pub async fn client(&self) -> Result<deadpool_postgres::Object> {
@@ -178,10 +193,15 @@ impl Store {
     /// (also not through module code: impersonation, schedules).
     pub async fn ctx(&self, tenant: uuid::Uuid, account: uuid::Uuid) -> Result<Ctx> {
         let c = self.client().await?;
-        if !self.account_active(&**c, tenant, account).await? {
+        self.ctx_on(&**c, tenant, account).await
+    }
+
+    /// Like `ctx`, on a given connection (inside an open order: no second connection).
+    pub async fn ctx_on<C: tokio_postgres::GenericClient>(&self, c: &C, tenant: uuid::Uuid, account: uuid::Uuid) -> Result<Ctx> {
+        if !self.account_active(c, tenant, account).await? {
             return Err(inactive());
         }
-        self.load_ctx(&**c, tenant, account).await
+        self.load_ctx(c, tenant, account).await
     }
 
     /// Whether the account exists, is not deleted and not deactivated.

@@ -469,20 +469,27 @@ impl HostConnection for HostState {
         }
         let (tenant, module, op, depth, writable, from) = (c.ctx.tenant, c.module.clone(), c.op.clone(), c.depth, c.writable, c.ctx.clone());
         let store = self.order.store.clone();
-        let account = match store.module_carrier(tenant, &module, &carrier).await {
-            Ok(a) => a,
-            Err(e) => return Ok(Err(err(e))),
+        // on the order's own connection: the order holds its tenant's write turn, and a second
+        // connection could wait behind writers that wait for that turn
+        let mut g = self.order.session.lock().await;
+        let looked_up = match g.as_ref() {
+            Some(sess) => match store.module_carrier_on(sess.client(), tenant, &module, &carrier).await {
+                Ok(a) => store.ctx_on(sess.client(), tenant, a).await,
+                Err(e) => Err(e),
+            },
+            None => match store.module_carrier(tenant, &module, &carrier).await {
+                Ok(a) => store.ctx(tenant, a).await,
+                Err(e) => Err(e),
+            },
         };
-        let ctx = match store.ctx(tenant, account).await {
+        let ctx = match looked_up {
             Ok(c) => c,
             Err(e) => return Ok(Err(err(e))),
         };
-        {
-            let mut g = self.order.session.lock().await;
-            if let Some(sess) = g.as_mut() {
-                let _ = sess.audit(&from, depth as i32, Some(&module), Some(&op), "impersonate", Some(&carrier)).await;
-            }
+        if let Some(sess) = g.as_mut() {
+            let _ = sess.audit(&from, depth as i32, Some(&module), Some(&op), "impersonate", Some(&carrier)).await;
         }
+        drop(g);
         Ok(Ok(self.table.push(ConnRep { ctx, module, op, depth, writable })?))
     }
 

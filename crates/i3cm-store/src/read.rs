@@ -742,14 +742,16 @@ impl Store {
 
     /// Store binary content (new version).
     pub async fn put_content(&self, ctx: &Ctx, id: Uuid, data: &[u8], media_type: &str, filename: Option<&str>) -> Result<i64> {
+        let _turn = self.write_turn(ctx.tenant).await;
         let mut c = self.client().await?;
-        let (t, path, _) = self.type_with(&**c, ctx, id, |t| self.model.type_def(t).map(|d| d.content.is_some()).unwrap_or(false)).await?;
-        if !self.may_obj(&**c, ctx, Art::Write, &t, &path, id).await? {
+        let tx = c.transaction().await.map_err(db)?;
+        // the write turn first, then the checks on the state the write will see
+        let (txn, seq) = crate::session::clock(&*tx, ctx.tenant).await?;
+        let (t, path, _) = self.type_with(&*tx, ctx, id, |t| self.model.type_def(t).map(|d| d.content.is_some()).unwrap_or(false)).await?;
+        if !self.may_obj(&*tx, ctx, Art::Write, &t, &path, id).await? {
             return Err(BaseError::not_found("rights.denied", "not allowed or not found").with("art", "write").with("type", t));
         }
-        let tx = c.transaction().await.map_err(db)?;
         let sha = self.store_bytes(&*tx, data).await?;
-        let (txn, seq) = crate::session::clock(&*tx, ctx.tenant).await?;
         tx.execute("INSERT INTO txn (tenant_id, id, account, seq) VALUES ($1,$2,$3,$4)", &[&ctx.tenant, &txn, &ctx.me(), &seq]).await.map_err(db)?;
         tx.execute("UPDATE content SET valid_to=$3 WHERE tenant_id=$1 AND object_id=$2 AND valid_to IS NULL", &[&ctx.tenant, &id, &txn]).await.map_err(db)?;
         let size = data.len() as i64;
@@ -792,13 +794,14 @@ impl Store {
 
     pub async fn put_text(&self, ctx: &Ctx, id: Uuid, text_type: &str, content: &str) -> Result<i64> {
         let def = self.model.text_type(text_type).ok_or_else(|| BaseError::invalid("text.unknown_type", "unknown text type").with("textType", text_type))?.clone();
+        let _turn = self.write_turn(ctx.tenant).await;
         let mut c = self.client().await?;
-        let (t, path, _) = self.type_with(&**c, ctx, id, |t| t == def.owner).await?;
-        if !self.may_obj(&**c, ctx, Art::Write, &t, &path, id).await? {
-            return Err(BaseError::not_found("rights.denied", "not allowed or not found").with("art", "write").with("type", t));
-        }
         let tx = c.transaction().await.map_err(db)?;
         let (txn, seq) = crate::session::clock(&*tx, ctx.tenant).await?;
+        let (t, path, _) = self.type_with(&*tx, ctx, id, |t| t == def.owner).await?;
+        if !self.may_obj(&*tx, ctx, Art::Write, &t, &path, id).await? {
+            return Err(BaseError::not_found("rights.denied", "not allowed or not found").with("art", "write").with("type", t));
+        }
         tx.execute("INSERT INTO txn (tenant_id, id, account, seq) VALUES ($1,$2,$3,$4)", &[&ctx.tenant, &txn, &ctx.me(), &seq]).await.map_err(db)?;
         tx.execute("UPDATE text_part SET valid_to=$4 WHERE tenant_id=$1 AND object_id=$2 AND text_type=$3 AND valid_to IS NULL", &[&ctx.tenant, &id, &text_type, &txn])
             .await
@@ -833,18 +836,19 @@ impl Store {
         if !ctx.subject.may(Art::Grant, ANY, &[ctx.rooms.root]) && !ctx.subject.may(Art::Grant, GROUP_MEMBERSHIP, &[ctx.rooms.root]) {
             return Err(BaseError::not_found("rights.denied", "not allowed or not found").with("art", "grant"));
         }
+        let _turn = self.write_turn(ctx.tenant).await;
         let mut c = self.client().await?;
-        let exists = c.query_opt("SELECT 1 FROM profile WHERE tenant_id=$1 AND name=$2", &[&ctx.tenant, &profile]).await.map_err(db)?.is_some();
+        let tx = c.transaction().await.map_err(db)?;
+        let (txn, seq) = crate::session::clock(&*tx, ctx.tenant).await?;
+        let exists = tx.query_opt("SELECT 1 FROM profile WHERE tenant_id=$1 AND name=$2", &[&ctx.tenant, &profile]).await.map_err(db)?.is_some();
         if !exists {
             return Err(BaseError::invalid("profile.unknown", "unknown profile").with("profile", profile));
         }
-        let set = types_of(&**c, ctx.tenant, carrier, None).await?;
+        let set = types_of(&*tx, ctx.tenant, carrier, None).await?;
         if !self.model.set_is_a(set.keys(), "base:Carrier") {
             return Err(BaseError::invalid("assignment.not_a_carrier", "profiles can only be assigned to groups and accounts"));
         }
-        let tx = c.transaction().await.map_err(db)?;
         // a profile with `-` or `block` rights can take the right to grant away as well
-        let (txn, seq) = crate::session::clock(&*tx, ctx.tenant).await?;
         tx.execute("INSERT INTO txn (tenant_id, id, account, seq) VALUES ($1,$2,$3,$4)", &[&ctx.tenant, &txn, &ctx.me(), &seq]).await.map_err(db)?;
         crate::admin::lock_admins(&*tx, ctx.tenant).await?;
         let had = self.has_admin(&*tx, ctx.tenant).await?;
@@ -882,6 +886,7 @@ impl Store {
         if !ctx.subject.may(Art::Grant, ANY, &[ctx.rooms.root]) && !ctx.subject.may(Art::Grant, GROUP_MEMBERSHIP, &[ctx.rooms.root]) {
             return Err(BaseError::not_found("rights.denied", "not allowed or not found").with("art", "grant"));
         }
+        let _turn = self.write_turn(ctx.tenant).await;
         let mut c = self.client().await?;
         let tx = c.transaction().await.map_err(db)?;
         let (txn, seq) = crate::session::clock(&*tx, ctx.tenant).await?;
